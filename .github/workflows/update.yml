@@ -1,0 +1,49 @@
+name: Update repositories
+
+on:
+  schedule:
+    - cron: '52 19 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-repositories
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Sync all public non-fork repositories
+        id: sync
+        run: bash .github/scripts/sync-repos.sh
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SELF_REPO: ${{ github.event.repository.name }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # Runs even if some clones failed, so everything that did succeed is
+      # still committed; the job is still marked failed by the step above.
+      - name: Commit and push changes
+        if: ${{ !cancelled() }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config core.autocrlf false
+
+          # -f: the cloned repos' own .gitignore files must not hide tracked files
+          git add -A -f
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+          git commit -q -m "chore: sync repositories ($(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M') UTC+8)"
+          git push
