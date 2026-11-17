@@ -1,0 +1,41 @@
+"""Multilib tie-breaking and collision disclosure across both diffed images."""
+import types
+import unittest
+from unittest.mock import patch
+
+from test_sbwatch import S, pkg
+
+
+class TestMultilibHandling(unittest.TestCase):
+    def test_equal_evr_multilib_winner_does_not_depend_on_insertion_order(self):
+        i686 = dict(pkg("glibc", "2.41-1.fc45"), arch="i686")
+        x86 = dict(pkg("glibc", "2.41-1.fc45"), arch="x86_64")
+        t1, t2 = S.PackageTable(), S.PackageTable()
+        S.table_put(t1, i686); S.table_put(t1, x86)
+        S.table_put(t2, x86); S.table_put(t2, i686)
+        self.assertEqual(t1["glibc"]["arch"], "x86_64")
+        self.assertEqual(t2["glibc"]["arch"], "x86_64")
+        self.assertEqual(t1.collisions, t2.collisions)
+
+    def test_collision_present_only_in_older_image_is_still_disclosed(self):
+        pa = S.PackageTable({"glibc": pkg("glibc", "2.41-1.fc45")})
+        pa.collisions = [{"name": "glibc", "kept_arch": "x86_64", "kept_evr": "2.41-1.fc45",
+                          "shadowed_arch": "i686", "shadowed_evr": "2.40-1.fc45"}]
+        pb = S.PackageTable({"glibc": pkg("glibc", "2.41-2.fc45")})
+        img = lambda d: {"ref": d, "digest": "sha256:" + d * 64, "created": "",
+                         "annotations": {}, "layers": []}
+        args = types.SimpleNamespace(exact=1, keep_order=True, no_bodhi=True, max_bodhi=0,
+                                     audit=False, cache_dir="/tmp", cosign_pub=None,
+                                     require_cosign=False)
+
+        class _Reg:
+            def _token(self):
+                return None
+
+        with patch.object(S, "load_pkglist", side_effect=[pa, pb]):
+            res = S.do_diff(args, "a", "b", images=(img("a"), img("b")), reg=_Reg())
+        self.assertTrue(any("glibc.i686" in str(n) for n in res["notes"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

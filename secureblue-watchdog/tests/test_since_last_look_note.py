@@ -65,6 +65,43 @@ class TestSinceLastLookNote(unittest.TestCase):
         self.assertNotIn(NOTE_EN, md)
         self.assertNotIn(NOTE_ZH, md)
 
+    def test_builds_newer_than_the_watched_target_are_not_counted_as_skipped(self):
+        later = _image(5)
+        with tempfile.TemporaryDirectory() as directory:
+            state, report = Path(directory) / "state.json", Path(directory) / "report.md"
+            state.write_text(json.dumps({"digest": IMAGES[0]["digest"],
+                                         "created": IMAGES[0]["created"]}))
+            rows = [{"digest": i["index_digest"], "platform_digest": i["digest"],
+                     "created": i["created"],
+                     "version": i["annotations"]["org.opencontainers.image.version"]}
+                    for i in (later, IMAGES[2], IMAGES[0])]
+            with patch.object(S.Registry, "_token", return_value=None),                     patch.object(S, "resolve", side_effect=_resolve),                     patch.object(S, "build_history", return_value=rows),                     patch.object(S, "load_pkglist", side_effect=_packages),                     contextlib.redirect_stdout(io.StringIO()),                     contextlib.redirect_stderr(io.StringIO()):
+                rc = S.main(["check", "--image", "x/y", "--state", str(state),
+                             "--report", str(report), "--cache-dir", directory,
+                             "--scan", "4", "--no-fast", "--no-audit", "--no-bodhi",
+                             "--prune-days", "0"])
+            self.assertEqual(rc, 0)
+            self.assertNotIn(NOTE_EN, report.read_text(encoding="utf-8"))
+
+    def test_two_builds_pushed_in_the_same_minute_are_both_counted(self):
+        b1 = {"digest": "sha256:" + "a" * 64, "platform_digest": "sha256:" + "a" * 64,
+              "created": "2026-01-02T06:15:10Z", "version": "45.20260102.0"}
+        b2 = {"digest": "sha256:" + "b" * 64, "platform_digest": "sha256:" + "b" * 64,
+              "created": "2026-01-02T06:15:50Z", "version": "45.20260102.0"}
+        with tempfile.TemporaryDirectory() as directory:
+            state, report = Path(directory) / "state.json", Path(directory) / "report.md"
+            state.write_text(json.dumps({"digest": IMAGES[0]["digest"],
+                                         "created": IMAGES[0]["created"]}))
+            rows = [{"digest": IMAGES[2]["digest"], "platform_digest": IMAGES[2]["digest"],
+                     "created": IMAGES[2]["created"], "version": "45.20260103.0"}, b2, b1]
+            with patch.object(S.Registry, "_token", return_value=None),                     patch.object(S, "resolve", side_effect=_resolve),                     patch.object(S, "build_history", return_value=rows),                     patch.object(S, "load_pkglist", side_effect=_packages),                     contextlib.redirect_stdout(io.StringIO()),                     contextlib.redirect_stderr(io.StringIO()):
+                rc = S.main(["check", "--image", "x/y", "--state", str(state),
+                             "--report", str(report), "--cache-dir", directory,
+                             "--scan", "4", "--no-fast", "--no-audit", "--no-bodhi",
+                             "--prune-days", "0"])
+            self.assertEqual(rc, 0)
+            self.assertIn(NOTE_EN + ": 2 build(s)", report.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
