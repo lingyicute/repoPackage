@@ -1,0 +1,164 @@
+name: Build
+
+on:
+  push:
+    paths:
+      - 'computesec/**'
+      - 'run.py'
+      - 'tests/**'
+      - 'data/**'
+      - 'web/**'
+      - 'scripts/**'
+      - 'pyproject.toml'          # ruff 规则集与 fail_under 都在里面
+      - 'conftest.py'             # 决定 sys.path，删掉 test_run.py 就 import 失败
+      - '*.json'
+      - '*.yml'
+      - '.github/workflows/**'
+  # 必须与 push.paths 保持一致：lint 作业也检查 web/ 的字体子集、scripts/ 与
+  # workflow 本身，少一项就会出现「PR 全绿、合进 main 才变红」。
+  pull_request:
+    paths:
+      - 'computesec/**'
+      - 'run.py'
+      - 'tests/**'
+      - 'data/**'
+      - 'web/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'conftest.py'
+      - '*.json'
+      - '*.yml'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+# 默认只读：lint / smoke 不需要写权限。只有 release 作业单独提权到 write，
+# 避免一个被篡改的测试脚本顺手就能改仓库内容。
+permissions:
+  contents: read
+
+# 同一分支上同时只跑一个 run，避免两个 release 同时操作 nightly。
+# - PR：新提交直接取消旧 run，省时间；
+# - push：只排队、不取消。release 作业是"先删 nightly 再重建"，若恰好在两步之间
+#   被取消，仓库会一直没有 nightly。workflow 级的取消会连同正在跑的 job 一起取消，
+#   给 release 单独设 job 级 concurrency 挡不住，所以只能在这里区分事件类型。
+#   GitHub 对同一 group 只保留最新的一个待运行 run，连续 push 不会无限排队。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Python ${{ matrix.python-version }}：语法、lint、测试与元数据检查
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 下限 3.12：README 要求 libadwaita ≥ 1.4，满足它的发行版（Fedora 39+、
+        # Ubuntu 24.04+、Debian 13+、Arch）自带的 Python 都 ≥ 3.12，更低的版本
+        # 实际上跑不起来本程序。上限 3.14 = ubuntu-latest（26.04）的系统 Python，
+        # 也是 smoke 作业实际使用的版本。两端都必须在 actions/python-versions 的
+        # versions-manifest.json 里提供 26.04 构建：3.9 就是因为没有而在
+        # ubuntu-latest 迁到 26.04 后直接失败的。
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 编译检查
+        run: python -m compileall -q computesec run.py scripts
+      - name: 以包的形式安装（顺带验证 pyproject 的打包配置）
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+      - name: 安装出的 computesec 命令无需图形环境即可响应 --version / --help
+        # 这里的 Python 没有 PyGObject：正好验证入口不会在参数处理前就 import gi。
+        run: |
+          computesec --version
+          computesec --help
+      - name: Lint（规则见 pyproject.toml，与本地保持一致）
+        run: ruff check .
+      - name: 运行单元测试与覆盖率门槛
+        run: python -m pytest -q --cov=computesec --cov=run
+      - name: 安装元数据校验工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils appstream libxml2-utils
+      - name: 校验 web/ 的字体子集是否与页面一致
+        run: python scripts/subset_font.py --check
+      - name: 校验 .desktop / metainfo / SVG（有错误即失败）
+        run: |
+          desktop-file-validate data/uk._92li.lingyicute.ComputeSec.desktop
+          appstreamcli validate --no-net data/uk._92li.lingyicute.ComputeSec.metainfo.xml
+          xmllint --noout data/icons/hicolor/scalable/apps/uk._92li.lingyicute.ComputeSec.svg
+
+  smoke:
+    name: UI 冒烟测试（Xvfb，真跑一遍 GTK）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装系统 Python 的 PyGObject / GTK4 / libadwaita 与 Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi python3-pytest \
+            gir1.2-gtk-4.0 gir1.2-adw-1 xvfb
+      - name: 在虚拟显示上构建五个页面并呈现一次版本线弹窗
+        run: xvfb-run -a /usr/bin/python3 -m pytest tests/test_ui_smoke.py -q
+
+  flatpak:
+    name: 构建 Flatpak (${{ matrix.arch }})
+    # PR 只跑 lint + smoke（几十秒），不跑两个架构的整包构建（各要几十分钟）；
+    # 需要验证 manifest 时由维护者手动 workflow_dispatch 或在 push 后看结果。
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建并导出 bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: ComputeSec-${{ matrix.arch }}.flatpak
+          manifest-path: uk._92li.lingyicute.ComputeSec.json
+          cache-key: flatpak-builder-${{ matrix.arch }}-${{ github.sha }}
+          arch: ${{ matrix.arch }}
+          upload-artifact: true
+
+  release:
+    name: 发布 Nightly
+    if: github.ref == 'refs/heads/main'
+    # 必须等所有检查通过：此前只依赖 flatpak，lint 失败时照样覆盖发布了 nightly
+    # （Run 40087019083）。
+    needs: [lint, smoke, flatpak]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write          # gh release delete / create 需要
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: 删除旧 nightly 并重建
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly artifacts/**/*.flatpak \
+            --target "${{ github.sha }}" \
+            --title "Nightly Build" \
+            --prerelease \
+            --notes "Nightly 自动构建：Run #${{ github.run_number }}，commit ${{ github.sha }}"
+

@@ -1,0 +1,448 @@
+/*
+ * Audio manager.
+ * Event sounds are overlapping one-shots keyed by frame.
+ * Sound 1 is two cues: the looping gameplay bed (sprite 2, no overlap)
+ * and the post-curtain sting (sprite 320, 2 loops, ~7.4s envelope).
+ * The bed stays silent until play; the sting is a separate element.
+ * Sound 315 is shipped as WAV because browsers cannot decode the
+ * original packet directly.
+ */
+(() => {
+  'use strict';
+
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const EFFECT_IDS = [3, 4, 6, 87, 94, 95, 96, 164, 299, 300, 308, 315, 373, 374, 375, 377, 381, 401, 417];
+  const EFFECT_ID_SET = new Set(EFFECT_IDS);
+  // MP3 encoder delay, in seconds (samples / native rate). Skipping it keeps
+  // accents from landing ~75ms late.
+  const SEEK_SEC = {
+    3: 1669 / 22050, 4: 1669 / 22050, 6: 1669 / 22050,
+    94: 1633 / 22050, 95: 1669 / 22050, 96: 1669 / 22050,
+    299: 1669 / 22050, 300: 1669 / 22050, 308: 1633 / 22050
+  };
+
+  function urlFor(id) {
+    if (window.TURBO_AUDIO && window.TURBO_AUDIO[id]) return window.TURBO_AUDIO[id];
+    if (id === 315) return 'assets/audio/315.wav';
+    return `assets/audio/${id}.mp3`;
+  }
+
+  class GameAudio {
+    constructor() {
+      this.muted = false;
+      this.unlocked = false;
+      this.fade = 0;
+      this.musicVolume = 0.55;
+      this.effects = new Set();
+      this.audioContext = null;
+      this.buffers = new Map();
+      this.effectLoads = new Map();
+      this.musicStarted = false;
+      this.fallbackMusic = false;
+      this.sting = null;
+      this.stingGain = null;
+      this.stingBuffer = null;
+      this.stingLoading = false;
+      this.stingPending = false;
+      this.stingStarted = 0;
+
+      this.music = new Audio();
+      this.music.loop = true;
+      // Avoid downloading the fallback track while Web Audio is in use.
+      this.music.preload = 'none';
+      this.music.volume = 0;
+      this.lastMusicVolume = 0;
+      this.bed = null;
+      this.bedGain = null;
+      this.bedBuffer = null;
+      this.bedPending = false;
+      this.hiddenPaused = false;
+      this.hiddenAt = 0;
+      this.musicWasPlaying = false;
+
+      try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) this.audioContext = new AC();
+      } catch (_) {}
+
+      // Music and effects are fetched only when they can actually be used.
+      // The intro bed/sting starts loading from ensureMusic()/playIntroSting();
+      // one-shot effects are decoded on their first cue.
+    }
+
+    unlock() {
+      // Warm the one-shot buffers on the first gesture: the intro still
+      // plays for a couple of seconds, so the first in-game cue can take
+      // the decoded (SEEK_SEC-trimmed) Web Audio path instead of the
+      // untrimmed media-element fallback. Later unlocks hit the
+      // buffered/in-flight guards in loadEffect and cost nothing.
+      for (const id of EFFECT_IDS) this.loadEffect(id);
+      this.resumeContext();
+      if (this.unlocked) {
+        this.ensureMusic();
+        if (this.stingPending) this.playIntroSting();
+        return;
+      }
+      this.unlocked = true;
+      this.ensureMusic();
+      if (this.stingPending) this.playIntroSting();
+    }
+
+    // Called on every gesture, not only the unlocking one: a touch or pen
+    // press carries no user activation (its release does), so the first
+    // resume() can be refused.
+    resumeContext() {
+      if (this.audioContext && !this.hiddenPaused && this.audioContext.state === 'suspended') {
+        this.audioContext.resume().catch(() => {});
+      }
+    }
+
+    ensureMusic() {
+      if (!this.unlocked || this.musicStarted) return;
+      this.musicStarted = true;
+      if (!this.audioContext) {
+        this.startFallbackMusic();
+        return;
+      }
+      if (this.bedBuffer) this.startBed();
+      else {
+        this.bedPending = true;
+        this.loadStingBuffer();
+      }
+    }
+
+    startFallbackMusic() {
+      this.bedPending = false;
+      this.musicStarted = true;
+      this.music.preload = 'auto';
+      if (!this.music.src) this.music.src = urlFor(1);
+      // The output has switched from AudioParam to HTMLMediaElement.volume.
+      this.lastMusicVolume = null;
+      this.setMusicVolume(this.muted ? 0 : this.fade * this.musicVolume);
+      if (this.hiddenPaused) {
+        this.musicWasPlaying = true;
+        return;
+      }
+      // play() settles asynchronously; music.paused stays true until then.
+      this.fallbackMusic = true;
+      try {
+        Promise.resolve(this.music.play()).catch(() => { this.musicStarted = false; this.fallbackMusic = false; });
+      } catch (_) {
+        this.musicStarted = false;
+        this.fallbackMusic = false;
+      }
+    }
+
+    startBed() {
+      if (this.bed || !this.bedBuffer || !this.audioContext) return;
+      if (!this.hiddenPaused && this.audioContext.state === 'suspended') this.audioContext.resume().catch(() => {});
+      const src = this.audioContext.createBufferSource();
+      const gain = this.audioContext.createGain();
+      src.buffer = this.bedBuffer;
+      src.loop = true;
+      src.connect(gain).connect(this.audioContext.destination);
+      gain.gain.value = 0;
+      this.lastMusicVolume = 0;
+      this.bed = src;
+      this.bedGain = gain;
+      try { src.start(); this.bedPending = false; }
+      catch (_) {
+        this.bed = null;
+        this.bedGain = null;
+        this.startFallbackMusic();
+      }
+    }
+
+    // Sprite 320 frame 30: sound 1, loop count 2, one envelope across both
+    // plays (fade-out at 44.1 kHz sample 0x4f882, ~7.39s). Restarting the
+    // element on `ended` inserts a gap, and the file itself has silence at
+    // both ends. Trim that and play both copies as one buffer.
+    loadStingBuffer() {
+      if (this.stingBuffer || this.stingLoading || !this.audioContext) return;
+      this.stingLoading = true;
+      fetch(urlFor(1))
+        .then(r => r.arrayBuffer())
+        .then(buf => this.audioContext.decodeAudioData(buf))
+        .then(decoded => {
+          const bounds = this.findTrimBounds ? this.findTrimBounds(decoded) : null;
+          const sting = this.seamlessLoops(decoded, 2, bounds);
+          // One trimmed copy, looped by the audio clock. Not the doubled sting.
+          const bed = this.seamlessLoop(decoded, bounds);
+          this.stingBuffer = sting;
+          this.bedBuffer = bed;
+          this.stingLoading = false;
+          if (this.stingPending) this.playIntroSting();
+          if (this.bedPending) this.startBed();
+        })
+        .catch(() => {
+          this.stingLoading = false;
+          // A failed fetch/decode must not leave ensureMusic() stuck in its
+          // musicStarted + bedPending state. Use the media element, which can
+          // still play even if fetching for Web Audio was blocked.
+          if (this.bedPending) this.startFallbackMusic();
+        });
+    }
+
+    findTrimBounds(buffer) {
+      if (!buffer || typeof buffer.getChannelData !== "function") return null;
+      const channels = buffer.numberOfChannels;
+      const rate = buffer.sampleRate;
+      const src = [];
+      for (let c = 0; c < channels; c++) src.push(buffer.getChannelData(c));
+      const n = buffer.length;
+      const thresh = 0.008;
+      const loud = i => {
+        for (let c = 0; c < channels; c++) if (Math.abs(src[c][i]) > thresh) return true;
+        return false;
+      };
+      let start = 0;
+      while (start < n && !loud(start)) start++;
+      let end = n - 1;
+      while (end > start && !loud(end)) end--;
+      if (end - start < rate * 0.2) { start = 0; end = n - 1; }
+      return {src, start, end};
+    }
+
+    seamlessLoops(buffer, loops, bounds = null) {
+      const ctx = this.audioContext;
+      const channels = buffer.numberOfChannels;
+      const rate = buffer.sampleRate;
+      const b = bounds || this.findTrimBounds(buffer);
+      const src = b.src;
+      const n = buffer.length;
+      let {start, end} = b;
+      const pad = Math.floor(rate * 0.004);
+      start = Math.max(0, start - pad);
+      end = Math.min(n - 1, end + pad);
+      const len = end - start + 1;
+      const fade = Math.min(Math.floor(rate * 0.01), Math.floor(len / 8));
+      const total = len * loops - fade * (loops - 1);
+      const out = ctx.createBuffer(channels, total, rate);
+      for (let c = 0; c < channels; c++) {
+        const from = src[c];
+        const to = out.getChannelData(c);
+        for (let loop = 0; loop < loops; loop++) {
+          const base = loop * (len - fade);
+          if (loop > 0) {
+            // Only the crossfade head needs per-sample blending; the rest
+            // is a straight copy the typed array can do natively.
+            for (let i = 0; i < fade; i++) {
+              const t = i / fade;
+              to[base + i] = to[base + i] * (1 - t) + from[start + i] * t;
+            }
+            to.set(from.subarray(start + fade, start + len), base + fade);
+          } else {
+            to.set(from.subarray(start, start + len), base);
+          }
+        }
+      }
+      return out;
+    }
+
+    // Single copy of sound 1 with the head/tail silence removed and a 10ms
+    // overlap at the wrap, so BufferSource.loop has no gap between repeats.
+    seamlessLoop(buffer, bounds = null) {
+      const ctx = this.audioContext;
+      const channels = buffer.numberOfChannels;
+      const rate = buffer.sampleRate;
+      const b = bounds || this.findTrimBounds(buffer);
+      const src = b.src;
+      let {start, end} = b;
+      const len = end - start + 1;
+      const fade = Math.min(Math.floor(rate * 0.01), Math.floor(len / 8));
+      const period = len - fade;
+      const out = ctx.createBuffer(channels, period, rate);
+      for (let c = 0; c < channels; c++) {
+        const from = src[c];
+        const to = out.getChannelData(c);
+        for (let i = 0; i < fade; i++) {
+          const t = i / fade;
+          to[i] = from[end - fade + 1 + i] * (1 - t) + from[start + i] * t;
+        }
+        to.set(from.subarray(start + fade, start + period), fade);
+      }
+      return out;
+    }
+
+    skipSeek(id, decoded) {
+      const sec = SEEK_SEC[id];
+      if (!sec || !this.audioContext) return decoded;
+      const skip = Math.round(sec * decoded.sampleRate);
+      if (skip <= 0 || skip >= decoded.length - 1) return decoded;
+      const channels = decoded.numberOfChannels;
+      const out = this.audioContext.createBuffer(channels, decoded.length - skip, decoded.sampleRate);
+      for (let c = 0; c < channels; c++) {
+        out.getChannelData(c).set(decoded.getChannelData(c).subarray(skip));
+      }
+      return out;
+    }
+
+    playIntroSting() {
+      if (this.sting) return;
+      if (!this.unlocked) {
+        this.stingPending = true;
+        return;
+      }
+      if (!this.audioContext) {
+        this.stingPending = true;
+        return;
+      }
+      if (!this.stingBuffer) {
+        this.stingPending = true;
+        this.loadStingBuffer();
+        return;
+      }
+      if (!this.hiddenPaused && this.audioContext.state === 'suspended') this.audioContext.resume().catch(() => {});
+      const src = this.audioContext.createBufferSource();
+      const gain = this.audioContext.createGain();
+      src.buffer = this.stingBuffer;
+      src.connect(gain).connect(this.audioContext.destination);
+      this.sting = src;
+      this.stingGain = gain;
+      this.stingStarted = performance.now();
+      this.applyStingEnvelope();
+      src.onended = () => { if (this.sting === src) this.stopIntroSting(); };
+      try { src.start(); }
+      catch (_) { this.stopIntroSting(); }
+      this.stingPending = false;
+    }
+
+    applyStingEnvelope() {
+      if (!this.sting || !this.stingGain) return;
+      const now = this.hiddenPaused && this.hiddenAt ? Math.max(this.hiddenAt, this.stingStarted) : performance.now();
+      const t = (now - this.stingStarted) / 1000;
+      const start = 0x5d6e / 0x8000;
+      let v = start;
+      if (t >= 7.39) v = 0;
+      else if (t >= 6.82) v = 1 - (t - 6.82) / (7.39 - 6.82);
+      else v = start + (1 - start) * (t / 6.82);
+      v = this.muted ? 0 : Math.max(0, Math.min(1, v));
+      this.stingGain.gain.setValueAtTime(v, this.audioContext.currentTime);
+      if (t >= 7.45) this.stopIntroSting();
+    }
+
+    stopIntroSting() {
+      const sting = this.sting;
+      this.sting = null;
+      this.stingGain = null;
+      this.stingPending = false;
+      if (!sting) return;
+      try { sting.stop(); } catch (_) {}
+    }
+
+    loadEffect(id) {
+      const context = this.audioContext;
+      if (!context || !EFFECT_ID_SET.has(id) || this.buffers.has(id) || this.effectLoads.has(id)) return;
+      const pending = fetch(urlFor(id))
+        .then(r => r.arrayBuffer())
+        .then(buf => context.decodeAudioData(buf))
+        .then(decoded => {
+          if (this.audioContext === context) this.buffers.set(id, this.skipSeek(id, decoded));
+        })
+        .catch(() => {})
+        .finally(() => this.effectLoads.delete(id));
+      this.effectLoads.set(id, pending);
+    }
+
+    effect(id, volume = 0.75) {
+      if (id === 1) {
+        this.ensureMusic();
+        return;
+      }
+      if (this.muted || this.hiddenPaused || !id) return;
+      if (this.audioContext && this.buffers.has(id)) {
+        try {
+          const src = this.audioContext.createBufferSource();
+          src.buffer = this.buffers.get(id);
+          const gain = this.audioContext.createGain();
+          gain.gain.value = clamp(volume, 0, 1);
+          src.connect(gain).connect(this.audioContext.destination);
+          src.start();
+          return;
+        } catch (_) {}
+      }
+      // Keep the first cue responsive with the media-element fallback while
+      // decoding a reusable Web Audio buffer for future plays.
+      if (this.audioContext) this.loadEffect(id);
+      try {
+        const audio = new Audio(urlFor(id));
+        audio.volume = clamp(volume, 0, 1);
+        audio.muted = this.muted;
+        this.effects.add(audio);
+        audio.play().catch(() => this.effects.delete(audio));
+        const cleanup = () => this.effects.delete(audio);
+        audio.addEventListener('ended', cleanup, {once: true});
+        audio.addEventListener('error', cleanup, {once: true});
+      } catch (_) {}
+    }
+
+    setMusicVolume(vol) {
+      if (this.lastMusicVolume === vol) return;
+      this.lastMusicVolume = vol;
+      if (this.bedGain && this.audioContext) {
+        this.bedGain.gain.setValueAtTime(vol, this.audioContext.currentTime);
+      } else {
+        this.music.volume = vol;
+      }
+    }
+
+    update(dt, playing) {
+      if (playing) this.stopIntroSting();
+      else this.applyStingEnvelope();
+      this.fade = clamp(this.fade + (playing ? 1 : -1) * dt / 1200, 0, 1);
+      const vol = this.muted ? 0 : this.fade * this.musicVolume;
+      this.setMusicVolume(vol);
+    }
+
+    // Pause everything while the page is hidden. The game loop stops with the
+    // tab, so otherwise the music bed would keep looping over a frozen game.
+    setHidden(hidden) {
+      const ctx = this.audioContext;
+      if (hidden) {
+        if (!this.hiddenPaused) {
+          this.hiddenPaused = true;
+          this.hiddenAt = typeof performance !== 'undefined' ? performance.now() : 0;
+        }
+        if (ctx && ctx.state === 'running') ctx.suspend().catch(() => {});
+        if (!this.music.paused || this.fallbackMusic) {
+          this.musicWasPlaying = true;
+          this.music.pause();
+        }
+        for (const a of this.effects) {
+          if (a.pause) a.pause();
+        }
+        this.effects.clear();
+        return;
+      }
+      if (!this.hiddenPaused) return;
+      this.hiddenPaused = false;
+      if (this.stingStarted && this.hiddenAt && typeof performance !== 'undefined') {
+        const hiddenFrom = Math.max(this.hiddenAt, this.stingStarted);
+        this.stingStarted += Math.max(0, performance.now() - hiddenFrom);
+      }
+      this.hiddenAt = 0;
+      if (!this.unlocked) return;
+      // Where suspend() settles asynchronously the state still reads 'running'
+      // after a quick hide/show, and the context would stay suspended for good.
+      if (ctx) ctx.resume().catch(() => {});
+      if (this.musicWasPlaying) {
+        this.musicWasPlaying = false;
+        this.fallbackMusic = true;
+        try { Promise.resolve(this.music.play()).catch(() => { this.musicStarted = false; this.fallbackMusic = false; }); }
+        catch (_) { this.musicStarted = false; this.fallbackMusic = false; }
+      }
+    }
+
+    toggle() {
+      this.muted = !this.muted;
+      const vol = this.muted ? 0 : this.fade * this.musicVolume;
+      this.setMusicVolume(vol);
+      this.applyStingEnvelope();
+      for (const a of this.effects) a.muted = this.muted;
+      if (!this.muted) this.unlock();
+      return this.muted;
+    }
+  }
+
+  window.GameAudio = GameAudio;
+})();

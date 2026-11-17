@@ -1,0 +1,3516 @@
+<!doctype html>
+<!-- 
+==========================================================================
+  Copyright 2026 lingyicute
+==========================================================================
+-->
+<html lang="zh-CN" data-theme="light" data-accent="violet">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#f7f5fa">
+  <title>Hashroom 文件摘要小助手 by lingyicute</title>
+  <meta name="description" content="在浏览器本地计算文件的 MD5、SHA-1、SHA-2、SHA-3、RIPEMD-160 和 CRC32 摘要，并与已有校验值比对。文件不会上传。">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236750a4' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M9 4 7.8 20M16.2 4 15 20M4.5 9h15M3.8 15h15'/%3E%3C/svg%3E">
+  <script>
+    try {
+      const accents = ['violet', 'blue', 'teal', 'green', 'orange', 'rose'];
+      const savedTheme = localStorage.getItem('hashroom-theme');
+      const savedAccent = localStorage.getItem('hashroom-accent');
+      const colors = {
+        violet: ['#f7f5fa', '#141218'],
+        blue: ['#f5f7fc', '#10141a'],
+        teal: ['#f4f8f7', '#101615'],
+        green: ['#f5f8f4', '#111612'],
+        orange: ['#faf6f3', '#161310'],
+        rose: ['#faf5f7', '#161214']
+      };
+      const dark = savedTheme === 'dark' || (!savedTheme && matchMedia('(prefers-color-scheme: dark)').matches);
+      const accent = accents.includes(savedAccent) ? savedAccent : 'violet';
+      if (dark) document.documentElement.dataset.theme = 'dark';
+      document.documentElement.dataset.accent = accent;
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = colors[accent][dark ? 1 : 0];
+    } catch (error) {
+      // Storage can be blocked; the default theme still renders.
+    }
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f5fa;
+      --surface: #fffefa;
+      --surface-low: #f1eef5;
+      --surface-high: #eae6ef;
+      --text: #211d25;
+      --muted: #686370;
+      --outline: #bdb7c5;
+      --outline-soft: #e2dee7;
+      --primary: #6750a4;
+      --on-primary: #ffffff;
+      --primary-container: #eaddff;
+      --on-primary-container: #25113f;
+      --error: #b3261e;
+      --error-container: #f9dedc;
+      --on-error-container: #410e0b;
+      --success: #1b7a3a;
+      --success-container: #d8f3e0;
+      --on-success-container: #0d3b1e;
+      --shadow: 0 12px 34px rgb(43 34 56 / 7%);
+      --swatch: #6750a4;
+    }
+
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #141218;
+      --surface: #201d24;
+      --surface-low: #1b181f;
+      --surface-high: #302b35;
+      --text: #e8e0eb;
+      --muted: #c9c2ce;
+      --outline: #514b57;
+      --outline-soft: #39343d;
+      --error: #ffb4ab;
+      --error-container: #601410;
+      --on-error-container: #ffdad6;
+      --success: #8ad7a2;
+      --success-container: #0f3d24;
+      --on-success-container: #c9f6d6;
+      --shadow: 0 14px 36px rgb(0 0 0 / 28%);
+    }
+
+    html[data-accent="violet"] {
+      --primary: #6750a4;
+      --on-primary: #ffffff;
+      --primary-container: #eaddff;
+      --on-primary-container: #25113f;
+      --bg: #f7f5fa;
+      --surface-low: #f1eef5;
+      --swatch: #6750a4;
+    }
+
+    html[data-theme="dark"][data-accent="violet"] {
+      --primary: #d0bcff;
+      --on-primary: #381e72;
+      --primary-container: #4e3a70;
+      --on-primary-container: #eadcff;
+      --bg: #141218;
+      --surface-low: #1b181f;
+    }
+
+    html[data-accent="blue"] {
+      --primary: #1a56c4;
+      --on-primary: #ffffff;
+      --primary-container: #d7e3ff;
+      --on-primary-container: #001a41;
+      --bg: #f5f7fc;
+      --surface-low: #eef2fa;
+      --swatch: #1a56c4;
+    }
+
+    html[data-theme="dark"][data-accent="blue"] {
+      --primary: #adc7ff;
+      --on-primary: #002e69;
+      --primary-container: #0f4aa8;
+      --on-primary-container: #d7e3ff;
+      --bg: #10141a;
+      --surface-low: #171d27;
+    }
+
+    html[data-accent="teal"] {
+      --primary: #0f6e66;
+      --on-primary: #ffffff;
+      --primary-container: #c8f4ee;
+      --on-primary-container: #042f2c;
+      --bg: #f4f8f7;
+      --surface-low: #eaf3f1;
+      --swatch: #0f6e66;
+    }
+
+    html[data-theme="dark"][data-accent="teal"] {
+      --primary: #8ee8dc;
+      --on-primary: #04332f;
+      --primary-container: #0d534c;
+      --on-primary-container: #c8f4ee;
+      --bg: #101615;
+      --surface-low: #17201e;
+    }
+
+    html[data-accent="green"] {
+      --primary: #1f7a3a;
+      --on-primary: #ffffff;
+      --primary-container: #d7efd4;
+      --on-primary-container: #0d2f12;
+      --bg: #f5f8f4;
+      --surface-low: #eaf2e8;
+      --swatch: #1f7a3a;
+    }
+
+    html[data-theme="dark"][data-accent="green"] {
+      --primary: #a6d8a4;
+      --on-primary: #0d3b14;
+      --primary-container: #1d5c28;
+      --on-primary-container: #d7efd4;
+      --bg: #111612;
+      --surface-low: #182018;
+    }
+
+    html[data-accent="orange"] {
+      --primary: #9a3412;
+      --on-primary: #ffffff;
+      --primary-container: #ffedd5;
+      --on-primary-container: #431407;
+      --bg: #faf6f3;
+      --surface-low: #f6eee8;
+      --swatch: #9a3412;
+    }
+
+    html[data-theme="dark"][data-accent="orange"] {
+      --primary: #ffb77d;
+      --on-primary: #4a2500;
+      --primary-container: #7a3e00;
+      --on-primary-container: #ffedd5;
+      --bg: #161310;
+      --surface-low: #221c17;
+    }
+
+    html[data-accent="rose"] {
+      --primary: #a21c55;
+      --on-primary: #ffffff;
+      --primary-container: #fce7f3;
+      --on-primary-container: #500724;
+      --bg: #faf5f7;
+      --surface-low: #f6ecef;
+      --swatch: #a21c55;
+    }
+
+    html[data-theme="dark"][data-accent="rose"] {
+      --primary: #ffb1c8;
+      --on-primary: #5e1133;
+      --primary-container: #8a234c;
+      --on-primary-container: #fce7f3;
+      --bg: #161214;
+      --surface-low: #22181d;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      border: 0 solid;
+    }
+
+    h1,
+    h2,
+    h3 {
+      font-size: inherit;
+      font-weight: inherit;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: inherit;
+    }
+
+    svg {
+      display: block;
+      vertical-align: middle;
+    }
+
+    button,
+    input,
+    textarea {
+      letter-spacing: inherit;
+      border-radius: 0;
+      background-color: transparent;
+    }
+
+    textarea {
+      resize: vertical;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 1em;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color 220ms ease, color 220ms ease;
+    }
+
+    button,
+    input,
+    textarea {
+      font: inherit;
+    }
+
+    button {
+      color: inherit;
+    }
+
+    .app-shell {
+      min-height: 100vh;
+    }
+
+    .topbar {
+      width: min(100% - 56px, 1160px);
+      height: 82px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      width: 43px;
+      height: 43px;
+      display: grid;
+      place-items: center;
+      border-radius: 16px;
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+    }
+
+    .brand-mark svg,
+    .icon-button svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .brand-name {
+      font-size: 19px;
+      font-weight: 680;
+      letter-spacing: -0.045em;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .icon-button {
+      width: 46px;
+      height: 46px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      transition: background-color 180ms ease, transform 180ms ease;
+    }
+
+    .icon-button:hover,
+    .icon-button[aria-expanded="true"] {
+      background: var(--surface-high);
+    }
+
+    .icon-button:focus-visible,
+    .text-button:focus-visible,
+    .copy-button:focus-visible,
+    .primary-button:focus-visible,
+    .clear-file:focus-visible,
+    .swatch:focus-visible {
+      outline: 3px solid var(--primary);
+      outline-offset: 3px;
+    }
+
+    .theme-toggle:hover {
+      transform: rotate(-8deg);
+    }
+
+    .theme-toggle .moon-icon,
+    html[data-theme="dark"] .theme-toggle .sun-icon {
+      display: none;
+    }
+
+    html[data-theme="dark"] .theme-toggle .moon-icon {
+      display: block;
+    }
+
+    .palette-wrap {
+      position: relative;
+    }
+
+    .palette-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      z-index: 30;
+      width: 248px;
+      padding: 14px;
+      border: 1px solid var(--outline-soft);
+      border-radius: 20px;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+
+    .palette-menu p {
+      margin: 0 0 12px;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+    }
+
+    .swatch {
+      width: 28px;
+      height: 28px;
+      justify-self: center;
+      border: 0;
+      border-radius: 50%;
+      background: var(--swatch);
+      cursor: pointer;
+      box-shadow: inset 0 0 0 1px rgb(33 29 37 / 12%);
+      /* 描边改用文字色：固定的深色描边在深色模式的背景上看不见；不支持 color-mix 的浏览器沿用上一行。 */
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent);
+    }
+
+    .swatch.is-active {
+      box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--text);
+    }
+
+    .page {
+      width: min(100% - 48px, 860px);
+      margin: 42px auto 76px;
+    }
+
+    .hero {
+      margin-bottom: 29px;
+      animation: rise-in 620ms cubic-bezier(.2, .7, .2, 1) both;
+    }
+
+    .eyebrow {
+      margin: 0 0 9px;
+      color: var(--primary);
+      font-size: 12px;
+      font-weight: 720;
+      letter-spacing: .13em;
+    }
+
+    h1 {
+      margin: 0px -5px;
+      font-size: clamp(36px, 5vw, 47px);
+      font-weight: 620;
+      letter-spacing: -.055em;
+      line-height: 1.5;
+    }
+
+    .hero-description {
+      max-width: 640px;
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    .drop-frame {
+      position: relative;
+    }
+
+    .dropzone {
+      width: 100%;
+      min-height: 168px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 28px 34px;
+      border: 1.5px dashed var(--outline);
+      border-radius: 28px;
+      background: var(--surface-low);
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+      transition: transform 220ms ease, border-color 220ms ease, background-color 220ms ease, box-shadow 220ms ease;
+    }
+
+    .dropzone:hover,
+    .dropzone.is-dragging {
+      border-color: var(--primary);
+      background: var(--primary-container);
+      box-shadow: var(--shadow);
+      transform: translateY(-2px);
+    }
+
+    .dropzone:focus-visible {
+      outline: 3px solid var(--primary);
+      outline-offset: 4px;
+    }
+
+    .drop-state,
+    .file-state {
+      width: min(100%, 580px);
+      display: flex;
+      align-items: center;
+      gap: 17px;
+      pointer-events: none;
+    }
+
+    .drop-state {
+      justify-content: center;
+    }
+
+    .drop-icon,
+    .file-icon {
+      width: 58px;
+      height: 58px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 20px;
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+    }
+
+    .drop-icon svg,
+    .file-icon svg,
+    .empty-icon svg,
+    .banner-icon svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    .drop-copy,
+    .file-details {
+      min-width: 0;
+      display: grid;
+      gap: 4px;
+    }
+
+    .drop-copy strong,
+    .file-details strong {
+      font-size: 17px;
+      font-weight: 610;
+      letter-spacing: -.02em;
+    }
+
+    .drop-copy>span,
+    .file-details>span,
+    .section-note,
+    .algo-footnote,
+    .compare-hint {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .select-hint {
+      color: var(--primary);
+      font-weight: 650;
+      text-decoration: underline;
+      text-decoration-color: transparent;
+      text-underline-offset: 3px;
+    }
+
+    .dropzone:hover .select-hint {
+      text-decoration-color: currentColor;
+    }
+
+    .file-state {
+      padding: 4px 42px 4px 0;
+    }
+
+    .file-details {
+      flex: 1;
+      text-align: left;
+    }
+
+    .file-details strong {
+      overflow-wrap: anywhere;
+    }
+
+    .replace-hint {
+      flex: 0 0 auto;
+      color: var(--primary);
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .clear-file {
+      position: absolute;
+      top: 13px;
+      right: 13px;
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 50%;
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .clear-file:hover {
+      background: var(--surface-high);
+      color: var(--text);
+    }
+
+    .clear-file svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .panel {
+      margin-top: 22px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 13px;
+    }
+
+    .section-head h2,
+    .results-heading h2 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: -.025em;
+    }
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .inline-actions,
+    .results-actions {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .algo-groups {
+      display: grid;
+      gap: 14px;
+    }
+
+    .algo-group-label {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 680;
+      letter-spacing: .06em;
+    }
+
+    .algorithm-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+    }
+
+    .algorithm-option {
+      min-height: 42px;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 14px;
+      border: 1px solid var(--outline);
+      border-radius: 14px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      -webkit-user-select: none;
+      user-select: none;
+      transition: border-color 170ms ease, background-color 170ms ease, transform 170ms ease;
+    }
+
+    .algorithm-option:hover {
+      border-color: var(--primary);
+      transform: translateY(-1px);
+    }
+
+    .algorithm-option.is-selected {
+      border-color: transparent;
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+    }
+
+    .algorithm-option.is-disabled {
+      opacity: .48;
+      cursor: not-allowed;
+    }
+
+    .algorithm-option.is-disabled:hover {
+      border-color: var(--outline);
+      transform: none;
+    }
+
+    .algorithm-option:focus-within {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    .algorithm-box {
+      position: relative;
+      flex: 0 0 auto;
+      display: grid;
+    }
+
+    .algorithm-option input {
+      width: 17px;
+      height: 17px;
+      -webkit-appearance: none;
+      appearance: none;
+      margin: 0;
+      border: 1.5px solid var(--outline);
+      border-radius: 5px;
+      background: var(--surface);
+      cursor: pointer;
+    }
+
+    .algorithm-option input:checked {
+      border-color: var(--primary);
+      background: var(--primary);
+    }
+
+    /* 各浏览器对 input 上的伪元素支持不一致（Firefox 就不可靠），勾号画在紧随其后的真实元素上。 */
+    .algorithm-mark {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+    }
+
+    .algorithm-mark::after {
+      width: 8px;
+      height: 5px;
+      content: "";
+      border-bottom: 1.8px solid var(--on-primary);
+      border-left: 1.8px solid var(--on-primary);
+      opacity: 0;
+      transform: translateY(-1px) rotate(-45deg);
+    }
+
+    .algorithm-option input:checked+.algorithm-mark::after {
+      opacity: 1;
+    }
+
+    .algorithm-name {
+      font-size: 13px;
+      font-weight: 620;
+    }
+
+    .algo-footnote {
+      margin: 12px 2px 0;
+    }
+
+    .compare-card {
+      margin-top: 22px;
+      padding: 18px;
+      border: 1px solid var(--outline-soft);
+      border-radius: 24px;
+      background: var(--surface);
+    }
+
+    .compare-card .section-head {
+      margin-bottom: 12px;
+    }
+
+    .expected-input {
+      width: 100%;
+      min-height: 84px;
+      resize: vertical;
+      padding: 14px 16px;
+      border: 0;
+      border-radius: 16px;
+      background: var(--surface-low);
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      line-height: 1.65;
+    }
+
+    .expected-input:focus {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    .expected-input::placeholder {
+      color: var(--muted);
+      font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .compare-tools {
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .compare-hint {
+      margin: 0;
+    }
+
+    .compare-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-top: 12px;
+      padding: 13px 14px;
+      border-radius: 16px;
+    }
+
+    .compare-banner.is-match {
+      background: var(--success-container);
+      color: var(--on-success-container);
+    }
+
+    .compare-banner.is-mismatch,
+    .compare-banner.is-invalid {
+      background: var(--error-container);
+      color: var(--on-error-container);
+    }
+
+    .compare-banner.is-info {
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+    }
+
+    .banner-icon {
+      width: 28px;
+      height: 28px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+    }
+
+    .banner-copy strong,
+    .banner-copy span {
+      display: block;
+    }
+
+    .banner-copy strong {
+      font-size: 14px;
+      font-weight: 680;
+    }
+
+    .banner-copy span {
+      margin-top: 2px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .action-row {
+      min-height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin-top: 18px;
+    }
+
+    .status-line {
+      min-height: 22px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    .status-line.is-error {
+      color: var(--error);
+    }
+
+    .status-line.is-match {
+      color: var(--success);
+    }
+
+    .primary-button,
+    .text-button,
+    .copy-button {
+      border: 0;
+      cursor: pointer;
+    }
+
+    .primary-button {
+      min-width: 158px;
+      height: 50px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 0 23px;
+      border-radius: 17px;
+      background: var(--primary);
+      color: var(--on-primary);
+      font-size: 14px;
+      font-weight: 660;
+      box-shadow: 0 2px 5px rgb(38 27 57 / 13%);
+      transition: box-shadow 180ms ease, transform 180ms ease, opacity 180ms ease;
+    }
+
+    .primary-button:hover:not(:disabled) {
+      box-shadow: 0 5px 13px rgb(38 27 57 / 19%);
+      transform: translateY(-1px);
+    }
+
+    .primary-button:disabled,
+    .text-button:disabled {
+      cursor: not-allowed;
+      opacity: .52;
+    }
+
+    .primary-button:disabled {
+      box-shadow: none;
+    }
+
+    .primary-button svg,
+    .text-button svg,
+    .copy-button svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .button-spinner {
+      width: 17px;
+      height: 17px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 50%;
+      animation: spin 700ms linear infinite;
+    }
+
+    .results-section {
+      margin-top: 38px;
+      animation: rise-in 720ms 80ms cubic-bezier(.2, .7, .2, 1) both;
+    }
+
+    .results-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 13px;
+    }
+
+    .text-button {
+      min-height: 40px;
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 9px;
+      border-radius: 12px;
+      background: transparent;
+      color: var(--primary);
+      font-size: 13px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .text-button:hover:not(:disabled) {
+      background: var(--primary-container);
+    }
+
+    .text-button:disabled {
+      color: var(--muted);
+    }
+
+    .results-panel {
+      overflow: hidden;
+      border: 1px solid var(--outline-soft);
+      border-radius: 24px;
+      background: var(--surface);
+    }
+
+    .empty-result {
+      min-height: 132px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      padding: 25px;
+    }
+
+    .empty-icon {
+      width: 44px;
+      height: 44px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      border-radius: 15px;
+      background: var(--surface-low);
+      color: var(--muted);
+    }
+
+    .empty-copy p {
+      margin: 0;
+    }
+
+    .empty-title {
+      font-size: 14px;
+      font-weight: 610;
+    }
+
+    .empty-description {
+      margin-top: 3px !important;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .results-panel.is-error .empty-icon {
+      background: var(--error-container);
+      color: var(--error);
+    }
+
+    .loading-track {
+      height: 3px;
+      overflow: hidden;
+      background: var(--surface-high);
+    }
+
+    .loading-track span {
+      width: 0;
+      height: 100%;
+      display: block;
+      background: var(--primary);
+      transition: width 180ms linear;
+    }
+
+    .digest-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 18px;
+      padding: 18px 20px;
+      animation: rise-in 380ms cubic-bezier(.2, .7, .2, 1) both;
+    }
+
+    .digest-row+.digest-row {
+      border-top: 1px solid var(--outline-soft);
+    }
+
+    .digest-row.is-match {
+      background: var(--success-container);
+      background: color-mix(in srgb, var(--success-container) 72%, var(--surface));
+    }
+
+    .digest-row.is-mismatch {
+      background: var(--error-container);
+      background: color-mix(in srgb, var(--error-container) 76%, var(--surface));
+    }
+
+    .digest-meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px 10px;
+      margin-bottom: 8px;
+    }
+
+    .digest-algorithm {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: .02em;
+    }
+
+    .digest-length {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .04em;
+    }
+
+    .match-pill {
+      min-height: 22px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .match-pill.is-match {
+      background: var(--success-container);
+      color: var(--on-success-container);
+    }
+
+    .match-pill.is-mismatch {
+      background: var(--error-container);
+      color: var(--on-error-container);
+    }
+
+    .digest-value {
+      display: block;
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      line-height: 1.75;
+      overflow-wrap: anywhere;
+      -webkit-user-select: all;
+      user-select: all;
+    }
+
+    .copy-button {
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-items: center;
+      border-radius: 13px;
+      background: var(--surface-low);
+      color: var(--muted);
+    }
+
+    .copy-button:hover,
+    .copy-button.is-copied {
+      background: var(--primary-container);
+      color: var(--on-primary-container);
+    }
+
+    .privacy-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 21px 2px 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .privacy-note svg {
+      width: 16px;
+      height: 16px;
+      flex: 0 0 auto;
+      margin-top: 1px;
+      color: var(--primary);
+    }
+
+    .privacy-note p {
+      margin: 0;
+    }
+
+    @keyframes rise-in {
+      from {
+        opacity: 0;
+        transform: translateY(9px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @media (max-width: 640px) {
+
+      .topbar,
+      .page {
+        width: calc(100% - 32px);
+      }
+
+      .topbar {
+        height: 72px;
+      }
+
+      .page {
+        margin-top: 28px;
+      }
+
+      .dropzone {
+        min-height: 150px;
+        padding: 22px 18px;
+        border-radius: 24px;
+      }
+
+      .drop-icon,
+      .file-icon {
+        width: 50px;
+        height: 50px;
+      }
+
+      .replace-hint {
+        display: none;
+      }
+
+      .compare-tools {
+        flex-wrap: wrap;
+      }
+
+      .action-row {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .primary-button {
+        width: 100%;
+      }
+
+      .digest-row {
+        gap: 12px;
+        padding: 16px;
+      }
+
+      .digest-value {
+        font-size: 11px;
+      }
+    }
+
+    @media (max-width: 320px) {
+      .algorithm-option {
+        min-height: 40px;
+        padding: 0 10px;
+      }
+
+      .empty-result {
+        justify-content: flex-start;
+      }
+
+      .section-head,
+      .compare-tools,
+      .results-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <noscript>
+    <p style="padding:16px;text-align:center">Hashroom 需要启用 JavaScript 才能在浏览器中计算文件摘要。</p>
+  </noscript>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Hashroom 首页">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M9 4 7.8 20M16.2 4 15 20M4.5 9h15M3.8 15h15" />
+          </svg>
+        </span>
+        <span class="brand-name">Hashroom</span>
+      </a>
+      <div class="header-actions">
+        <div class="palette-wrap">
+          <button class="icon-button" id="paletteToggle" type="button" aria-label="切换主题色" aria-expanded="false"
+            aria-controls="paletteMenu" title="切换主题色">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+              stroke-linejoin="round" aria-hidden="true">
+              <path
+                d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10c1.38 0 2.5-.9 2.5-2v-1.2c0-.8.6-1.5 1.4-1.5h1.1c2.76 0 5-2.24 5-5 0-5.52-4.48-10-10-10z" />
+              <circle cx="6.5" cy="11.5" r="0.1" />
+              <path d="M9 6.5h.01M13 5.5h.01M17 8.5h.01" />
+            </svg>
+          </button>
+          <div class="palette-menu" id="paletteMenu" hidden>
+            <p>主题色</p>
+            <div class="swatches" id="swatchList" role="radiogroup" aria-label="主题色"></div>
+          </div>
+        </div>
+        <button class="icon-button theme-toggle" id="themeToggle" type="button" aria-label="切换深色模式" title="切换深色模式">
+          <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" />
+            <path
+              d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" />
+          </svg>
+          <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20.2 15.5A8.5 8.5 0 0 1 8.5 3.8 8.7 8.7 0 1 0 20.2 15.5Z" />
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="page" id="top">
+      <section class="hero" aria-labelledby="pageTitle">
+        <p class="eyebrow">Made with ❤️ by lingyicute</p>
+        <h1 id="pageTitle">文件摘要小助手</h1>
+        <p class="hero-description">拖入文件，计算多种摘要，并与已有校验值比对。所有计算都在浏览器中完成。</p>
+      </section>
+
+      <section class="workspace" aria-label="文件哈希工具">
+        <input class="visually-hidden" id="fileInput" type="file" tabindex="-1" aria-label="选择要计算哈希的文件">
+        <div class="drop-frame">
+          <button class="dropzone" id="dropzone" type="button" aria-label="拖放文件到这里，或点击选择文件">
+            <span class="drop-state" id="emptyFileState">
+              <span class="drop-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                  stroke-linejoin="round">
+                  <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" />
+                  <path d="M5 14.5v3A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-3" />
+                </svg>
+              </span>
+              <span class="drop-copy">
+                <strong>将文件拖放到这里</strong>
+                <span>或 <span class="select-hint">点击选择文件</span></span>
+              </span>
+            </span>
+            <span class="file-state" id="selectedFileState" hidden>
+              <span class="file-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"
+                  stroke-linejoin="round">
+                  <path d="M13.5 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 3Z" />
+                  <path d="M13 3v6h6M8.5 14h7m-7 3h7" />
+                </svg>
+              </span>
+              <span class="file-details">
+                <strong id="fileName"></strong>
+                <span id="fileMeta"></span>
+              </span>
+              <span class="replace-hint">点击更换</span>
+            </span>
+          </button>
+          <button class="clear-file" id="clearFile" type="button" aria-label="移除已选文件" title="移除文件" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+              aria-hidden="true">
+              <path d="m7 7 10 10M17 7 7 17" />
+            </svg>
+          </button>
+        </div>
+
+        <section class="panel" aria-labelledby="algorithmTitle">
+          <div class="section-head">
+            <div class="section-title">
+              <h2 id="algorithmTitle">摘要算法</h2>
+              <span class="section-note" id="algorithmCount">已选 1 种</span>
+            </div>
+            <div class="inline-actions">
+              <button class="text-button" id="selectCommon" type="button">只选常用</button>
+              <button class="text-button" id="selectAll" type="button">全选</button>
+            </div>
+          </div>
+          <div class="algo-groups" id="algorithmMount"></div>
+          <p class="algo-footnote">MD5 与 SHA-1 只适合核对旧文件。CRC32 是校验和，不是密码学哈希。</p>
+        </section>
+
+        <section class="compare-card" aria-labelledby="compareTitle">
+          <div class="section-head">
+            <div class="section-title">
+              <h2 id="compareTitle">与已有值比对</h2>
+              <span class="section-note">可选</span>
+            </div>
+            <button class="text-button" id="clearExpected" type="button" disabled>清空</button>
+          </div>
+          <label>
+            <span class="visually-hidden">预期哈希</span>
+            <textarea class="expected-input" id="expectedInput" rows="3" spellcheck="false" autocapitalize="off"
+              autocorrect="off" placeholder="粘贴预期哈希，例如 SHA-256: e3b0c442… 或 sha256sum 输出"></textarea>
+          </label>
+          <div class="compare-tools">
+            <p class="compare-hint" id="compareHint">计算完成后会自动比对，忽略大小写和分隔符。</p>
+            <button class="text-button" id="applySuggested" type="button" hidden>补选可能的算法</button>
+          </div>
+          <div class="compare-banner" id="compareBanner" hidden role="status" aria-live="polite"></div>
+        </section>
+
+        <div class="action-row">
+          <p class="status-line" id="statusLine" role="status" aria-live="polite">尚未选择文件</p>
+          <button class="primary-button" id="computeButton" type="button" disabled>
+            <span class="button-spinner" id="buttonSpinner" aria-hidden="true" hidden></span>
+            <svg id="computeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M5 12h13m-5-5 5 5-5 5" />
+            </svg>
+            <span id="computeLabel">计算哈希</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="results-section" id="resultsSection" aria-labelledby="resultsTitle">
+        <div class="results-heading">
+          <h2 id="resultsTitle">计算结果</h2>
+          <button class="text-button" id="copyAllButton" type="button" disabled>
+            <span class="copy-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                stroke-linejoin="round">
+                <rect x="8" y="8" width="12" height="12" rx="2" />
+                <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+              </svg>
+            </span>
+            <span>复制全部</span>
+          </button>
+        </div>
+        <div class="results-panel" id="resultsPanel"></div>
+      </section>
+
+      <footer class="privacy-note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <rect x="4.5" y="10" width="15" height="11" rx="2.5" />
+          <path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v3" />
+        </svg>
+        <p>文件只在本机内存中读取和计算，不会上传到任何服务器。</p>
+      </footer>
+    </main>
+  </div>
+
+  <script>
+    const ACCENTS = [
+      {id: 'violet', label: '暮紫', swatch: '#6750a4'},
+      {id: 'blue', label: '海蓝', swatch: '#1a56c4'},
+      {id: 'teal', label: '青碧', swatch: '#0f6e66'},
+      {id: 'green', label: '森绿', swatch: '#1f7a3a'},
+      {id: 'orange', label: '暖橙', swatch: '#9a3412'},
+      {id: 'rose', label: '玫红', swatch: '#a21c55'}
+    ];
+
+    const ALGORITHM_GROUPS = [
+      {id: 'common', label: '常用'},
+      {id: 'sha2', label: 'SHA-2'},
+      {id: 'sha3', label: 'SHA-3'},
+      {id: 'other', label: '其他'}
+    ];
+
+    const ALGORITHMS = [
+      {id: 'MD5', group: 'common', bits: 128, title: 'MD5 已不适合安全场景，仅用于兼容旧校验值'},
+      {id: 'SHA-1', group: 'common', bits: 160, title: 'SHA-1 已不适合安全场景，仅用于兼容旧校验值'},
+      {id: 'SHA-256', group: 'common', bits: 256, checked: true},
+      {id: 'SHA-512', group: 'common', bits: 512},
+      {id: 'SHA-224', group: 'sha2', bits: 224},
+      {id: 'SHA-384', group: 'sha2', bits: 384},
+      {id: 'SHA-512/224', group: 'sha2', bits: 224},
+      {id: 'SHA-512/256', group: 'sha2', bits: 256},
+      {id: 'SHA3-224', group: 'sha3', bits: 224},
+      {id: 'SHA3-256', group: 'sha3', bits: 256},
+      {id: 'SHA3-384', group: 'sha3', bits: 384},
+      {id: 'SHA3-512', group: 'sha3', bits: 512},
+      {id: 'RIPEMD-160', group: 'other', bits: 160},
+      {id: 'CRC32', group: 'other', bits: 32, title: 'CRC32 是循环冗余校验，不是密码学哈希'}
+    ];
+
+    const WEB_CRYPTO = new Set(['SHA-1', 'SHA-256', 'SHA-384', 'SHA-512']);
+    const BUFFER_LIMIT = 256 * 1024 * 1024;
+    const DROPZONE_LABEL = '拖放文件到这里，或点击选择文件';
+    const HASH_LENGTHS = new Set(ALGORITHMS.map(item => item.bits / 4));
+
+    const fileInput = document.getElementById('fileInput');
+    const dropzone = document.getElementById('dropzone');
+    const emptyFileState = document.getElementById('emptyFileState');
+    const selectedFileState = document.getElementById('selectedFileState');
+    const fileName = document.getElementById('fileName');
+    const fileMeta = document.getElementById('fileMeta');
+    const clearFileButton = document.getElementById('clearFile');
+    const algorithmMount = document.getElementById('algorithmMount');
+    const algorithmCount = document.getElementById('algorithmCount');
+    const expectedInput = document.getElementById('expectedInput');
+    const compareHint = document.getElementById('compareHint');
+    const compareBanner = document.getElementById('compareBanner');
+    const applySuggested = document.getElementById('applySuggested');
+    const clearExpected = document.getElementById('clearExpected');
+    const computeButton = document.getElementById('computeButton');
+    const computeIcon = document.getElementById('computeIcon');
+    const computeLabel = document.getElementById('computeLabel');
+    const buttonSpinner = document.getElementById('buttonSpinner');
+    const statusLine = document.getElementById('statusLine');
+    const resultsPanel = document.getElementById('resultsPanel');
+    const resultsSection = document.getElementById('resultsSection');
+    const copyAllButton = document.getElementById('copyAllButton');
+    const themeToggle = document.getElementById('themeToggle');
+    const paletteToggle = document.getElementById('paletteToggle');
+    const paletteMenu = document.getElementById('paletteMenu');
+    const swatchList = document.getElementById('swatchList');
+
+    const iconMarkup = {
+      hash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 4 7.8 20M16.2 4 15 20M4.5 9h15M3.8 15h15"/></svg>',
+      copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+      check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>',
+      error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6m0 4h.01"/></svg>',
+      clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>'
+    };
+
+    let algorithmInputs = [];
+    let selectedFile = null;
+    let currentResults = [];
+    let expectedEntries = [];
+    let expectedInvalid = false;
+    let isCalculating = false;
+    let runToken = 0;
+    let lastElapsed = '';
+    const copyTimers = new WeakMap();
+
+    function rotl32(value, bits) {
+      return ((value << bits) | (value >>> (32 - bits))) >>> 0;
+    }
+
+    function readU32BE(bytes, offset) {
+      return ((bytes[offset] << 24) | (bytes[offset + 1] << 16) | (bytes[offset + 2] << 8) | bytes[offset + 3]) >>> 0;
+    }
+
+    function readU32LE(bytes, offset) {
+      return (bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24)) >>> 0;
+    }
+
+    function writeU32BE(bytes, offset, value) {
+      bytes[offset] = value >>> 24;
+      bytes[offset + 1] = value >>> 16;
+      bytes[offset + 2] = value >>> 8;
+      bytes[offset + 3] = value;
+    }
+
+    function writeU32LE(bytes, offset, value) {
+      bytes[offset] = value;
+      bytes[offset + 1] = value >>> 8;
+      bytes[offset + 2] = value >>> 16;
+      bytes[offset + 3] = value >>> 24;
+    }
+
+    function bytesToHex(bytes) {
+      let hex = '';
+      for (let i = 0; i < bytes.length; i += 1) hex += bytes[i].toString(16).padStart(2, '0');
+      return hex;
+    }
+
+    function writeBitLength(buffer, offset, byteCount, lengthBytes, littleEndian) {
+      const bitLo = (byteCount << 3) >>> 0;
+      const bitHi = Math.floor(byteCount / 0x20000000);
+      if (lengthBytes === 8) {
+        if (littleEndian) {
+          writeU32LE(buffer, offset, bitLo);
+          writeU32LE(buffer, offset + 4, bitHi);
+        } else {
+          writeU32BE(buffer, offset, bitHi);
+          writeU32BE(buffer, offset + 4, bitLo);
+        }
+        return;
+      }
+      const hi64 = Math.floor(byteCount / 2 ** 61);
+      writeU32BE(buffer, offset, 0);
+      writeU32BE(buffer, offset + 4, hi64);
+      writeU32BE(buffer, offset + 8, bitHi);
+      writeU32BE(buffer, offset + 12, bitLo);
+    }
+
+    const SCRATCH16 = new Uint32Array(16);
+    const SCRATCH64 = new Uint32Array(64);
+    const SCRATCH80 = new Uint32Array(80);
+    const SCRATCH160 = new Uint32Array(160);
+
+    class BufferedHash {
+      constructor(blockSize) {
+        this.blockSize = blockSize;
+        this.buffer = new Uint8Array(blockSize);
+        this.bufferLen = 0;
+        this.totalLen = 0;
+      }
+
+      update(data) {
+        this.totalLen += data.length;
+        let offset = 0;
+        if (this.bufferLen) {
+          const take = Math.min(this.blockSize - this.bufferLen, data.length);
+          this.buffer.set(data.subarray(0, take), this.bufferLen);
+          this.bufferLen += take;
+          offset = take;
+          if (this.bufferLen === this.blockSize) {
+            this.process(this.buffer, 0);
+            this.bufferLen = 0;
+          }
+        }
+        while (offset + this.blockSize <= data.length) {
+          this.process(data, offset);
+          offset += this.blockSize;
+        }
+        if (offset < data.length) {
+          this.buffer.set(data.subarray(offset), 0);
+          this.bufferLen = data.length - offset;
+        }
+        return this;
+      }
+
+      finish(lengthBytes, littleEndian) {
+        this.buffer[this.bufferLen] = 0x80;
+        this.bufferLen += 1;
+        if (this.bufferLen > this.blockSize - lengthBytes) {
+          this.buffer.fill(0, this.bufferLen);
+          this.process(this.buffer, 0);
+          this.bufferLen = 0;
+        }
+        this.buffer.fill(0, this.bufferLen);
+        writeBitLength(this.buffer, this.blockSize - lengthBytes, this.totalLen, lengthBytes, littleEndian);
+        this.process(this.buffer, 0);
+      }
+    }
+
+    const MD5_S = [
+      7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+      5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+      4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+      6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21
+    ];
+    const MD5_T = new Uint32Array('d76aa478 e8c7b756 242070db c1bdceee f57c0faf 4787c62a a8304613 fd469501 698098d8 8b44f7af ffff5bb1 895cd7be 6b901122 fd987193 a679438e 49b40821 f61e2562 c040b340 265e5a51 e9b6c7aa d62f105d 02441453 d8a1e681 e7d3fbc8 21e1cde6 c33707d6 f4d50d87 455a14ed a9e3e905 fcefa3f8 676f02d9 8d2a4c8a fffa3942 8771f681 6d9d6122 fde5380c a4beea44 4bdecfa9 f6bb4b60 bebfbc70 289b7ec6 eaa127fa d4ef3085 04881d05 d9d4d039 e6db99e5 1fa27cf8 c4ac5665 f4292244 432aff97 ab9423a7 fc93a039 655b59c3 8f0ccc92 ffeff47d 85845dd1 6fa87e4f fe2ce6e0 a3014314 4e0811a1 f7537e82 bd3af235 2ad7d2bb eb86d391'.split(' ').map(hex => parseInt(hex, 16)));
+
+    class Md5 extends BufferedHash {
+      constructor() {
+        super(64);
+        this.h = new Uint32Array([0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476]);
+      }
+
+      process(block, offset) {
+        const m = SCRATCH16;
+        for (let i = 0; i < 16; i += 1) m[i] = readU32LE(block, offset + i * 4);
+        let a = this.h[0];
+        let b = this.h[1];
+        let c = this.h[2];
+        let d = this.h[3];
+        for (let i = 0; i < 64; i += 1) {
+          let f;
+          let g;
+          if (i < 16) {
+            f = (b & c) | (~b & d);
+            g = i;
+          } else if (i < 32) {
+            f = (d & b) | (~d & c);
+            g = (5 * i + 1) % 16;
+          } else if (i < 48) {
+            f = b ^ c ^ d;
+            g = (3 * i + 5) % 16;
+          } else {
+            f = c ^ (b | ~d);
+            g = (7 * i) % 16;
+          }
+          const next = (a + f + m[g] + MD5_T[i]) >>> 0;
+          a = d;
+          d = c;
+          c = b;
+          b = (b + rotl32(next, MD5_S[i])) >>> 0;
+        }
+        this.h[0] = (this.h[0] + a) >>> 0;
+        this.h[1] = (this.h[1] + b) >>> 0;
+        this.h[2] = (this.h[2] + c) >>> 0;
+        this.h[3] = (this.h[3] + d) >>> 0;
+      }
+
+      digest() {
+        this.finish(8, true);
+        const out = new Uint8Array(16);
+        for (let i = 0; i < 4; i += 1) writeU32LE(out, i * 4, this.h[i]);
+        return bytesToHex(out);
+      }
+    }
+
+    class Sha1 extends BufferedHash {
+      constructor() {
+        super(64);
+        this.h = new Uint32Array([0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0]);
+      }
+
+      process(block, offset) {
+        const w = SCRATCH80;
+        for (let i = 0; i < 16; i += 1) w[i] = readU32BE(block, offset + i * 4);
+        for (let i = 16; i < 80; i += 1) w[i] = rotl32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        let a = this.h[0];
+        let b = this.h[1];
+        let c = this.h[2];
+        let d = this.h[3];
+        let e = this.h[4];
+        for (let i = 0; i < 80; i += 1) {
+          let f;
+          let k;
+          if (i < 20) {
+            f = (b & c) | (~b & d);
+            k = 0x5a827999;
+          } else if (i < 40) {
+            f = b ^ c ^ d;
+            k = 0x6ed9eba1;
+          } else if (i < 60) {
+            f = (b & c) | (b & d) | (c & d);
+            k = 0x8f1bbcdc;
+          } else {
+            f = b ^ c ^ d;
+            k = 0xca62c1d6;
+          }
+          const next = (rotl32(a, 5) + f + e + k + w[i]) >>> 0;
+          e = d;
+          d = c;
+          c = rotl32(b, 30);
+          b = a;
+          a = next;
+        }
+        this.h[0] = (this.h[0] + a) >>> 0;
+        this.h[1] = (this.h[1] + b) >>> 0;
+        this.h[2] = (this.h[2] + c) >>> 0;
+        this.h[3] = (this.h[3] + d) >>> 0;
+        this.h[4] = (this.h[4] + e) >>> 0;
+      }
+
+      digest() {
+        this.finish(8, false);
+        const out = new Uint8Array(20);
+        for (let i = 0; i < 5; i += 1) writeU32BE(out, i * 4, this.h[i]);
+        return bytesToHex(out);
+      }
+    }
+
+    const K256 = new Uint32Array('428a2f98 71374491 b5c0fbcf e9b5dba5 3956c25b 59f111f1 923f82a4 ab1c5ed5 d807aa98 12835b01 243185be 550c7dc3 72be5d74 80deb1fe 9bdc06a7 c19bf174 e49b69c1 efbe4786 0fc19dc6 240ca1cc 2de92c6f 4a7484aa 5cb0a9dc 76f988da 983e5152 a831c66d b00327c8 bf597fc7 c6e00bf3 d5a79147 06ca6351 14292967 27b70a85 2e1b2138 4d2c6dfc 53380d13 650a7354 766a0abb 81c2c92e 92722c85 a2bfe8a1 a81a664b c24b8b70 c76c51a3 d192e819 d6990624 f40e3585 106aa070 19a4c116 1e376c08 2748774c 34b0bcb5 391c0cb3 4ed8aa4a 5b9cca4f 682e6ff3 748f82ee 78a5636f 84c87814 8cc70208 90befffa a4506ceb bef9a3f7 c67178f2'.split(' ').map(hex => parseInt(hex, 16)));
+
+    class Sha256 extends BufferedHash {
+      constructor(iv, outBytes) {
+        super(64);
+        this.h = iv;
+        this.outBytes = outBytes;
+      }
+
+      process(block, offset) {
+        const w = SCRATCH64;
+        const h = this.h;
+        for (let i = 0; i < 16; i += 1) w[i] = readU32BE(block, offset + i * 4);
+        for (let i = 16; i < 64; i += 1) {
+          const x = w[i - 15];
+          const y = w[i - 2];
+          const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
+          const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
+          w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
+        }
+        let a = h[0] | 0;
+        let b = h[1] | 0;
+        let c = h[2] | 0;
+        let d = h[3] | 0;
+        let e = h[4] | 0;
+        let f = h[5] | 0;
+        let g = h[6] | 0;
+        let hh = h[7] | 0;
+        for (let i = 0; i < 64; i += 1) {
+          const s1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+          const ch = (e & f) ^ (~e & g);
+          const t1 = (hh + s1 + ch + K256[i] + w[i]) | 0;
+          const s0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+          const maj = (a & b) ^ (a & c) ^ (b & c);
+          const t2 = (s0 + maj) | 0;
+          hh = g;
+          g = f;
+          f = e;
+          e = (d + t1) | 0;
+          d = c;
+          c = b;
+          b = a;
+          a = (t1 + t2) | 0;
+        }
+        h[0] += a;
+        h[1] += b;
+        h[2] += c;
+        h[3] += d;
+        h[4] += e;
+        h[5] += f;
+        h[6] += g;
+        h[7] += hh;
+      }
+
+      digest() {
+        this.finish(8, false);
+        const out = new Uint8Array(this.outBytes);
+        for (let i = 0; i < this.outBytes; i += 1) {
+          out[i] = (this.h[i >> 2] >>> (24 - (i % 4) * 8)) & 255;
+        }
+        return bytesToHex(out);
+      }
+    }
+
+    const K512 = new Uint32Array(160);
+    '428a2f98d728ae22 7137449123ef65cd b5c0fbcfec4d3b2f e9b5dba58189dbbc 3956c25bf348b538 59f111f1b605d019 923f82a4af194f9b ab1c5ed5da6d8118 d807aa98a3030242 12835b0145706fbe 243185be4ee4b28c 550c7dc3d5ffb4e2 72be5d74f27b896f 80deb1fe3b1696b1 9bdc06a725c71235 c19bf174cf692694 e49b69c19ef14ad2 efbe4786384f25e3 0fc19dc68b8cd5b5 240ca1cc77ac9c65 2de92c6f592b0275 4a7484aa6ea6e483 5cb0a9dcbd41fbd4 76f988da831153b5 983e5152ee66dfab a831c66d2db43210 b00327c898fb213f bf597fc7beef0ee4 c6e00bf33da88fc2 d5a79147930aa725 06ca6351e003826f 142929670a0e6e70 27b70a8546d22ffc 2e1b21385c26c926 4d2c6dfc5ac42aed 53380d139d95b3df 650a73548baf63de 766a0abb3c77b2a8 81c2c92e47edaee6 92722c851482353b a2bfe8a14cf10364 a81a664bbc423001 c24b8b70d0f89791 c76c51a30654be30 d192e819d6ef5218 d69906245565a910 f40e35855771202a 106aa07032bbd1b8 19a4c116b8d2d0c8 1e376c085141ab53 2748774cdf8eeb99 34b0bcb5e19b48a8 391c0cb3c5c95a63 4ed8aa4ae3418acb 5b9cca4f7763e373 682e6ff3d6b2b8a3 748f82ee5defb2fc 78a5636f43172f60 84c87814a1f0ab72 8cc702081a6439ec 90befffa23631e28 a4506cebde82bde9 bef9a3f7b2c67915 c67178f2e372532b ca273eceea26619c d186b8c721c0c207 eada7dd6cde0eb1e f57d4f7fee6ed178 06f067aa72176fba 0a637dc5a2c898a6 113f9804bef90dae 1b710b35131c471b 28db77f523047d84 32caab7b40c72493 3c9ebe0a15c9bebc 431d67c49c100d4c 4cc5d4becb3e42b6 597f299cfc657e2a 5fcb6fab3ad6faec 6c44198c4a475817'.split(' ').forEach((hex, index) => {
+      K512[index * 2] = parseInt(hex.slice(0, 8), 16);
+      K512[index * 2 + 1] = parseInt(hex.slice(8), 16);
+    });
+
+    class Sha512 extends BufferedHash {
+      constructor(ivHex, outBytes) {
+        super(128);
+        this.h = new Uint32Array(16);
+        ivHex.forEach((hex, index) => {
+          this.h[index * 2] = parseInt(hex.slice(0, 8), 16);
+          this.h[index * 2 + 1] = parseInt(hex.slice(8), 16);
+        });
+        this.outBytes = outBytes;
+      }
+
+      process(block, offset) {
+        const w = SCRATCH160;
+        const H = this.h;
+        for (let i = 0; i < 32; i += 1) w[i] = readU32BE(block, offset + i * 4);
+        for (let i = 16; i < 80; i += 1) {
+          const j = i * 2;
+          const xh = w[j - 30];
+          const xl = w[j - 29];
+          const yh = w[j - 4];
+          const yl = w[j - 3];
+          const s0h = ((xh >>> 1) | (xl << 31)) ^ ((xh >>> 8) | (xl << 24)) ^ (xh >>> 7);
+          const s0l = ((xl >>> 1) | (xh << 31)) ^ ((xl >>> 8) | (xh << 24)) ^ ((xl >>> 7) | (xh << 25));
+          const s1h = ((yh >>> 19) | (yl << 13)) ^ ((yl >>> 29) | (yh << 3)) ^ (yh >>> 6);
+          const s1l = ((yl >>> 19) | (yh << 13)) ^ ((yh >>> 29) | (yl << 3)) ^ ((yl >>> 6) | (yh << 26));
+          const lo = w[j - 31] + (s0l >>> 0) + w[j - 13] + (s1l >>> 0);
+          const hi = w[j - 32] + (s0h >>> 0) + w[j - 14] + (s1h >>> 0) + ((lo / 4294967296) | 0);
+          w[j] = hi;
+          w[j + 1] = lo;
+        }
+        let ah = H[0];
+        let al = H[1];
+        let bh = H[2];
+        let bl = H[3];
+        let ch = H[4];
+        let cl = H[5];
+        let dh = H[6];
+        let dl = H[7];
+        let eh = H[8];
+        let el = H[9];
+        let fh = H[10];
+        let fl = H[11];
+        let gh = H[12];
+        let gl = H[13];
+        let hh = H[14];
+        let hl = H[15];
+        for (let i = 0; i < 80; i += 1) {
+          const j = i * 2;
+          const S1h = ((eh >>> 14) | (el << 18)) ^ ((eh >>> 18) | (el << 14)) ^ ((el >>> 9) | (eh << 23));
+          const S1l = ((el >>> 14) | (eh << 18)) ^ ((el >>> 18) | (eh << 14)) ^ ((eh >>> 9) | (el << 23));
+          const chh = (eh & fh) ^ (~eh & gh);
+          const chl = (el & fl) ^ (~el & gl);
+          const t1sum = hl + (S1l >>> 0) + (chl >>> 0) + K512[j + 1] + w[j + 1];
+          const t1l = t1sum >>> 0;
+          const t1h = (hh + (S1h >>> 0) + (chh >>> 0) + K512[j] + w[j] + ((t1sum / 4294967296) | 0)) >>> 0;
+          const S0h = ((ah >>> 28) | (al << 4)) ^ ((al >>> 2) | (ah << 30)) ^ ((al >>> 7) | (ah << 25));
+          const S0l = ((al >>> 28) | (ah << 4)) ^ ((ah >>> 2) | (al << 30)) ^ ((ah >>> 7) | (al << 25));
+          const majh = (ah & bh) ^ (ah & ch) ^ (bh & ch);
+          const majl = (al & bl) ^ (al & cl) ^ (bl & cl);
+          const t2sum = (S0l >>> 0) + (majl >>> 0);
+          const t2l = t2sum >>> 0;
+          const t2h = ((S0h >>> 0) + (majh >>> 0) + ((t2sum / 4294967296) | 0)) >>> 0;
+          hh = gh;
+          hl = gl;
+          gh = fh;
+          gl = fl;
+          fh = eh;
+          fl = el;
+          const esum = dl + t1l;
+          el = esum >>> 0;
+          eh = (dh + t1h + ((esum / 4294967296) | 0)) >>> 0;
+          dh = ch;
+          dl = cl;
+          ch = bh;
+          cl = bl;
+          bh = ah;
+          bl = al;
+          const asum = t1l + t2l;
+          al = asum >>> 0;
+          ah = (t1h + t2h + ((asum / 4294967296) | 0)) >>> 0;
+        }
+        let sum = H[1] + al; H[0] = H[0] + ah + ((sum / 4294967296) | 0); H[1] = sum;
+        sum = H[3] + bl; H[2] = H[2] + bh + ((sum / 4294967296) | 0); H[3] = sum;
+        sum = H[5] + cl; H[4] = H[4] + ch + ((sum / 4294967296) | 0); H[5] = sum;
+        sum = H[7] + dl; H[6] = H[6] + dh + ((sum / 4294967296) | 0); H[7] = sum;
+        sum = H[9] + el; H[8] = H[8] + eh + ((sum / 4294967296) | 0); H[9] = sum;
+        sum = H[11] + fl; H[10] = H[10] + fh + ((sum / 4294967296) | 0); H[11] = sum;
+        sum = H[13] + gl; H[12] = H[12] + gh + ((sum / 4294967296) | 0); H[13] = sum;
+        sum = H[15] + hl; H[14] = H[14] + hh + ((sum / 4294967296) | 0); H[15] = sum;
+      }
+
+      digest() {
+        this.finish(16, false);
+        const out = new Uint8Array(this.outBytes);
+        for (let i = 0; i < this.outBytes; i += 1) {
+          out[i] = (this.h[Math.floor(i / 4)] >>> ((3 - (i % 4)) * 8)) & 255;
+        }
+        return bytesToHex(out);
+      }
+    }
+
+    // 状态用 Int32Array 保存：值始终是 32 位整数，比 Uint32Array 里的无符号数快得多。
+    // 每个 64 位 lane 拆成低、高两个 32 位字（state[2i]、state[2i+1]）。
+    const KECCAK_RC = Int32Array.from('0000000000000001 0000000000008082 800000000000808a 8000000080008000 000000000000808b 0000000080000001 8000000080008081 8000000000008009 000000000000008a 0000000000000088 0000000080008009 000000008000000a 000000008000808b 800000000000008b 8000000000008089 8000000000008003 8000000000008002 8000000000000080 000000000000800a 800000008000000a 8000000080008081 8000000000008080 0000000080000001 8000000080008008'.split(' ').flatMap(hex => [parseInt(hex.slice(8), 16), parseInt(hex.slice(0, 8), 16)]));
+
+    // Keccak-f[1600]：24 轮完全展开，lane 都放在局部变量里，避免数组间接访问和循环开销，
+    // 比逐 lane 的循环写法快数倍。ρ 的旋转量和 π 的换位已按标准表写死在代码里。
+    function keccakF(state) {
+      let l0 = state[0], h0 = state[1],
+          l1 = state[2], h1 = state[3],
+          l2 = state[4], h2 = state[5],
+          l3 = state[6], h3 = state[7],
+          l4 = state[8], h4 = state[9],
+          l5 = state[10], h5 = state[11],
+          l6 = state[12], h6 = state[13],
+          l7 = state[14], h7 = state[15],
+          l8 = state[16], h8 = state[17],
+          l9 = state[18], h9 = state[19],
+          l10 = state[20], h10 = state[21],
+          l11 = state[22], h11 = state[23],
+          l12 = state[24], h12 = state[25],
+          l13 = state[26], h13 = state[27],
+          l14 = state[28], h14 = state[29],
+          l15 = state[30], h15 = state[31],
+          l16 = state[32], h16 = state[33],
+          l17 = state[34], h17 = state[35],
+          l18 = state[36], h18 = state[37],
+          l19 = state[38], h19 = state[39],
+          l20 = state[40], h20 = state[41],
+          l21 = state[42], h21 = state[43],
+          l22 = state[44], h22 = state[45],
+          l23 = state[46], h23 = state[47],
+          l24 = state[48], h24 = state[49];
+      for (let round = 0; round < 48; round += 2) {
+        // θ：列奇偶校验 c，再把 d 异或回每个 lane。
+        const c0l = l0 ^ l5 ^ l10 ^ l15 ^ l20;
+        const c0h = h0 ^ h5 ^ h10 ^ h15 ^ h20;
+        const c1l = l1 ^ l6 ^ l11 ^ l16 ^ l21;
+        const c1h = h1 ^ h6 ^ h11 ^ h16 ^ h21;
+        const c2l = l2 ^ l7 ^ l12 ^ l17 ^ l22;
+        const c2h = h2 ^ h7 ^ h12 ^ h17 ^ h22;
+        const c3l = l3 ^ l8 ^ l13 ^ l18 ^ l23;
+        const c3h = h3 ^ h8 ^ h13 ^ h18 ^ h23;
+        const c4l = l4 ^ l9 ^ l14 ^ l19 ^ l24;
+        const c4h = h4 ^ h9 ^ h14 ^ h19 ^ h24;
+        const d0l = c4l ^ ((c1l << 1) | (c1h >>> 31));
+        const d0h = c4h ^ ((c1h << 1) | (c1l >>> 31));
+        const d1l = c0l ^ ((c2l << 1) | (c2h >>> 31));
+        const d1h = c0h ^ ((c2h << 1) | (c2l >>> 31));
+        const d2l = c1l ^ ((c3l << 1) | (c3h >>> 31));
+        const d2h = c1h ^ ((c3h << 1) | (c3l >>> 31));
+        const d3l = c2l ^ ((c4l << 1) | (c4h >>> 31));
+        const d3h = c2h ^ ((c4h << 1) | (c4l >>> 31));
+        const d4l = c3l ^ ((c0l << 1) | (c0h >>> 31));
+        const d4h = c3h ^ ((c0h << 1) | (c0l >>> 31));
+        // ρ 与 π：旋转后搬到新位置（lane 0 不动）。
+        const b0l = l0 ^ d0l, b0h = h0 ^ d0h;
+        const b10l = ((l1 ^ d1l) << 1) | ((h1 ^ d1h) >>> 31);
+        const b10h = ((h1 ^ d1h) << 1) | ((l1 ^ d1l) >>> 31);
+        const b7l = ((l10 ^ d0l) << 3) | ((h10 ^ d0h) >>> 29);
+        const b7h = ((h10 ^ d0h) << 3) | ((l10 ^ d0l) >>> 29);
+        const b11l = ((l7 ^ d2l) << 6) | ((h7 ^ d2h) >>> 26);
+        const b11h = ((h7 ^ d2h) << 6) | ((l7 ^ d2l) >>> 26);
+        const b17l = ((l11 ^ d1l) << 10) | ((h11 ^ d1h) >>> 22);
+        const b17h = ((h11 ^ d1h) << 10) | ((l11 ^ d1l) >>> 22);
+        const b18l = ((l17 ^ d2l) << 15) | ((h17 ^ d2h) >>> 17);
+        const b18h = ((h17 ^ d2h) << 15) | ((l17 ^ d2l) >>> 17);
+        const b3l = ((l18 ^ d3l) << 21) | ((h18 ^ d3h) >>> 11);
+        const b3h = ((h18 ^ d3h) << 21) | ((l18 ^ d3l) >>> 11);
+        const b5l = ((l3 ^ d3l) << 28) | ((h3 ^ d3h) >>> 4);
+        const b5h = ((h3 ^ d3h) << 28) | ((l3 ^ d3l) >>> 4);
+        const b16l = ((h5 ^ d0h) << 4) | ((l5 ^ d0l) >>> 28);
+        const b16h = ((l5 ^ d0l) << 4) | ((h5 ^ d0h) >>> 28);
+        const b8l = ((h16 ^ d1h) << 13) | ((l16 ^ d1l) >>> 19);
+        const b8h = ((l16 ^ d1l) << 13) | ((h16 ^ d1h) >>> 19);
+        const b21l = ((h8 ^ d3h) << 23) | ((l8 ^ d3l) >>> 9);
+        const b21h = ((l8 ^ d3l) << 23) | ((h8 ^ d3h) >>> 9);
+        const b24l = ((l21 ^ d1l) << 2) | ((h21 ^ d1h) >>> 30);
+        const b24h = ((h21 ^ d1h) << 2) | ((l21 ^ d1l) >>> 30);
+        const b4l = ((l24 ^ d4l) << 14) | ((h24 ^ d4h) >>> 18);
+        const b4h = ((h24 ^ d4h) << 14) | ((l24 ^ d4l) >>> 18);
+        const b15l = ((l4 ^ d4l) << 27) | ((h4 ^ d4h) >>> 5);
+        const b15h = ((h4 ^ d4h) << 27) | ((l4 ^ d4l) >>> 5);
+        const b23l = ((h15 ^ d0h) << 9) | ((l15 ^ d0l) >>> 23);
+        const b23h = ((l15 ^ d0l) << 9) | ((h15 ^ d0h) >>> 23);
+        const b19l = ((h23 ^ d3h) << 24) | ((l23 ^ d3l) >>> 8);
+        const b19h = ((l23 ^ d3l) << 24) | ((h23 ^ d3h) >>> 8);
+        const b13l = ((l19 ^ d4l) << 8) | ((h19 ^ d4h) >>> 24);
+        const b13h = ((h19 ^ d4h) << 8) | ((l19 ^ d4l) >>> 24);
+        const b12l = ((l13 ^ d3l) << 25) | ((h13 ^ d3h) >>> 7);
+        const b12h = ((h13 ^ d3h) << 25) | ((l13 ^ d3l) >>> 7);
+        const b2l = ((h12 ^ d2h) << 11) | ((l12 ^ d2l) >>> 21);
+        const b2h = ((l12 ^ d2l) << 11) | ((h12 ^ d2h) >>> 21);
+        const b20l = ((h2 ^ d2h) << 30) | ((l2 ^ d2l) >>> 2);
+        const b20h = ((l2 ^ d2l) << 30) | ((h2 ^ d2h) >>> 2);
+        const b14l = ((l20 ^ d0l) << 18) | ((h20 ^ d0h) >>> 14);
+        const b14h = ((h20 ^ d0h) << 18) | ((l20 ^ d0l) >>> 14);
+        const b22l = ((h14 ^ d4h) << 7) | ((l14 ^ d4l) >>> 25);
+        const b22h = ((l14 ^ d4l) << 7) | ((h14 ^ d4h) >>> 25);
+        const b9l = ((h22 ^ d2h) << 29) | ((l22 ^ d2l) >>> 3);
+        const b9h = ((l22 ^ d2l) << 29) | ((h22 ^ d2h) >>> 3);
+        const b6l = ((l9 ^ d4l) << 20) | ((h9 ^ d4h) >>> 12);
+        const b6h = ((h9 ^ d4h) << 20) | ((l9 ^ d4l) >>> 12);
+        const b1l = ((h6 ^ d1h) << 12) | ((l6 ^ d1l) >>> 20);
+        const b1h = ((l6 ^ d1l) << 12) | ((h6 ^ d1h) >>> 20);
+        // χ：每一行内的非线性混合，ι：加轮常数。
+        l0 = b0l ^ (~b1l & b2l) ^ KECCAK_RC[round];
+        h0 = b0h ^ (~b1h & b2h) ^ KECCAK_RC[round + 1];
+        l1 = b1l ^ (~b2l & b3l);
+        h1 = b1h ^ (~b2h & b3h);
+        l2 = b2l ^ (~b3l & b4l);
+        h2 = b2h ^ (~b3h & b4h);
+        l3 = b3l ^ (~b4l & b0l);
+        h3 = b3h ^ (~b4h & b0h);
+        l4 = b4l ^ (~b0l & b1l);
+        h4 = b4h ^ (~b0h & b1h);
+        l5 = b5l ^ (~b6l & b7l);
+        h5 = b5h ^ (~b6h & b7h);
+        l6 = b6l ^ (~b7l & b8l);
+        h6 = b6h ^ (~b7h & b8h);
+        l7 = b7l ^ (~b8l & b9l);
+        h7 = b7h ^ (~b8h & b9h);
+        l8 = b8l ^ (~b9l & b5l);
+        h8 = b8h ^ (~b9h & b5h);
+        l9 = b9l ^ (~b5l & b6l);
+        h9 = b9h ^ (~b5h & b6h);
+        l10 = b10l ^ (~b11l & b12l);
+        h10 = b10h ^ (~b11h & b12h);
+        l11 = b11l ^ (~b12l & b13l);
+        h11 = b11h ^ (~b12h & b13h);
+        l12 = b12l ^ (~b13l & b14l);
+        h12 = b12h ^ (~b13h & b14h);
+        l13 = b13l ^ (~b14l & b10l);
+        h13 = b13h ^ (~b14h & b10h);
+        l14 = b14l ^ (~b10l & b11l);
+        h14 = b14h ^ (~b10h & b11h);
+        l15 = b15l ^ (~b16l & b17l);
+        h15 = b15h ^ (~b16h & b17h);
+        l16 = b16l ^ (~b17l & b18l);
+        h16 = b16h ^ (~b17h & b18h);
+        l17 = b17l ^ (~b18l & b19l);
+        h17 = b17h ^ (~b18h & b19h);
+        l18 = b18l ^ (~b19l & b15l);
+        h18 = b18h ^ (~b19h & b15h);
+        l19 = b19l ^ (~b15l & b16l);
+        h19 = b19h ^ (~b15h & b16h);
+        l20 = b20l ^ (~b21l & b22l);
+        h20 = b20h ^ (~b21h & b22h);
+        l21 = b21l ^ (~b22l & b23l);
+        h21 = b21h ^ (~b22h & b23h);
+        l22 = b22l ^ (~b23l & b24l);
+        h22 = b22h ^ (~b23h & b24h);
+        l23 = b23l ^ (~b24l & b20l);
+        h23 = b23h ^ (~b24h & b20h);
+        l24 = b24l ^ (~b20l & b21l);
+        h24 = b24h ^ (~b20h & b21h);
+      }
+      state[0] = l0; state[1] = h0;
+      state[2] = l1; state[3] = h1;
+      state[4] = l2; state[5] = h2;
+      state[6] = l3; state[7] = h3;
+      state[8] = l4; state[9] = h4;
+      state[10] = l5; state[11] = h5;
+      state[12] = l6; state[13] = h6;
+      state[14] = l7; state[15] = h7;
+      state[16] = l8; state[17] = h8;
+      state[18] = l9; state[19] = h9;
+      state[20] = l10; state[21] = h10;
+      state[22] = l11; state[23] = h11;
+      state[24] = l12; state[25] = h12;
+      state[26] = l13; state[27] = h13;
+      state[28] = l14; state[29] = h14;
+      state[30] = l15; state[31] = h15;
+      state[32] = l16; state[33] = h16;
+      state[34] = l17; state[35] = h17;
+      state[36] = l18; state[37] = h18;
+      state[38] = l19; state[39] = h19;
+      state[40] = l20; state[41] = h20;
+      state[42] = l21; state[43] = h21;
+      state[44] = l22; state[45] = h22;
+      state[46] = l23; state[47] = h23;
+      state[48] = l24; state[49] = h24;
+    }
+
+    class Sha3 {
+      constructor(rate, outLen) {
+        this.rate = rate;
+        this.outLen = outLen;
+        this.lanes = new Int32Array(50);
+        this.offset = 0;
+      }
+
+      absorbByte(value) {
+        this.lanes[this.offset >> 2] ^= value << ((this.offset & 3) * 8);
+        this.offset += 1;
+        if (this.offset === this.rate) {
+          keccakF(this.lanes);
+          this.offset = 0;
+        }
+      }
+
+      update(data) {
+        const length = data.length;
+        let i = 0;
+        while (i < length && (this.offset & 3)) {
+          this.absorbByte(data[i]);
+          i += 1;
+        }
+        // 速率是 4 的倍数，对齐之后可以整字吸收。
+        while (i + 4 <= length) {
+          this.lanes[this.offset >> 2] ^= data[i] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24);
+          this.offset += 4;
+          if (this.offset === this.rate) {
+            keccakF(this.lanes);
+            this.offset = 0;
+          }
+          i += 4;
+        }
+        while (i < length) {
+          this.absorbByte(data[i]);
+          i += 1;
+        }
+        return this;
+      }
+
+      digest() {
+        this.lanes[this.offset >> 2] ^= 0x06 << ((this.offset & 3) * 8);
+        this.lanes[(this.rate - 1) >> 2] ^= 0x80 << (((this.rate - 1) & 3) * 8);
+        keccakF(this.lanes);
+        const out = new Uint8Array(this.outLen);
+        for (let i = 0; i < this.outLen; i += 1) out[i] = this.lanes[i >> 2] >>> ((i & 3) * 8);
+        return bytesToHex(out);
+      }
+    }
+
+    const RIPEMD_IL = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 7, 4, 13, 1, 10, 6, 15, 3, 12, 0, 9, 5, 2, 14, 11, 8, 3, 10, 14, 4, 9, 15, 8, 1, 2, 7, 0, 6, 13, 11, 5, 12, 1, 9, 11, 10, 0, 8, 12, 4, 13, 3, 7, 15, 14, 5, 6, 2, 4, 0, 5, 9, 7, 12, 2, 10, 14, 1, 3, 8, 11, 6, 15, 13];
+    const RIPEMD_IR = [5, 14, 7, 0, 9, 2, 11, 4, 13, 6, 15, 8, 1, 10, 3, 12, 6, 11, 3, 7, 0, 13, 5, 10, 14, 15, 8, 12, 4, 9, 1, 2, 15, 5, 1, 3, 7, 14, 6, 9, 11, 8, 12, 2, 10, 0, 4, 13, 8, 6, 4, 1, 3, 11, 15, 0, 5, 12, 2, 13, 9, 7, 10, 14, 12, 15, 10, 4, 1, 5, 8, 7, 6, 2, 13, 14, 0, 3, 9, 11];
+    const RIPEMD_SL = [11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8, 7, 6, 8, 13, 11, 9, 7, 15, 7, 12, 15, 9, 11, 7, 13, 12, 11, 13, 6, 7, 14, 9, 13, 15, 14, 8, 13, 6, 5, 12, 7, 5, 11, 12, 14, 15, 14, 15, 9, 8, 9, 14, 5, 6, 8, 6, 5, 12, 9, 15, 5, 11, 6, 8, 13, 12, 5, 12, 13, 14, 11, 8, 5, 6];
+    const RIPEMD_SR = [8, 9, 9, 11, 13, 15, 15, 5, 7, 7, 8, 11, 14, 14, 12, 6, 9, 13, 15, 7, 12, 8, 9, 11, 7, 7, 12, 7, 6, 15, 13, 11, 9, 7, 15, 11, 8, 6, 6, 14, 12, 13, 5, 14, 13, 13, 7, 5, 15, 5, 8, 11, 14, 14, 6, 14, 6, 9, 12, 9, 12, 5, 15, 8, 8, 5, 12, 9, 12, 5, 14, 6, 8, 13, 6, 5, 15, 13, 11, 11];
+    const RIPEMD_KL = Uint32Array.of(0x00000000, 0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xa953fd4e);
+    const RIPEMD_KR = Uint32Array.of(0x50a28be6, 0x5c4dd124, 0x6d703ef3, 0x7a6d76e9, 0x00000000);
+    function ripemdF(round, b, c, d) {
+      switch (round) {
+        case 0: return b ^ c ^ d;
+        case 1: return (b & c) | (~b & d);
+        case 2: return (b | ~c) ^ d;
+        case 3: return (b & d) | (c & ~d);
+        default: return b ^ (c | ~d);
+      }
+    }
+
+    class Ripemd160 extends BufferedHash {
+      constructor() {
+        super(64);
+        this.h = new Uint32Array([0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0]);
+      }
+
+      process(block, offset) {
+        const w = SCRATCH16;
+        for (let i = 0; i < 16; i += 1) w[i] = readU32LE(block, offset + i * 4);
+        let al = this.h[0];
+        let bl = this.h[1];
+        let cl = this.h[2];
+        let dl = this.h[3];
+        let el = this.h[4];
+        let ar = al;
+        let br = bl;
+        let cr = cl;
+        let dr = dl;
+        let er = el;
+        for (let i = 0; i < 80; i += 1) {
+          const round = i >> 4;
+          const tl = (al + ripemdF(round, bl, cl, dl) + w[RIPEMD_IL[i]] + RIPEMD_KL[round]) >>> 0;
+          const nal = (rotl32(tl, RIPEMD_SL[i]) + el) >>> 0;
+          al = el;
+          el = dl;
+          dl = rotl32(cl, 10);
+          cl = bl;
+          bl = nal;
+          const tr = (ar + ripemdF(4 - round, br, cr, dr) + w[RIPEMD_IR[i]] + RIPEMD_KR[round]) >>> 0;
+          const nar = (rotl32(tr, RIPEMD_SR[i]) + er) >>> 0;
+          ar = er;
+          er = dr;
+          dr = rotl32(cr, 10);
+          cr = br;
+          br = nar;
+        }
+        const t = (this.h[1] + cl + dr) >>> 0;
+        this.h[1] = (this.h[2] + dl + er) >>> 0;
+        this.h[2] = (this.h[3] + el + ar) >>> 0;
+        this.h[3] = (this.h[4] + al + br) >>> 0;
+        this.h[4] = (this.h[0] + bl + cr) >>> 0;
+        this.h[0] = t;
+      }
+
+      digest() {
+        this.finish(8, true);
+        const out = new Uint8Array(20);
+        for (let i = 0; i < 5; i += 1) writeU32LE(out, i * 4, this.h[i]);
+        return bytesToHex(out);
+      }
+    }
+
+    // 切片查表（slicing-by-8）：CRC_TABLE 依次存放 8 张 256 项的表，第 k 张表等于把一个字节再往后推进 k 个字节，
+    // 每轮一次处理 8 个字节，比逐字节查表快一倍左右。值存在 Int32Array 里，运算全程停留在 32 位整数上。
+    const CRC_TABLE = (() => {
+      const table = new Int32Array(256 * 8);
+      for (let i = 0; i < 256; i += 1) {
+        let c = i;
+        for (let bit = 0; bit < 8; bit += 1) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        table[i] = c;
+      }
+      for (let i = 256; i < table.length; i += 1) {
+        const previous = table[i - 256];
+        table[i] = table[previous & 255] ^ (previous >>> 8);
+      }
+      return table;
+    })();
+
+    class Crc32 {
+      constructor() {
+        this.crc = -1;
+      }
+
+      update(data) {
+        const table = CRC_TABLE;
+        const length = data.length;
+        let c = this.crc;
+        let i = 0;
+        for (; i + 8 <= length; i += 8) {
+          const word = c ^ (data[i] | (data[i + 1] << 8) | (data[i + 2] << 16) | (data[i + 3] << 24));
+          c = table[1792 + (word & 255)] ^ table[1536 + ((word >>> 8) & 255)] ^
+            table[1280 + ((word >>> 16) & 255)] ^ table[1024 + (word >>> 24)] ^
+            table[768 + data[i + 4]] ^ table[512 + data[i + 5]] ^ table[256 + data[i + 6]] ^ table[data[i + 7]];
+        }
+        for (; i < length; i += 1) c = table[(c ^ data[i]) & 255] ^ (c >>> 8);
+        this.crc = c;
+        return this;
+      }
+
+      digest() {
+        return (~this.crc >>> 0).toString(16).padStart(8, '0');
+      }
+    }
+
+    function createHasher(id) {
+      switch (id) {
+        case 'MD5': return new Md5();
+        case 'SHA-1': return new Sha1();
+        case 'SHA-224': return new Sha256(new Uint32Array([0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939, 0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4]), 28);
+        case 'SHA-256': return new Sha256(new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]), 32);
+        case 'SHA-384': return new Sha512(['cbbb9d5dc1059ed8', '629a292a367cd507', '9159015a3070dd17', '152fecd8f70e5939', '67332667ffc00b31', '8eb44a8768581511', 'db0c2e0d64f98fa7', '47b5481dbefa4fa4'], 48);
+        case 'SHA-512': return new Sha512(['6a09e667f3bcc908', 'bb67ae8584caa73b', '3c6ef372fe94f82b', 'a54ff53a5f1d36f1', '510e527fade682d1', '9b05688c2b3e6c1f', '1f83d9abfb41bd6b', '5be0cd19137e2179'], 64);
+        case 'SHA-512/224': return new Sha512(['8c3d37c819544da2', '73e1996689dcd4d6', '1dfab7ae32ff9c82', '679dd514582f9fcf', '0f6d2b697bd44da8', '77e36f7304c48942', '3f9d85a86a1d36c8', '1112e6ad91d692a1'], 28);
+        case 'SHA-512/256': return new Sha512(['22312194fc2bf72c', '9f555fa3c84c64c2', '2393b86b6f53b151', '963877195940eabd', '96283ee2a88effe3', 'be5e1e2553863992', '2b0199fc2c85b8aa', '0eb72ddc81c52ca2'], 32);
+        case 'SHA3-224': return new Sha3(144, 28);
+        case 'SHA3-256': return new Sha3(136, 32);
+        case 'SHA3-384': return new Sha3(104, 48);
+        case 'SHA3-512': return new Sha3(72, 64);
+        case 'RIPEMD-160': return new Ripemd160();
+        case 'CRC32': return new Crc32();
+        default: throw new Error(`Unknown algorithm: ${id}`);
+      }
+    }
+
+    function digestBytes(id, bytes) {
+      const hasher = createHasher(id);
+      const step = 1024 * 1024;
+      for (let offset = 0; offset < bytes.length; offset += step) hasher.update(bytes.subarray(offset, offset + step));
+      return hasher.digest();
+    }
+
+    function hexEqual(left, right) {
+      if (left.length !== right.length) return false;
+      let diff = 0;
+      for (let i = 0; i < left.length; i += 1) diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
+      return diff === 0;
+    }
+
+    function firstDifference(left, right) {
+      const length = Math.min(left.length, right.length);
+      for (let i = 0; i < length; i += 1) if (left[i] !== right[i]) return i + 1;
+      return length + 1;
+    }
+
+    function canonicalAlgorithm(token) {
+      // FreeBSD 把 SHA-512/256 写作 SHA512t256，去掉中间的 t 再查表。
+      const key = token.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^(sha2?512)t/, '$1');
+      return {
+        md5: 'MD5',
+        sha1: 'SHA-1',
+        sha224: 'SHA-224',
+        sha256: 'SHA-256',
+        sha384: 'SHA-384',
+        sha512: 'SHA-512',
+        sha512224: 'SHA-512/224',
+        sha512256: 'SHA-512/256',
+        sha2224: 'SHA-224',
+        sha2256: 'SHA-256',
+        sha2384: 'SHA-384',
+        sha2512: 'SHA-512',
+        sha2512224: 'SHA-512/224',
+        sha2512256: 'SHA-512/256',
+        sha3224: 'SHA3-224',
+        sha3256: 'SHA3-256',
+        sha3384: 'SHA3-384',
+        sha3512: 'SHA3-512',
+        ripemd160: 'RIPEMD-160',
+        rmd160: 'RIPEMD-160',
+        crc32: 'CRC32'
+      }[key] || null;
+    }
+
+    function algorithmsForLength(length) {
+      return ALGORITHMS.filter(item => item.bits / 4 === length);
+    }
+
+    function hexTokens(line) {
+      // 不用后行断言：Safari 16.4 之前不支持，正则字面量会让整段脚本解析失败、页面完全不可用。
+      const text = line.replace(/(^|[^a-z0-9_])0x(?=[0-9a-f])/gi, '$1');
+      const found = [...text.matchAll(/[0-9a-fA-F]+/g)].filter(item => {
+        const before = item.index > 0 ? text[item.index - 1] : '';
+        const after = text.slice(item.index + item[0].length);
+        return !/[g-z./\\]/i.test(before) && !/^(?:[g-z/\\]|\.[a-z0-9])/i.test(after);
+      });
+      const tokens = found.map(item => item[0].toLowerCase());
+      // 输入框每次改动都要重新解析，下面的双重循环会反复用到分隔符、相邻关系和分组判断，
+      // 这里一次算好，免得挤满短片段的行反复切片、逐个比较而拖慢页面。
+      const seps = tokens.slice(1).map((token, i) => text.slice(found[i].index + found[i][0].length, found[i + 1].index));
+      // 两个片段之间只隔着空白或常见分隔符（分隔符两侧可以带空白）时才算同一个哈希的相邻分组。
+      // 裸的 sha256sum 行已先被 splitChecksumLine 拆掉文件名，走到这里的连续空白按分组处理，不会把文件名拼进来。
+      const adjacency = seps.map(value => /^(?:\s+|\s*[:\-_,，：]\s*)$/.test(value));
+      // 分组书写的哈希（如 8 位一组）各组等长，仅最后一组可以更短；
+      // 文件名里恰好由十六进制字符组成的片段不满足这一点，不能被拼进哈希。
+      // sameRun[i] 是从第 i 段起连续等长的段数，判断 tokens[start..end] 能否成组只需常数时间。
+      const sameRun = tokens.map(() => 1);
+      for (let i = tokens.length - 2; i >= 0; i -= 1) {
+        if (tokens[i + 1].length === tokens[i].length) sameRun[i] = sameRun[i + 1] + 1;
+      }
+      const grouped = (start, end) => end === start ||
+        (tokens[start].length <= 16 && sameRun[start] >= end - start && tokens[end].length <= tokens[start].length);
+      return {tokens, sep: i => seps[i], adjacent: i => adjacency[i], grouped};
+    }
+
+    // 在所有“连续成组”的片段里挑哈希：标签（如 Hash:）或文件名里零散的十六进制字符，
+    // 既不会被拼进哈希，也不会让分组书写的哈希被误认成其中某一组。
+    function extractHex(line, expectedLength, parsed = hexTokens(line)) {
+      const {tokens, sep, adjacent, grouped} = parsed;
+      let best = '';
+      let bestExact = false;
+      let bestScore = -1;
+      for (let start = 0; start < tokens.length; start += 1) {
+        let joined = '';
+        for (let end = start; end < tokens.length; end += 1) {
+          if (end > start && (!adjacent(end - 1) || sep(end - 1) !== sep(start) || tokens[start].length < 2)) break;
+          joined += tokens[end];
+          if (joined.length > 128 || !grouped(start, end)) break;
+          // 同一串分组哈希还没结束时不提前截断，免得把少写一位的 63 位分组哈希拆成前 56 位。
+          if (tokens[start].length <= 16 && end + 1 < tokens.length && adjacent(end) && (end === start || sep(end) === sep(start)) && grouped(start, end + 1)) continue;
+          if (start > 0 && tokens[start].length <= 16 && adjacent(start - 1) && tokens[start - 1].length >= 2 && tokens[start - 1].length <= 16 && (end > start ? sep(start - 1) === sep(start) : !/[:：]/.test(sep(start - 1)))) continue;
+          if (!HASH_LENGTHS.has(joined.length)) continue;
+          const exact = joined.length === expectedLength;
+          const score = exact ? end - start : joined.length;
+          if ((exact && !bestExact) || (exact === bestExact && score > bestScore)) {
+            best = joined;
+            bestExact = exact;
+            bestScore = score;
+          }
+        }
+      }
+      return best;
+    }
+
+    function longestHexRun(line, parsed = hexTokens(line)) {
+      const {tokens, sep, adjacent} = parsed;
+      let max = 0;
+      for (let start = 0; start < tokens.length; start += 1) {
+        let len = 0;
+        for (let end = start; end < tokens.length; end += 1) {
+          if (end > start && (!adjacent(end - 1) || sep(end - 1) !== sep(start) || tokens[start].length < 2 || tokens[end].length < 2 || tokens[end].length > 16)) break;
+          len += tokens[end].length;
+          max = Math.max(max, len);
+          if (tokens[start].length > 16) break;
+        }
+      }
+      return max;
+    }
+
+    // 真正的校验行不会很长；输入框每次改动都要重新解析，超长的行（比如误粘贴了整个文件）直接当作无法识别，
+    // 免得在上面反复扫描拖慢页面。同一行也只看前几个算法名。
+    const MAX_LINE_LENGTH = 2048;
+    const MAX_NAMES_PER_LINE = 8;
+
+    // 连字符也可以写成下划线（Python hashlib 的 sha3_256、sha512_256），FreeBSD 则把 SHA-512/256 写作 SHA512t256。
+    const NAME_PATTERN = /sha[-_]?(?:2[-_]?)?512[/_t-]?(?:224|256)|sha[-_]?[23][-_]?(?:224|256|384|512)|sha[-_]?(?:224|256|384|512|1)|ripemd[-_]?160|rmd[-_]?160|crc[-_]?32|md[-_]?5/gi;
+
+    // 紧跟在字母、数字、点或斜杠之后的名字多半是文件名的一部分（如 app.md5），
+    // 后面直接接扩展名、下划线、斜杠或其它字母数字的名字同理（如 sha256.txt、sha256sum.txt），都不当作算法标记。
+    function findAlgorithmNames(line, pattern = NAME_PATTERN) {
+      return [...line.matchAll(pattern)].filter(found => {
+        if (found.index > 0) {
+          const before = line[found.index - 1];
+          if (/[a-z0-9._/\\]/i.test(before)) return false;
+          // 紧贴单个连字符的名字多半是文件名的一部分（如 app-md5.iso），但命令行选项（--sha256）不是。
+          if (before === '-' && found.index > 1 && /[a-z0-9._/\\]/i.test(line[found.index - 2])) return false;
+        }
+        const after = line.slice(found.index + found[0].length).replace(/^sum(?![a-z0-9._/\\-])/i, '');
+        return !/^[a-z0-9._/\\]/i.test(after);
+      });
+    }
+
+    // SRI（sha256-…）和 openssl、coreutils 的 --base64 输出使用 Base64 编码的摘要，这里转成十六进制。
+    function extractBase64(text, byteLength) {
+      const padded = Math.ceil(byteLength / 3) * 4;
+      const unpadded = Math.ceil(byteLength * 4 / 3);
+      for (const token of text.match(/[A-Za-z0-9+/_=-]+/g) || []) {
+        for (const candidate of new Set([token, token.replace(/^[-=]/, ''), token.replace(/^[-=]+/, '')])) {
+          const body = candidate.replace(/=+$/, '');
+          if (candidate.length !== padded && candidate.length !== unpadded) continue;
+          if (body.length !== unpadded || /^[0-9a-f]+$/i.test(body) || /[^A-Za-z0-9+/_-]/.test(body)) continue;
+          if (/[+/]/.test(body) && /[-_]/.test(body)) continue;
+          if (candidate.length !== body.length && candidate.length !== padded) continue;
+          try {
+            const normalized = body.replace(/-/g, '+').replace(/_/g, '/');
+            const raw = atob(normalized.padEnd(padded, '='));
+            if (raw.length !== byteLength || btoa(raw).replace(/=+$/, '') !== normalized) continue;
+            return bytesToHex(Uint8Array.from(raw, char => char.charCodeAt(0)));
+          } catch (error) {
+            // 不是合法的 Base64，继续找下一个片段。
+          }
+        }
+      }
+      return '';
+    }
+
+    // 从 sha256sum（“哈希  文件名”“哈希 *文件名”）和 BSD（“SHA256 (文件名) = 哈希”）的输出里拆出文件名，
+    // 既让整份校验清单只比对当前文件，也避免括号或末尾的文件名干扰算法和哈希识别。
+    // 文件名含反斜杠或换行时，coreutils 会转义文件名并在行首加一个反斜杠（两种格式都会）：
+    // 这种行认不出文件名，去掉行首的反斜杠后照常参与比对。
+    function splitChecksumLine(line) {
+      const escaped = line.startsWith('\\');
+      const text = escaped ? line.slice(1) : line;
+      const baseName = name => (escaped ? '' : name.trim().split(/[\\/]/).pop());
+      const bsd = text.match(/^([A-Za-z][\w/-]*)\s*\((.+)\)\s*=\s*(\S.*)$/);
+      if (bsd) return {content: `${bsd[1]} = ${bsd[3]}`, file: baseName(bsd[2])};
+      const sum = text.match(/^((?:\w+sum\s+)?([0-9a-fA-F]{8,128}))(?: [ *])(.+)$/);
+      if (sum && HASH_LENGTHS.has(sum[2].length)) return {content: sum[1], file: baseName(sum[3])};
+      // 不少脚本和表格只用一个空格或制表符分隔哈希与文件名（如 Python 的 print、电子表格粘贴）。
+      // 只有余下部分带扩展名或路径分隔符、明显是文件名时才这样拆，免得把分组哈希的后续片段当成文件名。
+      const spaced = text.match(/^((?:\w+sum\s+)?([0-9a-fA-F]{32,128}))[ \t]+(\S.*)$/);
+      if (spaced && HASH_LENGTHS.has(spaced[2].length) && /[./\\]/.test(spaced[3])) return {content: spaced[1], file: baseName(spaced[3])};
+      return {content: line, file: ''};
+    }
+
+    // 网页上复制的哈希常用不换行空格、全角空格分组，或夹带零宽字符；macOS 上的文件名还可能是 NFD 形式。
+    // 预期值和当前文件名都先按同样的规则规范化，再识别、比较。
+    function normalizeText(text) {
+      return text.normalize('NFC').replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, ' ');
+    }
+
+    // 清单里有一行写明了当前文件的名字时，带有其他文件名的行不属于这个文件，不参与比对。
+    function entriesForFile(entries, fileName) {
+      const name = fileName ? normalizeText(fileName) : '';
+      if (!name || !entries.some(entry => entry.file === name)) return {entries, ignored: 0};
+      const kept = entries.filter(entry => !entry.file || entry.file === name);
+      return {entries: kept, ignored: entries.length - kept.length};
+    }
+
+    // Hashroom 算不了、却常见于校验清单的算法名（pkgsrc 的 distinfo、openssl dgst、cksum -a 等的输出，
+    // 以及连命令名一起粘贴的 b2sum/b3sum、xxhsum）。
+    // 标着这些名字的摘要不能按长度去猜：BLAKE2s、BLAKE3、SM3、Keccak-256 等与 SHA-256 等长，硬比只会误报“不一致”。
+    const UNSUPPORTED_PATTERN = /blake[-_]?[23][a-z]*(?:[-_]?[0-9]+)?|b[23]sum|sm-?3|shake-?(?:128|256)|keccak[-_]?(?:224|256|384|512)|hmac(?:[-_]?(?:sha[-_]?(?:[23][-_]?)?(?:512(?:[/_t-]?(?:224|256))?|224|256|384|1)|md[-_]?[245]|ripemd[-_]?160|sm-?3))?|md-?[24]|ripemd-?(?:128|256|320)|whirlpool|streebog(?:-?[0-9]+)?|skein(?:-?[0-9]+)?|xxh(?:ash)?(?:[-_]?[0-9]+)*(?:bits?)?|adler-?32|crc-?32c/gi;
+
+    function parseExpected(raw) {
+      const lines = normalizeText(raw).split(/\r\n?|[\n\u2028\u2029]/).map(line => line.trim()).filter(Boolean);
+      if (!lines.length) return {entries: [], invalid: false};
+      const entries = [];
+      const unsupported = [];
+      let invalidLines = 0;
+      let unsupportedLines = 0;
+      let strayLength = 0;
+      lines.forEach(line => {
+        if (line.length > MAX_LINE_LENGTH) {
+          invalidLines += 1;
+          return;
+        }
+        const {content, file} = splitChecksumLine(line);
+        let algorithm = null;
+        let hex = '';
+        for (const found of findAlgorithmNames(content).slice(0, MAX_NAMES_PER_LINE)) {
+          const id = canonicalAlgorithm(found[0]);
+          const length = ALGORITHMS.find(item => item.id === id).bits / 4;
+          const after = content.slice(found.index + found[0].length);
+          const rest = `${content.slice(0, found.index)} ${after}`;
+          let value = after.startsWith('-') ? '' : extractHex(rest, length);
+          if (value.length !== length && id !== 'CRC32') value = extractBase64(after.startsWith('-') ? after : rest, length / 2) || value;
+          if (!algorithm) {
+            algorithm = id;
+            hex = value;
+          }
+          if (value.length === length) {
+            algorithm = id;
+            hex = value;
+            break;
+          }
+        }
+        // 名字对应的长度与读到的哈希不符（如 sha1sum 输出里的文件名 sha256-notes.txt，或标签写错），
+        // 这个名字就不是算法标记，改按长度判断，免得给哈希贴上错误的算法。
+        if (algorithm && hex.length !== ALGORITHMS.find(item => item.id === algorithm).bits / 4) algorithm = null;
+        // 没有可用的算法标记、却标着不支持的算法：这一行不参与比对。名字后面紧跟连字符的多半是文件名（blake3-notes.txt）。
+        // HMAC 例外：“HMAC SHA256: …”“SHA256 HMAC: …”里的 SHA256 会被认成算法标记，但带密钥的摘要与文件的 SHA-256 不可能一致。
+        const foreign = findAlgorithmNames(content, UNSUPPORTED_PATTERN).find(found => content[found.index + found[0].length] !== '-' && (!algorithm || /^hmac/i.test(found[0])));
+        if (foreign) {
+          invalidLines += 1;
+          unsupportedLines += 1;
+          if (!unsupported.some(name => name.toLowerCase() === foreign[0].toLowerCase())) unsupported.push(foreign[0]);
+          return;
+        }
+        let parsedHex;
+        if (!algorithm && !HASH_LENGTHS.has(hex.length)) {
+          parsedHex = hexTokens(content);
+          hex = extractHex(content, 0, parsedHex);
+        }
+        if (!hex || !HASH_LENGTHS.has(hex.length)) {
+          invalidLines += 1;
+          // 记下最长的一段十六进制，复制不完整的哈希可以据此给出提示。
+          strayLength = Math.max(strayLength, longestHexRun(content, parsedHex));
+          return;
+        }
+        entries.push({algorithm, hex, raw: line, file});
+      });
+      return {entries, invalid: invalidLines > 0 && !entries.length, partialInvalid: invalidLines > 0 && entries.length > 0, invalidLines, unsupportedLines, strayLength, unsupported};
+    }
+
+    function entryTargets(entry, algorithm, hex) {
+      if (entry.algorithm) return entry.algorithm === algorithm;
+      return entry.hex.length === hex.length;
+    }
+
+    function rowComparison(result) {
+      let verdict = null;
+      for (const entry of expectedEntries) {
+        if (!entryTargets(entry, result.algorithm, result.hex)) continue;
+        if (hexEqual(entry.hex, result.hex)) return 'match';
+        // 未标注算法的预期值只要被同长度的另一种算法命中，这一行就不算不一致。
+        if (!entry.algorithm && currentResults.some(other => other !== result && other.hex.length === entry.hex.length && hexEqual(other.hex, entry.hex))) continue;
+        verdict = 'mismatch';
+      }
+      return verdict;
+    }
+
+    function candidateAlgorithms() {
+      const ids = new Set();
+      expectedEntries.forEach(entry => {
+        if (entry.algorithm) ids.add(entry.algorithm);
+        // 未标注算法的预期值一旦被某个结果命中，就不必再建议同长度的其他算法。
+        else if (!currentResults.some(result => hexEqual(result.hex, entry.hex))) algorithmsForLength(entry.hex.length).forEach(item => ids.add(item.id));
+      });
+      return [...ids];
+    }
+
+    function missingCandidates() {
+      const selected = new Set(selectedAlgorithms());
+      const disabled = new Set(algorithmInputs.filter(input => input.disabled).map(input => input.value));
+      return candidateAlgorithms().filter(id => !selected.has(id) && !disabled.has(id));
+    }
+
+    function describeCandidates(ids) {
+      return ids.join('、');
+    }
+
+    // Element.replaceChildren() 要到 Safari 14、Chrome 86 才有，旧浏览器里调用会让整个界面渲染失败。
+    function replaceChildren(element, ...nodes) {
+      element.textContent = '';
+      element.append(...nodes);
+    }
+
+    function renderBanner(kind, title, detail) {
+      compareBanner.hidden = false;
+      compareBanner.className = `compare-banner is-${kind}`;
+      replaceChildren(compareBanner);
+      const icon = document.createElement('span');
+      icon.className = 'banner-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = kind === 'match' ? iconMarkup.check : kind === 'info' ? iconMarkup.hash : iconMarkup.error;
+      const copy = document.createElement('div');
+      copy.className = 'banner-copy';
+      const heading = document.createElement('strong');
+      heading.textContent = title;
+      const text = document.createElement('span');
+      text.textContent = detail;
+      copy.append(heading, text);
+      compareBanner.append(icon, copy);
+    }
+
+    function updateComparison() {
+      const parsed = parseExpected(expectedInput.value);
+      const scoped = entriesForFile(parsed.entries, selectedFile && selectedFile.name);
+      expectedEntries = scoped.entries;
+      expectedInvalid = parsed.invalid;
+      clearExpected.disabled = !expectedInput.value;
+      const missing = missingCandidates();
+      applySuggested.hidden = !expectedEntries.length || !missing.length;
+      applySuggested.textContent = selectedAlgorithms().length ? '补选可能的算法' : '选择这些算法';
+
+      // 只含零宽字符之类的输入解析不出任何一行，同样按没有填写处理。
+      if (!parsed.entries.length && !parsed.invalid) {
+        compareBanner.hidden = true;
+        compareHint.textContent = '计算完成后会自动比对，忽略大小写和分隔符。';
+        return;
+      }
+      if (parsed.invalid) {
+        if (parsed.unsupported.length) {
+          const names = parsed.unsupported.join('、');
+          compareHint.textContent = `预期值标注的算法是 ${names}。`;
+          renderBanner('invalid', '不支持的算法', `这里无法计算 ${names}，请换用上面所列算法的校验值。`);
+          return;
+        }
+        // 长度只差几位多半是复制不完整，直接告诉用户读到了多少位。
+        if (parsed.strayLength > 8) {
+          const lengths = [...HASH_LENGTHS].sort((a, b) => a - b).join('、');
+          compareHint.textContent = `识别到 ${parsed.strayLength} 位十六进制，不是支持的摘要长度。`;
+          renderBanner('invalid', '哈希长度不对', `支持的长度为 ${lengths} 位，请检查是否复制完整。`);
+          return;
+        }
+        compareHint.textContent = '未识别到有效哈希。';
+        renderBanner('invalid', '无法识别预期值', '请粘贴十六进制哈希，可以带算法名称、空格或冒号。');
+        return;
+      }
+
+      const named = [...new Set(expectedEntries.map(entry => entry.algorithm).filter(Boolean))];
+      const unnamed = expectedEntries.filter(entry => !entry.algorithm);
+      const unnamedLengths = [...new Set(unnamed.map(entry => entry.hex.length))];
+      const lengthNames = [...new Set(unnamed.flatMap(entry => algorithmsForLength(entry.hex.length).map(item => item.id)))];
+      let hint = named.length ? `已识别 ${named.join('、')}` : `已识别 ${unnamedLengths.join('、')} 位十六进制`;
+      if (named.length && unnamedLengths.length) hint += ` 及 ${unnamedLengths.join('、')} 位十六进制`;
+      if (lengthNames.length) hint += `，可能是 ${lengthNames.join('、')}`;
+      // 混着支持与不支持算法的清单（如 pkgsrc 的 distinfo）也要说明哪些算法没算。
+      if (parsed.unsupported.length) hint += `。${parsed.unsupported.join('、')} 无法计算，已忽略`;
+      // 不支持算法的行已经在上面说明过，这里只数其余无法识别的行，免得同一行被说两遍。
+      const otherInvalid = parsed.invalidLines - parsed.unsupportedLines;
+      if (parsed.partialInvalid && otherInvalid > 0) hint += `。${parsed.unsupported.length ? '另有' : '有'} ${otherInvalid} 行无法识别，已忽略`;
+      if (scoped.ignored) hint += `。已忽略 ${scoped.ignored} 条属于其他文件的校验值`;
+      compareHint.textContent = `${hint}。`;
+
+      if (!currentResults.length) {
+        renderBanner('info', '等待计算结果', missing.length ? `还需要计算 ${describeCandidates(missing)}。` : '计算完成后会自动比对。');
+        return;
+      }
+
+      const matched = [];
+      const mismatched = [];
+      const pending = [];
+      // 与每一行的判定保持一致：某个结果只要被任意一条预期值命中就算一致，同一算法其余没命中的条目
+      // （如文件被浏览器改名后，整份清单里其他文件的行）不再让横幅和状态栏报“不一致”。
+      const verdicts = new Map(currentResults.map(result => [result, rowComparison(result)]));
+      const unmatchedTargets = entry => {
+        const targets = currentResults.filter(result => entryTargets(entry, result.algorithm, result.hex));
+        if (targets.some(result => hexEqual(result.hex, entry.hex))) return [];
+        return targets.filter(result => verdicts.get(result) === 'mismatch');
+      };
+      expectedEntries.forEach(entry => {
+        const targets = currentResults.filter(result => entryTargets(entry, result.algorithm, result.hex));
+        if (!targets.length) {
+          const label = entry.algorithm || `${entry.hex.length} 位哈希`;
+          if (!pending.includes(label)) pending.push(label);
+          return;
+        }
+        const hit = targets.find(result => hexEqual(result.hex, entry.hex));
+        if (hit) {
+          if (!matched.includes(hit.algorithm)) matched.push(hit.algorithm);
+          return;
+        }
+        const missed = unmatchedTargets(entry);
+        const mismatchLabel = entry.algorithm || missed.map(result => result.algorithm).join(' / ');
+        if (missed.length && !mismatched.includes(mismatchLabel)) mismatched.push(mismatchLabel);
+      });
+
+      if (mismatched.length) {
+        const first = expectedEntries.find(entry => unmatchedTargets(entry).length);
+        const target = unmatchedTargets(first).find(result => result.hex.length === first.hex.length);
+        // 横幅开头已经点名了这一条没匹配的算法（预期值写明了算法，或只有一个候选算法）时，
+        // 不必再重复“与 SHA-256”；只有开头列的是“A / B”这类多个候选时，才需要说明比的是哪一个。
+        const firstMissed = target ? unmatchedTargets(first) : [];
+        const covered = target && (first.algorithm === target.algorithm || (!first.algorithm && firstMissed.length === 1));
+        const compared = target && !covered ? `与 ${target.algorithm} ` : '';
+        const where = target ? `，${compared}从第 ${firstDifference(first.hex, target.hex)} 位开始不同` : '';
+        renderBanner('mismatch', '校验值不一致', `${mismatched.join('、')} 没有匹配${where}。`);
+        return;
+      }
+      if (pending.length && !matched.length) {
+        renderBanner('info', '还没有可比对的结果', `请计算 ${describeCandidates(missing.length ? missing : pending)}。`);
+        return;
+      }
+      if (pending.length) {
+        renderBanner('info', `已匹配 ${matched.join('、')}`, `仍有预期值尚未计算：${pending.join('、')}。`);
+        return;
+      }
+      renderBanner('match', `与 ${matched.join('、')} 一致`, '预期值与本次计算结果完全相同。');
+    }
+
+    function selectedAlgorithms() {
+      return algorithmInputs.filter(input => input.checked).map(input => input.value);
+    }
+
+    function refreshAlgorithmStyles() {
+      algorithmInputs.forEach(input => input.closest('.algorithm-option').classList.toggle('is-selected', input.checked));
+      const count = selectedAlgorithms().length;
+      algorithmCount.textContent = count ? `已选 ${count} 种` : '未选择';
+    }
+
+    // quiet 用于高频的进度更新：暂时关闭 aria-live，避免读屏软件每 100 毫秒播报一次。
+    function setStatus(message, kind = '', quiet = false) {
+      statusLine.setAttribute('aria-live', quiet ? 'off' : 'polite');
+      statusLine.textContent = message;
+      statusLine.className = `status-line${kind ? ` is-${kind}` : ''}`;
+    }
+
+    function formatDuration(ms) {
+      const seconds = ms / 1000;
+      if (Math.round(ms) < 1000) return `${Math.max(1, Math.round(ms))} 毫秒`;
+      if (seconds < 59.5) return `${seconds.toFixed(1)} 秒`;
+      const total = Math.round(seconds);
+      return `${Math.floor(total / 60)} 分 ${total % 60} 秒`;
+    }
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      let index = 0;
+      let value = bytes;
+      while (value >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+      }
+      if (index > 0 && Math.round(value) >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+      }
+      let digits = index === 0 || value >= 10 ? 0 : 1;
+      if (digits === 1 && Math.round(value * 10) / 10 >= 10) digits = 0;
+      return `${value.toFixed(digits)} ${units[index]}`;
+    }
+
+    function describeFile(file) {
+      const dot = file.name.lastIndexOf('.');
+      const extensionName = dot > 0 && dot < file.name.length - 1 ? file.name.slice(dot + 1) : '';
+      const extension = extensionName ? extensionName.toUpperCase() : (file.type ? file.type.split('/').pop().toUpperCase() : '文件');
+      const modified = file.lastModified ? new Date(file.lastModified).toLocaleDateString('zh-CN', {year: 'numeric', month: '2-digit', day: '2-digit'}) : '';
+      return [extension, formatBytes(file.size), modified].filter(Boolean).join(' · ');
+    }
+
+    function hasExpectedValue() {
+      return expectedEntries.length > 0;
+    }
+
+    function updateComputeButton() {
+      // 计算中按钮变成“取消计算”，大文件不必等到算完或者靠改选项才能中止。
+      computeButton.disabled = !isCalculating && (!selectedFile || !selectedAlgorithms().length);
+      computeButton.setAttribute('aria-busy', String(isCalculating));
+      computeLabel.textContent = isCalculating ? '取消计算' : (hasExpectedValue() ? '计算并比对' : '计算哈希');
+      computeIcon.hidden = isCalculating;
+      buttonSpinner.hidden = !isCalculating;
+      // 只在计算期间挂上离开确认：Firefox 不会把带 beforeunload 监听的页面放进往返缓存（bfcache）。
+      if (isCalculating) window.addEventListener('beforeunload', confirmLeave);
+      else window.removeEventListener('beforeunload', confirmLeave);
+    }
+
+    // 大文件算到一半时误关标签页或刷新会前功尽弃，计算期间让浏览器先确认一下。
+    function confirmLeave(event) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+
+    function renderMessage(title, description, kind = 'empty', progress = 0) {
+      resultsPanel.className = `results-panel${kind === 'error' ? ' is-error' : ''}`;
+      replaceChildren(resultsPanel);
+      if (kind === 'loading') {
+        const track = document.createElement('div');
+        track.className = 'loading-track';
+        track.setAttribute('aria-hidden', 'true');
+        const bar = document.createElement('span');
+        bar.style.width = `${Math.max(4, Math.round(progress * 100))}%`;
+        track.append(bar);
+        resultsPanel.append(track);
+      }
+      const state = document.createElement('div');
+      state.className = 'empty-result';
+      const icon = document.createElement('span');
+      icon.className = 'empty-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = kind === 'error' ? iconMarkup.error : kind === 'loading' ? iconMarkup.clock : iconMarkup.hash;
+      const copy = document.createElement('div');
+      copy.className = 'empty-copy';
+      const heading = document.createElement('p');
+      heading.className = 'empty-title';
+      heading.textContent = title;
+      const detail = document.createElement('p');
+      detail.className = 'empty-description';
+      detail.textContent = description;
+      copy.append(heading, detail);
+      state.append(icon, copy);
+      resultsPanel.append(state);
+      resultsPanel.setAttribute('aria-busy', String(kind === 'loading'));
+    }
+
+    // 进度更新只改已有的进度条和文字，避免整块重建导致宽度过渡失效。
+    function showProgress(description, progress) {
+      const bar = resultsPanel.querySelector('.loading-track span');
+      const detail = resultsPanel.querySelector('.empty-description');
+      if (!bar || !detail) {
+        renderMessage('正在计算摘要', description, 'loading', progress);
+        return;
+      }
+      bar.style.width = `${Math.max(4, Math.round(progress * 100))}%`;
+      detail.textContent = description;
+    }
+
+    function createDigestRow(result, index, animate) {
+      const comparison = rowComparison(result);
+      const row = document.createElement('article');
+      row.className = `digest-row${comparison ? ` is-${comparison}` : ''}`;
+      if (animate) row.style.animationDelay = `${index * 40}ms`;
+      else row.style.animation = 'none';
+      const content = document.createElement('div');
+      const meta = document.createElement('div');
+      meta.className = 'digest-meta';
+      const algorithm = document.createElement('span');
+      algorithm.className = 'digest-algorithm';
+      algorithm.textContent = result.algorithm;
+      const length = document.createElement('span');
+      length.className = 'digest-length';
+      length.textContent = `${result.hex.length} 个十六进制字符`;
+      meta.append(algorithm, length);
+      if (comparison) {
+        const pill = document.createElement('span');
+        pill.className = `match-pill is-${comparison}`;
+        pill.textContent = comparison === 'match' ? '一致' : '不一致';
+        meta.append(pill);
+      }
+      const value = document.createElement('code');
+      value.className = 'digest-value';
+      value.textContent = result.hex;
+      content.append(meta, value);
+      const button = document.createElement('button');
+      button.className = 'copy-button';
+      button.type = 'button';
+      button.setAttribute('aria-label', `复制 ${result.algorithm} 摘要`);
+      const icon = document.createElement('span');
+      icon.className = 'copy-icon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.innerHTML = iconMarkup.copy;
+      button.append(icon);
+      button.addEventListener('click', () => copyText(`${result.algorithm}: ${result.hex}`, button, `已复制 ${result.algorithm}`));
+      row.append(content, button);
+      return row;
+    }
+
+    function renderResults(results, animate = true) {
+      currentResults = results;
+      copyAllButton.disabled = !results.length;
+      resultsPanel.className = 'results-panel';
+      replaceChildren(resultsPanel, ...results.map((result, index) => createDigestRow(result, index, animate)));
+      resultsPanel.setAttribute('aria-busy', 'false');
+    }
+
+    function clearResults() {
+      currentResults = [];
+      lastElapsed = '';
+      copyAllButton.disabled = true;
+      const previous = copyTimers.get(copyAllButton);
+      if (previous) clearTimeout(previous);
+      const icon = copyAllButton.querySelector('.copy-icon');
+      if (icon) icon.innerHTML = iconMarkup.copy;
+      copyAllButton.classList.remove('is-copied');
+    }
+
+    function onAlgorithmsChanged() {
+      runToken += 1;
+      isCalculating = false;
+      refreshAlgorithmStyles();
+      clearResults();
+      updateComparison();
+      updateComputeButton();
+      if (!selectedFile) {
+        setStatus(selectedAlgorithms().length ? '尚未选择文件' : '请至少选择一种算法。', selectedAlgorithms().length ? '' : 'error');
+        renderMessage('还没有摘要', '选好文件并计算后，结果会显示在这里。');
+        return;
+      }
+      const ready = selectedAlgorithms().length > 0;
+      setStatus(ready ? '算法已更新，请重新计算。' : '请至少选择一种算法。', ready ? '' : 'error');
+      renderMessage('算法已更新', ready ? '再次计算以生成所选算法的摘要。' : '至少选择一种算法后才能计算。');
+    }
+
+    function setCheckedAlgorithms(ids, exclusive) {
+      const wanted = new Set(ids);
+      let changed = false;
+      algorithmInputs.forEach(input => {
+        if (input.disabled) return;
+        const next = exclusive ? wanted.has(input.value) : input.checked || wanted.has(input.value);
+        if (input.checked !== next) {
+          input.checked = next;
+          changed = true;
+        }
+      });
+      if (changed) onAlgorithmsChanged();
+    }
+
+    function setSelectedFile(file) {
+      runToken += 1;
+      isCalculating = false;
+      selectedFile = file || null;
+      fileInput.value = '';
+      clearResults();
+      updateComparison();
+      updateComputeButton();
+      const ready = selectedAlgorithms().length > 0;
+      if (!selectedFile) {
+        emptyFileState.hidden = false;
+        selectedFileState.hidden = true;
+        clearFileButton.hidden = true;
+        fileName.textContent = '';
+        fileMeta.textContent = '';
+        dropzone.setAttribute('aria-label', DROPZONE_LABEL);
+        setStatus(ready ? '尚未选择文件' : '请至少选择一种算法。', ready ? '' : 'error');
+        renderMessage('还没有摘要', '选好文件并计算后，结果会显示在这里。');
+        return;
+      }
+      emptyFileState.hidden = true;
+      selectedFileState.hidden = false;
+      clearFileButton.hidden = false;
+      fileName.textContent = selectedFile.name;
+      fileMeta.textContent = describeFile(selectedFile);
+      // 按钮的 aria-label 会盖掉内部文字，读屏软件需要在标签里听到文件名。
+      dropzone.setAttribute('aria-label', `已选择文件 ${selectedFile.name}，${fileMeta.textContent}。点击更换文件`);
+      setStatus(ready ? '文件已就绪，可以开始计算。' : '请至少选择一种算法。', ready ? '' : 'error');
+      renderMessage('文件已就绪', !ready ? '至少选择一种算法后才能计算。' : hasExpectedValue() ? '计算后会立即与预期值比对。' : '点击计算后，所选摘要会显示在这里。');
+    }
+
+    function fallbackCopy(text) {
+      const active = document.activeElement;
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      // 固定在视口左上角，聚焦时页面不会跳到底部；12pt 字号避免 iOS 聚焦时缩放页面。
+      textarea.style.position = 'fixed';
+      textarea.style.top = '0';
+      textarea.style.left = '0';
+      textarea.style.fontSize = '12pt';
+      textarea.style.opacity = '0';
+      document.body.append(textarea);
+      textarea.select();
+      // iOS Safari 的 select() 选不中只读文本框里的内容，需要再显式设置一次选区。
+      textarea.setSelectionRange(0, text.length);
+      let copied = false;
+      try {
+        copied = document.execCommand('copy');
+      } catch (error) {
+        // 个别浏览器不允许复制时会直接抛错：同样按失败处理，临时文本框和焦点照常还原。
+      }
+      textarea.remove();
+      if (active && typeof active.focus === 'function') active.focus({preventScroll: true});
+      if (!copied) throw new Error('Clipboard copy failed');
+    }
+
+    async function copyText(text, button, message) {
+      try {
+        let copied = false;
+        if (navigator.clipboard && window.isSecureContext) {
+          try {
+            await navigator.clipboard.writeText(text);
+            copied = true;
+          } catch (error) {
+            // 权限被拒或页面被嵌入时 Clipboard API 会失败，改用 execCommand 再试一次。
+          }
+        }
+        if (!copied) fallbackCopy(text);
+        const icon = button.querySelector('.copy-icon');
+        if (icon) icon.innerHTML = iconMarkup.check;
+        button.classList.add('is-copied');
+        setStatus(message, 'match');
+        const previous = copyTimers.get(button);
+        if (previous) clearTimeout(previous);
+        copyTimers.set(button, setTimeout(() => {
+          if (!button.isConnected) return;
+          const currentIcon = button.querySelector('.copy-icon');
+          if (currentIcon) currentIcon.innerHTML = iconMarkup.copy;
+          button.classList.remove('is-copied');
+        }, 1600));
+      } catch (error) {
+        setStatus('复制失败，请检查浏览器的剪贴板权限。', 'error');
+      }
+    }
+
+    // 后台标签页里 setTimeout 会被限流到每秒一次，计算大文件时每 30 毫秒让出一次就会慢得无法忍受；
+    // MessageChannel 不受这种限流影响，不支持时再退回 setTimeout。
+    const yieldQueue = [];
+    let yieldPort = null;
+
+    function yieldUi() {
+      if (typeof MessageChannel !== 'function') return new Promise(resolve => setTimeout(resolve, 0));
+      if (!yieldPort) {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => {
+          const resolve = yieldQueue.shift();
+          if (resolve) resolve();
+        };
+        yieldPort = channel.port2;
+      }
+      return new Promise(resolve => {
+        yieldQueue.push(resolve);
+        yieldPort.postMessage(0);
+      });
+    }
+
+    // Safari 14 之前和部分 WebView 的 Blob 没有 arrayBuffer()，这时改用 FileReader。
+    function readBlob(blob) {
+      if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('Read failed'));
+        reader.onabort = () => reject(new Error('Read aborted'));
+        reader.readAsArrayBuffer(blob);
+      });
+    }
+
+    async function hashFile(file, ids, token, onProgress) {
+      const subtle = window.crypto && crypto.subtle;
+      const useBuffer = file.size <= BUFFER_LIMIT && subtle && ids.some(id => WEB_CRYPTO.has(id));
+      let bytes = null;
+      if (useBuffer) {
+        try {
+          bytes = new Uint8Array(await readBlob(file));
+          // 一次性读到的字节数对不上文件大小时不能悄悄按截断的数据算：改走流式处理，
+          // 流式那边会逐块核对长度，读不全时会显式报错。
+          if (bytes.length !== file.size) bytes = null;
+        } catch (error) {
+          // 内存不足或一次性读取失败时，退回到分块流式处理。
+          bytes = null;
+        }
+        if (token !== runToken) return null;
+      }
+      if (bytes) {
+        const results = [];
+        const step = 1024 * 1024;
+        let lastYield = performance.now();
+        for (let i = 0; i < ids.length; i += 1) {
+          if (token !== runToken) return null;
+          const id = ids[i];
+          onProgress(i / ids.length, id);
+          let hex = null;
+          if (WEB_CRYPTO.has(id)) {
+            try {
+              hex = bytesToHex(new Uint8Array(await subtle.digest(id, bytes)));
+              lastYield = performance.now();
+            } catch (error) {
+              hex = null;
+            }
+          }
+          if (hex === null) {
+            const hasher = createHasher(id);
+            for (let offset = 0; offset < bytes.length; offset += step) {
+              if (token !== runToken) return null;
+              hasher.update(bytes.subarray(offset, offset + step));
+              onProgress((i + Math.min(1, (offset + step) / bytes.length)) / ids.length, id);
+              if (performance.now() - lastYield > 30) {
+                await yieldUi();
+                lastYield = performance.now();
+                if (token !== runToken) return null;
+              }
+            }
+            hex = hasher.digest();
+            if (performance.now() - lastYield > 30) {
+              await yieldUi();
+              lastYield = performance.now();
+            }
+          }
+          if (token !== runToken) return null;
+          results.push({algorithm: id, hex});
+          onProgress((i + 1) / ids.length, id);
+        }
+        return results;
+      }
+
+      const hashers = ids.map(id => ({id, hasher: createHasher(id)}));
+      const sliceSize = 1024 * 1024;
+      const readSlice = offset => {
+        const pending = readBlob(file.slice(offset, offset + sliceSize)).then(buffer => new Uint8Array(buffer));
+        pending.catch(() => {});
+        return pending;
+      };
+      // 计算当前分块的同时预读下一块，让磁盘读取和哈希重叠进行。
+      let next = file.size > 0 ? readSlice(0) : null;
+      let lastYield = performance.now();
+      for (let offset = 0; offset < file.size; offset += sliceSize) {
+        if (token !== runToken) return null;
+        const bytes = await next;
+        // 等待读取期间可能已经取消：不再预读下一块，也不再白白计算这一块。
+        if (token !== runToken) return null;
+        // 分块长度与请求范围不符时，继续计算会跳过缺失数据或混入额外字节，产生错误摘要。
+        if (bytes.length !== Math.min(sliceSize, file.size - offset)) throw new Error('Unexpected end of file');
+        next = offset + sliceSize < file.size ? readSlice(offset + sliceSize) : null;
+        // 同时选了很多算法时，一块数据要算很久，每个算法之后都检查一次是否该让出线程。
+        for (const item of hashers) {
+          item.hasher.update(bytes);
+          if (performance.now() - lastYield > 30) {
+            await yieldUi();
+            lastYield = performance.now();
+            if (token !== runToken) return null;
+          }
+        }
+        onProgress(Math.min(1, (offset + bytes.length) / Math.max(file.size, 1)));
+      }
+      if (token !== runToken) return null;
+      return hashers.map(item => ({algorithm: item.id, hex: item.hasher.digest()}));
+    }
+
+    // 结果已经显示时，状态栏跟随最新的比对结论，不留下过时的信息。
+    function reportOutcome() {
+      const verdict = compareBanner.querySelector('strong');
+      const elapsed = lastElapsed ? `，用时 ${lastElapsed}` : '';
+      if ((hasExpectedValue() || expectedInvalid) && verdict && !compareBanner.hidden) {
+        const isError = compareBanner.classList.contains('is-mismatch') || compareBanner.classList.contains('is-invalid');
+        setStatus(`${verdict.textContent}${elapsed}`, compareBanner.classList.contains('is-match') ? 'match' : isError ? 'error' : '');
+      } else {
+        setStatus(`已完成 ${currentResults.length} 种摘要计算${elapsed}。`, 'match');
+      }
+    }
+
+    function cancelCalculation() {
+      runToken += 1;
+      isCalculating = false;
+      updateComputeButton();
+      setStatus('已取消计算。');
+      renderMessage('已取消计算', '点击计算可以重新开始。');
+    }
+
+    async function computeHashes() {
+      if (isCalculating) {
+        cancelCalculation();
+        return;
+      }
+      if (!selectedFile) return;
+      const ids = selectedAlgorithms();
+      if (!ids.length) {
+        setStatus('请至少选择一种算法。', 'error');
+        return;
+      }
+      const file = selectedFile;
+      const token = ++runToken;
+      clearResults();
+      // 上一轮的结果已经清空，比对横幅也跟着回到“等待计算结果”，重算、取消或出错后不再留着旧结论。
+      updateComparison();
+      isCalculating = true;
+      updateComputeButton();
+      setStatus('正在读取文件并计算摘要…');
+      renderMessage('正在计算摘要', '大文件可能需要一点时间，请保持页面打开。', 'loading', 0.04);
+      const started = performance.now();
+      try {
+        let lastPaint = -Infinity;
+        let lastName;
+        const results = await hashFile(file, ids, token, (progress, name) => {
+          if (token !== runToken) return;
+          const now = performance.now();
+          if (name === lastName && now - lastPaint < 100) return;
+          lastName = name;
+          lastPaint = now;
+          const percent = Math.round(progress * 100);
+          setStatus(name ? `正在计算 ${name} · ${percent}%` : `正在读取并计算 · ${percent}%`, '', true);
+          showProgress(name ? `当前算法 ${name}` : '文件正在分块处理。', progress);
+        });
+        if (!results || token !== runToken) return;
+        renderResults(results);
+        lastElapsed = formatDuration(performance.now() - started);
+        updateComparison();
+        reportOutcome();
+        // 偏好减少动态效果时直接跳到结果，而不是干脆不滚动：小屏幕上结果可能在视口之外。
+        const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        resultsSection.scrollIntoView({behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest'});
+      } catch (error) {
+        if (token !== runToken) return;
+        renderMessage('无法计算摘要', '文件读取失败或浏览器无法处理该文件，请重新选择后再试。', 'error');
+        setStatus('计算未完成，请重试。', 'error');
+      } finally {
+        if (token === runToken) {
+          isCalculating = false;
+          updateComputeButton();
+        }
+      }
+    }
+
+    function renderAlgorithms() {
+      replaceChildren(algorithmMount);
+      ALGORITHM_GROUPS.forEach(group => {
+        const wrap = document.createElement('div');
+        const label = document.createElement('p');
+        label.className = 'algo-group-label';
+        label.textContent = group.label;
+        const list = document.createElement('div');
+        list.className = 'algorithm-list';
+        ALGORITHMS.filter(item => item.group === group.id).forEach(item => {
+          const option = document.createElement('label');
+          option.className = `algorithm-option${item.checked ? ' is-selected' : ''}`;
+          if (item.title) option.title = item.title;
+          const box = document.createElement('span');
+          box.className = 'algorithm-box';
+          const input = document.createElement('input');
+          input.type = 'checkbox';
+          input.name = 'algorithm';
+          input.value = item.id;
+          input.checked = Boolean(item.checked);
+          // 勾号画在这个 span 上：Firefox 等浏览器对 input 上的伪元素支持不一致。
+          const mark = document.createElement('span');
+          mark.className = 'algorithm-mark';
+          mark.setAttribute('aria-hidden', 'true');
+          const name = document.createElement('span');
+          name.className = 'algorithm-name';
+          name.textContent = item.id;
+          box.append(input, mark);
+          option.append(box, name);
+          list.append(option);
+        });
+        wrap.append(label, list);
+        algorithmMount.append(wrap);
+      });
+      algorithmInputs = [...document.querySelectorAll('input[name="algorithm"]')];
+      algorithmInputs.forEach(input => input.addEventListener('change', onAlgorithmsChanged));
+      refreshAlgorithmStyles();
+    }
+
+    function renderSwatches() {
+      replaceChildren(swatchList);
+      ACCENTS.forEach(accent => {
+        const button = document.createElement('button');
+        button.className = 'swatch';
+        button.type = 'button';
+        button.dataset.accent = accent.id;
+        button.style.setProperty('--swatch', accent.swatch);
+        button.setAttribute('role', 'radio');
+        button.setAttribute('aria-label', accent.label);
+        button.title = accent.label;
+        button.addEventListener('click', () => {
+          setAccent(accent.id);
+          // 菜单随即关闭，色块会消失，把焦点还给调色板按钮，键盘用户不会丢失位置。
+          paletteToggle.focus();
+        });
+        swatchList.append(button);
+      });
+      updateSwatches();
+    }
+
+    function updateSwatches() {
+      const current = document.documentElement.dataset.accent || 'violet';
+      [...swatchList.children].forEach(button => {
+        const active = button.dataset.accent === current;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-checked', String(active));
+        button.tabIndex = active ? 0 : -1;
+      });
+    }
+
+    const BACKGROUND_COLORS = {
+      violet: ['#f7f5fa', '#141218'],
+      blue: ['#f5f7fc', '#10141a'],
+      teal: ['#f4f8f7', '#101615'],
+      green: ['#f5f8f4', '#111612'],
+      orange: ['#faf6f3', '#161310'],
+      rose: ['#faf5f7', '#161214']
+    };
+
+    function updateThemeColor() {
+      const accent = document.documentElement.dataset.accent || 'violet';
+      const dark = document.documentElement.dataset.theme === 'dark';
+      const colors = BACKGROUND_COLORS[accent] || BACKGROUND_COLORS.violet;
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = colors[dark ? 1 : 0];
+    }
+
+    function setAccent(accent, keepOpen = false) {
+      document.documentElement.dataset.accent = accent;
+      updateSwatches();
+      updateThemeColor();
+      if (!keepOpen) closePalette();
+      try {localStorage.setItem('hashroom-accent', accent);} catch (error) { }
+    }
+
+    function setTheme(theme, persist = true) {
+      document.documentElement.dataset.theme = theme;
+      const dark = theme === 'dark';
+      themeToggle.setAttribute('aria-label', dark ? '切换浅色模式' : '切换深色模式');
+      themeToggle.title = dark ? '切换浅色模式' : '切换深色模式';
+      updateThemeColor();
+      if (!persist) return;
+      try {localStorage.setItem('hashroom-theme', theme);} catch (error) { }
+    }
+
+    function closePalette() {
+      paletteMenu.hidden = true;
+      paletteToggle.setAttribute('aria-expanded', 'false');
+    }
+
+    function disableAlgorithms(ids) {
+      algorithmInputs.forEach(input => {
+        if (!ids.includes(input.value)) return;
+        const option = input.closest('.algorithm-option');
+        input.checked = false;
+        input.disabled = true;
+        option.classList.add('is-disabled');
+        option.title = '自检未通过，已暂停使用';
+      });
+      if (!selectedAlgorithms().length) {
+        const fallback = algorithmInputs.find(input => !input.disabled);
+        if (fallback) fallback.checked = true;
+      }
+      refreshAlgorithmStyles();
+      updateComputeButton();
+      // 停用后重新算一遍可补选的算法，别再建议已经停用的那几个。
+      updateComparison();
+      const names = ids.join('、');
+      setStatus(`算法自检未通过：${names}，已暂停使用。`, 'error');
+      renderMessage('算法自检未通过', `${names} 的计算结果与标准测试向量不一致，已暂停这些算法，其他算法不受影响。`, 'error');
+    }
+
+    function selfTest() {
+      const MSG56 = 'abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq';
+      const MSG112 = 'abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu';
+      const vectors = [
+        ['MD5', '', 'd41d8cd98f00b204e9800998ecf8427e'],
+        ['MD5', 'abc', '900150983cd24fb0d6963f7d28e17f72'],
+        ['SHA-1', '', 'da39a3ee5e6b4b0d3255bfef95601890afd80709'],
+        ['SHA-1', 'abc', 'a9993e364706816aba3e25717850c26c9cd0d89d'],
+        ['SHA-224', 'abc', '23097d223405d8228642a477bda255b32aadbce4bda0b3f7e36c9da7'],
+        ['SHA-256', '', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'],
+        ['SHA-256', 'abc', 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'],
+        ['SHA-384', 'abc', 'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7'],
+        ['SHA-512', 'abc', 'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f'],
+        ['SHA-512/224', 'abc', '4634270f707b6a54daae7530460842e20e37ed265ceee9a43e8924aa'],
+        ['SHA-512/256', 'abc', '53048e2681941ef99b2e29b76b4c7dabe4c2d0c634fc6d46e0e2f13107e7af23'],
+        ['SHA3-224', '', '6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7'],
+        ['SHA3-256', '', 'a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a'],
+        ['SHA3-256', 'abc', '3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532'],
+        ['SHA3-384', '', '0c63a75b845e4f7d01107d852e4c2485c51a50aaaa94fc61995e71bbee983a2ac3713831264adb47fb6bd1e058d5f004'],
+        ['SHA3-512', '', 'a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a615b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26'],
+        ['RIPEMD-160', '', '9c1185a5c5e9fc54612808977ee8f548b2258d31'],
+        ['RIPEMD-160', 'abc', '8eb208f7e05d987a9b044a8e98c6b087f15a0bfc'],
+        ['CRC32', '', '00000000'],
+        ['CRC32', '123456789', 'cbf43926'],
+        ['MD5', MSG56, '8215ef0796a20bcaaae116d3876c664a'],
+        ['SHA-1', MSG56, '84983e441c3bd26ebaae4aa1f95129e5e54670f1'],
+        ['SHA-224', MSG56, '75388b16512776cc5dba5da1fd890150b0c6455cb4f58b1952522525'],
+        ['SHA-256', MSG56, '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1'],
+        ['SHA-384', MSG56, '3391fdddfc8dc7393707a65b1b4709397cf8b1d162af05abfe8f450de5f36bc6b0455a8520bc4e6f5fe95b1fe3c8452b'],
+        ['SHA-512', MSG56, '204a8fc6dda82f0a0ced7beb8e08a41657c16ef468b228a8279be331a703c33596fd15c13b1b07f9aa1d3bea57789ca031ad85c7a71dd70354ec631238ca3445'],
+        ['SHA3-224', MSG56, '8a24108b154ada21c9fd5574494479ba5c7e7ab76ef264ead0fcce33'],
+        ['SHA3-256', MSG56, '41c0dba2a9d6240849100376a8235e2c82e1b9998a999e21db32dd97496d3376'],
+        ['SHA3-384', MSG56, '991c665755eb3a4b6bbdfb75c78a492e8c56a22c5c4d7e429bfdbc32b9d4ad5aa04a1f076e62fea19eef51acd0657c22'],
+        ['SHA3-512', MSG56, '04a371e84ecfb5b8b77cb48610fca8182dd457ce6f326a0fd3d7ec2f1e91636dee691fbe0c985302ba1b0d8dc78c086346b533b49c030d99a27daf1139d6e75e'],
+        ['RIPEMD-160', MSG56, '12a053384a9c0c88e405a06c27dcf49ada62eb2b'],
+        ['SHA-1', MSG112, 'a49b2446a02c645bf419f995b67091253a04a259'],
+        ['SHA-224', MSG112, 'c97ca9a559850ce97a04a96def6d99a9e0e0e2ab14e6b8df265fc0b3'],
+        ['SHA-256', MSG112, 'cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1'],
+        ['SHA-384', MSG112, '09330c33f71147e83d192fc782cd1b4753111b173b3b05d22fa08086e3b0f712fcc7c71a557e2db966c3e9fa91746039'],
+        ['SHA-512', MSG112, '8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909'],
+        ['SHA-512/224', MSG112, '23fec5bb94d60b23308192640b0c453335d664734fe40e7268674af9'],
+        ['SHA-512/256', MSG112, '3928e184fb8690f840da3988121d31be65cb9d3ef83ee6146feac861e19b563a'],
+        ['SHA3-224', MSG112, '543e6868e1666c1a643630df77367ae5a62a85070a51c14cbf665cbc'],
+        ['SHA3-256', MSG112, '916f6061fe879741ca6469b43971dfdb28b1a32dc36cb3254e812be27aad1d18'],
+        ['SHA3-384', MSG112, '79407d3b5916b59c3e30b09822974791c313fb9ecc849e406f23592d04f625dc8c709b98b43b3852b337216179aa7fc7'],
+        ['SHA3-512', MSG112, 'afebb2ef542e6579c50cad06d2e578f9f8dd6881d7dc824d26360feebf18a4fa73e3261122948efcfd492e74e82e2189ed0fb440d187f382270cb455f21dd185']
+      ];
+      const failed = new Set();
+      const encoder = new TextEncoder();
+      vectors.forEach(([id, text, expected]) => {
+        try {
+          if (digestBytes(id, encoder.encode(text)) !== expected) failed.add(id);
+        } catch (error) {
+          failed.add(id);
+        }
+      });
+      const sample = encoder.encode(MSG112 + MSG56);
+      ALGORITHMS.forEach(item => {
+        try {
+          const whole = digestBytes(item.id, sample);
+          const hasher = createHasher(item.id);
+          for (let offset = 0; offset < sample.length; offset += 7) hasher.update(sample.subarray(offset, offset + 7));
+          if (hasher.digest() !== whole) failed.add(item.id);
+        } catch (error) {
+          failed.add(item.id);
+        }
+      });
+      // 自检通过时不覆盖状态栏：页面初始的“尚未选择文件”才是此刻更该留在那里的提示。
+      if (failed.size) disableAlgorithms([...failed]);
+    }
+
+    renderAlgorithms();
+    renderSwatches();
+    renderMessage('还没有摘要', '选好文件并计算后，结果会显示在这里。');
+    setTheme(document.documentElement.dataset.theme || 'light', false);
+    updateComparison();
+    updateComputeButton();
+
+    dropzone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', event => {
+      if (event.target.files && event.target.files.length) setSelectedFile(event.target.files[0]);
+    });
+    ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dropzone.classList.add('is-dragging');
+    }));
+    dropzone.addEventListener('dragleave', event => {
+      if (!dropzone.contains(event.relatedTarget)) dropzone.classList.remove('is-dragging');
+    });
+    dropzone.addEventListener('drop', event => {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dropzone.classList.remove('is-dragging');
+      acceptDrop(event);
+    });
+    function acceptDrop(event) {
+      const transfer = event.dataTransfer;
+      if (!transfer || !transfer.files.length) return;
+      const item = transfer.items && [...transfer.items].find(entry => entry.kind === 'file');
+      const entry = item && typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
+      if (entry && entry.isDirectory) {
+        setStatus('不支持文件夹，请拖入单个文件。', 'error');
+        return;
+      }
+      setSelectedFile(transfer.files[0]);
+      if (transfer.files.length > 1 && selectedAlgorithms().length) {
+        setStatus(`一次只能计算一个文件，已选择第一个，忽略其余 ${transfer.files.length - 1} 个。`);
+      }
+    }
+
+    function hasFiles(event) {
+      const transfer = event.dataTransfer;
+      if (!transfer) return false;
+      // 个别浏览器（以及部分 WebView）在 drop 时 types 可能不含 'Files'，但 files 里已经有文件；
+      // 只认 types 会让这次拖放不被接管，浏览器直接打开文件、页面状态全部丢失。
+      return Boolean((transfer.files && transfer.files.length) || Array.from(transfer.types || []).includes('Files'));
+    }
+    window.addEventListener('dragover', event => {
+      if (hasFiles(event)) event.preventDefault();
+    });
+    window.addEventListener('drop', event => {
+      // 拖放区自己的处理函数已经调用过 preventDefault，这里只接管落在页面其他位置的文件。
+      if (!hasFiles(event) || event.defaultPrevented) return;
+      event.preventDefault();
+      dropzone.classList.remove('is-dragging');
+      acceptDrop(event);
+    });
+    clearFileButton.addEventListener('click', () => {
+      setSelectedFile(null);
+      // 清除按钮随即隐藏，把焦点交给选择区域，键盘用户不会丢失位置。
+      dropzone.focus();
+    });
+    computeButton.addEventListener('click', computeHashes);
+    document.getElementById('selectCommon').addEventListener('click', () => {
+      setCheckedAlgorithms(ALGORITHMS.filter(item => item.group === 'common').map(item => item.id), true);
+    });
+    document.getElementById('selectAll').addEventListener('click', () => setCheckedAlgorithms(ALGORITHMS.map(item => item.id), true));
+    expectedInput.addEventListener('input', () => {
+      updateComparison();
+      updateComputeButton();
+      if (currentResults.length) {
+        renderResults(currentResults, false);
+        reportOutcome();
+      }
+    });
+    clearExpected.addEventListener('click', () => {
+      expectedInput.value = '';
+      updateComparison();
+      updateComputeButton();
+      if (currentResults.length) {
+        renderResults(currentResults, false);
+        reportOutcome();
+      }
+      expectedInput.focus();
+    });
+    applySuggested.addEventListener('click', () => {
+      setCheckedAlgorithms(candidateAlgorithms(), false);
+      // 补选后按钮随即隐藏，把焦点交给下一步操作的控件。
+      (computeButton.disabled ? dropzone : computeButton).focus();
+    });
+    copyAllButton.addEventListener('click', () => {
+      if (!currentResults.length) return;
+      copyText(currentResults.map(result => `${result.algorithm}: ${result.hex}`).join('\n'), copyAllButton, '已复制全部摘要');
+    });
+    // 单选组用方向键切换，选中的那个色块才在 Tab 顺序里。
+    swatchList.addEventListener('keydown', event => {
+      const buttons = [...swatchList.children];
+      const index = buttons.indexOf(document.activeElement);
+      if (index < 0) return;
+      const step = {ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1}[event.key];
+      let nextIndex = step ? (index + step + buttons.length) % buttons.length : -1;
+      if (event.key === 'Home') nextIndex = 0;
+      else if (event.key === 'End') nextIndex = buttons.length - 1;
+      if (nextIndex < 0) return;
+      event.preventDefault();
+      const next = buttons[nextIndex];
+      setAccent(next.dataset.accent, true);
+      next.focus();
+    });
+    paletteToggle.addEventListener('click', () => {
+      const open = paletteMenu.hidden;
+      paletteMenu.hidden = !open;
+      paletteToggle.setAttribute('aria-expanded', String(open));
+    });
+    // 用 Tab 把焦点移出调色板时一并收起菜单，不让它悬在页面上。
+    paletteMenu.parentElement.addEventListener('focusout', event => {
+      if (!paletteMenu.hidden && event.relatedTarget && !paletteMenu.parentElement.contains(event.relatedTarget)) closePalette();
+    });
+    document.addEventListener('click', event => {
+      if (!paletteMenu.hidden && !paletteToggle.contains(event.target) && !paletteMenu.contains(event.target)) closePalette();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key !== 'Escape' || paletteMenu.hidden) return;
+      closePalette();
+      paletteToggle.focus();
+    });
+    themeToggle.addEventListener('click', () => {
+      setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+    });
+    const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+    const onSchemeChange = event => {
+      let saved = null;
+      try {saved = localStorage.getItem('hashroom-theme');} catch (error) { }
+      if (!saved) setTheme(event.matches ? 'dark' : 'light', false);
+    };
+    // 旧版 Safari 的 MediaQueryList 只有 addListener。
+    if (darkQuery.addEventListener) darkQuery.addEventListener('change', onSchemeChange);
+    else if (darkQuery.addListener) darkQuery.addListener(onSchemeChange);
+    selfTest();
+  </script>
+</body>
+
+</html>

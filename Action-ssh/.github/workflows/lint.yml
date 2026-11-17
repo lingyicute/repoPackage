@@ -1,0 +1,53 @@
+name: lint
+
+# 这些 workflow 只需要读代码，显式收窄 GITHUB_TOKEN 权限。
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck
+        run: shellcheck --shell=bash --severity=style setup-ssh force-command.sh
+
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        run: |
+          # 固定版本，并且这里是「下载脚本再执行」，等价于对上游 main 分支的信任；
+          # 至少把版本钉死，升级时是个显式的动作。
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+  yaml-format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: 检查行尾空白与文件末尾换行
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if grep -nP '[ \t]+$' "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::存在行尾空白"
+              grep -nP '[ \t]+$' "$f" | sed 's/^/    /'
+              fail=1
+            fi
+            if [ -s "$f" ] && [ "$(tail -c1 "$f" | od -An -c | tr -d ' ')" != '\n' ]; then
+              echo "::error file=$f::文件末尾缺少换行"
+              fail=1
+            fi
+          done < <(git ls-files '*.yml' '*.md' '*.sh' 'setup-ssh*' '*.template')
+          exit $fail

@@ -1,0 +1,134 @@
+# Action-ssh
+
+本项目可以使用 GitHub Actions 创建临时的开发环境。
+
+## 功能
+
+*   在 GitHub Actions 的运行器 (runner) 中快速启动一个临时环境。
+*   使用 Cloudflare Tunnel 将 SSH 或 RDP 服务暴露到公网，无需公网 IP。
+*   自动从您的 GitHub 个人资料中获取公钥并配置 SSH，实现免密登录。
+*   允许您通过 Cloudflare Tunnel 连接到 Windows 环境，或通过 SSH 隧道连接到带有 KDE 桌面的 Linux 环境。
+
+## 如何使用
+
+### 准备工作
+
+1.  **Fork 本仓库**
+    点击本页面右上角的 "Fork" 按钮，将此仓库复制到您自己的 GitHub 账户下。
+
+2.  **在 Actions 页面中启用 Workflows**
+    Fork 之后，进入您自己仓库的 "Actions" 页面，GitHub 会提示您启用 Workflows，点击 "I understand my workflows, go ahead and enable them" 按钮。
+
+### 连接到 SSH 环境 (Linux)
+
+1.  **准备 SSH 密钥**
+    请确保您已经在您的 GitHub 账户中添加了您的 SSH 公钥。您可以在[这里](https://github.com/settings/keys)查看和添加。
+
+2.  **运行相关的 Workflow**
+    - 在您仓库的 "Actions" 页面，从左侧选择一个您想要运行的 Workflow (例如 `bare SSH Github-runner`)。
+    - 点击 "Run workflow" 下拉菜单并启动。
+
+3.  **获取连接命令并连接**
+    - Workflow 启动后，点击进入该 Workflow 的运行日志页面。
+    - 等待一段时间，日志中会输出一个 `ssh` 命令。它看起来像这样：
+      ```bash
+      ssh-keygen -R action-sshd-cloudflared && echo 'action-sshd-cloudflared ...' >> ~/.ssh/known_hosts && ssh -o ProxyCommand='cloudflared access tcp --hostname https://....trycloudflare.com' runner@action-sshd-cloudflared
+      ```
+    - 在您自己的电脑上，安装 `cloudflared` 客户端。
+    - 复制并粘贴日志中生成的完整命令到您的终端并运行即可连接。
+
+4.  **结束会话**
+    - 登录进去后你会直接落在一个 tmux 会话里，Workflow 会一直保持运行状态。
+    - 想正常收尾（而不是去 Actions 页面手动 Cancel），直接 `exit` 退出 tmux 会话（关掉最后一个窗口），job 会自动结束。
+    - 也可以不退出会话，直接在会话里执行 `tmux wait-for -S channel` 主动结束 job。
+    - 也可以随时 `Ctrl-b d` 脱离会话让它在后台继续跑，之后重新执行上面的 `ssh` 命令回来即可。
+    - 连上之后 `sftp` / `scp` / `rsync` / `ssh host '命令'` 都是可用的
+      （走同一条 `ProxyCommand` 隧道，用法与普通 SSH 一致），
+      例如把 `ssh ... runner@action-sshd-cloudflared` 换成
+      `scp -o ProxyCommand='cloudflared access tcp --hostname <地址>' 本地文件 runner@action-sshd-cloudflared:`。
+
+### 连接到 RDP 环境 (Windows)
+
+1.  **设置 RDP 密码**
+    - 进入您 Fork 的仓库的 `Settings` -> `Secrets and variables` -> `Actions` 页面。
+    - 创建一个新的仓库秘密 (repository secret)，名称为 `rdpw`，值为您想要设置的 RDP 连接密码。
+
+2.  **运行相关的 Workflow**
+    - 在您仓库的 "Actions" 页面，从左侧选择一个您想要运行的 Workflow (例如 `Windows RDP Github-runner x64`)。
+    - 点击 "Run workflow" 下拉菜单并启动。
+
+3.  **获取连接地址并准备**
+    - Workflow 启动后，点击进入该 Workflow 的运行日志页面。
+    - 等待一段时间，日志中会输出一个 Cloudflare 隧道的地址，看起来像 `https://....trycloudflare.com`。
+    - 在您自己的电脑上，安装 `cloudflared` 客户端。
+
+> [!tip]
+> 推荐使用我的 [Cloudflared 连接小工具](https://github.com/lingyicute/Cloudflared-Helper)。
+
+4.  **建立连接**
+    - 先用 `cloudflared` 把隧道映射到本地端口（把日志里的地址替换进去）：
+      ```bash
+      cloudflared access tcp --hostname https://....trycloudflare.com --url localhost:13389
+      ```
+    - 使用 RDP 客户端 (如 Windows 自带的 "远程桌面连接") 连接到 `localhost:13389`。用户名为 `runneradmin` (Depot 环境为 `Administrator`)，密码为您在第一步中设置的 `rdpw`。
+
+### 连接到 RDP 环境 (Linux Desktop)
+
+1.  **准备 SSH 密钥**
+    请确保您已经在您的 GitHub 账户中添加了您的 SSH 公钥。您可以在[这里](https://github.com/settings/keys)查看和添加。
+
+2.  **运行相关的 Workflow**
+    - 在您仓库的 "Actions" 页面，从左侧选择一个您想要运行的 Workflow (例如 `KDE Github-runner`)。
+    - 点击 "Run workflow" 下拉菜单并启动。
+
+3.  **获取连接命令并连接**
+    - Workflow 启动后，点击进入该 Workflow 的运行日志页面。
+    - 等待一段时间，日志中会输出用于普通 SSH 连接和 RDP 连接的两条 `ssh` 命令。
+    - 在您自己的电脑上，安装 `cloudflared` 客户端（如果尚未安装）。
+    - 找到并复制**为 RDP 准备的**那条 `ssh` 命令（即包含 `-L 21118:localhost:3389` 参数的命令），并粘贴到您的终端运行以建立隧道。
+    - 隧道建立后，使用 RDP 客户端 (如 Windows 自带的 "远程桌面连接") 连接到 `localhost:21118`。在登录界面中，输入用户名 `runner`，密码字段留空，即可进入桌面。
+
+## 可用的环境 (Workflows)
+
+*   `bare-ssh.yml`: 在 Ubuntu 环境下提供一个基础的 **SSH** 环境。
+*   `KDE.yml`: 提供一个带有 KDE 桌面环境，同时支持 **SSH** 和 **RDP**。
+*   `winx64-github.yml`: 在 Windows (x64) 环境下提供 **RDP**。
+*   `winx64-depot.yml`: 在 Depot Ci Windows (x64) 环境下提供 **RDP**。
+*   `winarm-github.yml` / `bare-ssh-arm.yml`: 针对 ARM 架构的相应版本。
+
+上面这些文件都只是「入口」，真正的步骤分别收敛在两个可复用工作流里：
+
+*   `reusable-linux-ssh.yml`: 所有 Linux 环境共用的前置步骤。
+*   `reusable-windows-rdp.yml`: GitHub 托管 Windows 环境共用的 RDP + 隧道步骤。
+
+所以要定制环境，一般是改这两个可复用工作流，或者照着 `bare-ssh.yml` 的样子
+新加一个几行的入口文件。
+
+## 常见问题排查
+
+**日志里没有出现连接命令，或者直接报错退出**
+
+最常见的原因是**你的 GitHub 账户里没有 SSH 公钥**。请到
+[github.com/settings/keys](https://github.com/settings/keys) 添加一把公钥后重试。
+脚本现在会在启动前检查这一点并立即失败，不会再让你对着一个连不上的 runner 干等。
+
+**`ERROR: cloudflared 下载失败` / `无法执行`**
+
+网络抖动或上游版本变动。`setup-ssh` 里的 `CLOUDFLARED_VERSION` 是锁定的，
+需要升级时改那一行即可。
+
+**连上之后想结束**
+
+在 tmux 会话里执行 `tmux wait-for -S channel`，或直接 `exit` 退出会话（见上文「结束会话」）。
+
+**连上了但 `scp` / `sftp` 报 `Connection closed`**
+
+这是 `sshd_config.template` 里缺 `Subsystem sftp` 导致的：sshd 的默认值就是「没有子系统」，
+而 `scp` 从 OpenSSH 9.0 起默认走 SFTP 协议，所以传文件会直接失败。
+模板里现在写了 `Subsystem sftp internal-sftp`，如仍失败请确认你的 fork 已同步。
+
+**反复输错认证后突然「连接被重置」**
+
+OpenSSH 9.8+ 会按来源 IP 施加惩罚（`PerSourcePenalties`），
+短时间内连续认证失败会临时丢弃该来源的连接。等几十秒再试即可，
+或者去 Actions 页面取消任务重启一次。

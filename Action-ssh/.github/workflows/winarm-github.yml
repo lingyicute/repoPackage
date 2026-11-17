@@ -1,0 +1,17 @@
+name: Windows RDP Github-runner ARM
+
+# 这些 workflow 只需要读代码，显式收窄 GITHUB_TOKEN 权限。
+permissions:
+  contents: read
+
+on: workflow_dispatch
+
+jobs:
+  setup-rdp:
+    uses: ./.github/workflows/reusable-windows-rdp.yml
+    with:
+      runs-on: windows-11-vs2026-arm
+      runner-user: runneradmin
+      cloudflared-asset: cloudflared-windows-amd64.exe
+      timeout-minutes: 360
+    secrets: inherit

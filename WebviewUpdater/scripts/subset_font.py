@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""子集化 Nebulove 字体并内嵌进 web/index.html"""
+import re, base64, urllib.request, os, sys, tempfile, html as html_lib
+from html.parser import HTMLParser
+import shutil
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FONT_URL = "https://raw.githubusercontent.com/lingyicute/Nebulove/main/Nebulove.ttf"
+FONT_MIRROR_URL = "https://cdn.jsdelivr.net/gh/lingyicute/Nebulove@main/Nebulove.ttf"
+FALLBACK_URL = "https://cdn.jsdelivr.net/gh/lingyicute/Nebulove@main/Nebulove.woff2"
+INDEX_PATH = os.path.join(REPO_ROOT, "web", "index.html")
+# 下载超时（秒）：没有超时机制时，网络异常会让 CI 一直卡到 job 超时
+DOWNLOAD_TIMEOUT_SEC = 60
+# 字符串 / 注释先整体识别，不能在字面量内寻找 @font-face 或右花括号。
+FONT_FACE_START_RE = re.compile(r'@font-face\s*\{', re.IGNORECASE)
+HTML_COMMENT_RE = re.compile(r'<!--(?:.*?--\s*>|.*\Z)', re.DOTALL)
+CSS_TOKEN_RE = re.compile(
+    r'("(?:\\.|[^"\\])*(?:"|\Z)|\'(?:\\.|[^\'\\])*(?:\'|\Z)|\\(?:[0-9a-f]{1,6}[ \t\r\n\f]?|.))|/\*.*?(?:\*/|\Z)',
+    re.DOTALL | re.IGNORECASE,
+)
+CSS_OPAQUE_RE = re.compile(r"""
+    \burl\((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|/\*.*?(?:\*/|\Z)|\\.|[^"'\\)])*\)
+    | "(?:\\.|[^"\\])*(?:"|\Z)
+    | '(?:\\.|[^'\\])*(?:'|\Z)
+    | /\*.*?(?:\*/|\Z)
+    | \\(?:[0-9a-f]{1,6}[ \t\r\n\f]?|.)
+""", re.DOTALL | re.IGNORECASE | re.VERBOSE)
+JS_TOKEN_RE = re.compile(
+    r'("(?:\\.|[^"\\])*(?:"|\Z)|\'(?:\\.|[^\'\\])*(?:\'|\Z)|`(?:\\.|[^`\\])*(?:`|\Z))|/\*.*?(?:\*/|\Z)|//[^\r\n]*',
+    re.DOTALL,
+)
+
+
+class HtmlSource(HTMLParser):
+    """记录原文偏移，不重新序列化 HTML；脚本字面量与注释中的标签不参与匹配。"""
+
+    def __init__(self, source):
+        super().__init__(convert_charrefs=False)
+        self.source = source
+        self.line_starts = [0] + [m.end() for m in re.finditer('\n', source)]
+        self.blocks = []
+        self.comments = []
+        self.raw_block = None
+        self.feed(source)
+        self.close()
+        if self.raw_block is not None and self.raw_block[1] <= len(source):
+            self.blocks.append((*self.raw_block, len(source)))
+            self.raw_block = None
+
+    def source_offset(self):
+        line, column = self.getpos()
+        return self.line_starts[line - 1] + column
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ('style', 'script'):
+            self.raw_block = (tag, self.source_offset() + len(self.get_starttag_text()))
+
+    def handle_startendtag(self, tag, attrs):
+        pass
+
+    def handle_endtag(self, tag):
+        if self.raw_block is not None and self.raw_block[0] == tag:
+            end = self.source_offset()
+            if self.raw_block[1] <= end:
+                self.blocks.append((*self.raw_block, end))
+            self.raw_block = None
+
+    def handle_comment(self, data):
+        match = HTML_COMMENT_RE.match(self.source, self.source_offset())
+        if match:
+            self.comments.append(match.span())
+
+
+def font_face_spans(source):
+    """返回完整规则的原文范围；屏蔽字符串、注释、URL 和转义后配对括号。"""
+    spans = []
+    for tag, start, end in HtmlSource(source).blocks:
+        if tag != 'style':
+            continue
+        css = CSS_OPAQUE_RE.sub(lambda m: ' ' * len(m.group()), source[start:end])
+        previous_end = 0
+        for match in FONT_FACE_START_RE.finditer(css):
+            if match.start() < previous_end:
+                continue
+            depth = 1
+            for brace in re.finditer(r'[{}]', css[match.end():]):
+                depth += 1 if brace.group() == '{' else -1
+                if depth == 0:
+                    previous_end = match.end() + brace.end()
+                    spans.append((start + match.start(), start + previous_end))
+                    break
+    return spans
+
+
+def replace_spans(source, replacements):
+    for start, end, value in sorted(replacements, reverse=True):
+        source = source[:start] + value + source[end:]
+    return source
+
+
+def text_for_subset(source, font_spans):
+    source = replace_spans(source, [(start, end, '') for start, end in font_spans])
+    parsed = HtmlSource(source)
+    replacements = [(start, end, '') for start, end in parsed.comments]
+    for tag, start, end in parsed.blocks:
+        tokens = CSS_TOKEN_RE if tag == 'style' else JS_TOKEN_RE
+        replacements.append((start, end, tokens.sub(lambda m: m.group(1) or '', source[start:end])))
+    return html_lib.unescape(replace_spans(source, replacements))
+
+
+def download(url, dest):
+    """带超时的下载到文件（urllib.request.urlretrieve 无超时参数），并校验状态码、HTTPS 与 Content-Length 完整性"""
+    if not url.lower().startswith("https://"):
+        raise ValueError(f"Non-HTTPS font URL rejected: {url}")
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "webviewupdater-font-subset/1.0",
+            "Accept-Encoding": "identity",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT_SEC) as resp, open(dest, "wb") as out:
+        status = getattr(resp, "status", None)
+        if status is not None and status != 200:
+            raise IOError(f"Unexpected HTTP status {status}")
+        final_url = resp.geturl()
+        if not final_url.lower().startswith("https://"):
+            raise IOError(f"Redirected to non-HTTPS URL: {final_url}")
+        expected_header = resp.headers.get("Content-Length")
+        total_read = 0
+        while True:
+            chunk = resp.read(64 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
+            total_read += len(chunk)
+    if total_read <= 0:
+        raise IOError("Downloaded font file is empty")
+    if expected_header is not None:
+        try:
+            expected_size = int(expected_header.strip())
+        except ValueError as exc:
+            raise IOError(f"Invalid Content-Length header: {expected_header!r}") from exc
+        if expected_size < 0 or total_read != expected_size:
+            raise IOError(f"Incomplete font download: got {total_read} bytes, expected {expected_size}")
+
+
+def main():
+    if not os.path.exists(INDEX_PATH):
+        print(f"Error: {INDEX_PATH} not found.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Reading web/index.html...")
+    with open(INDEX_PATH, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    # 先确认 <style> 块里确实有 @font-face 可替换：否则下面的替换是空操作，
+    # 却会输出「already up to date」，把「没找到替换点」误报成「已是最新」。
+    matches = font_face_spans(html)
+    if not matches:
+        print("Error: no @font-face block found in web/index.html, nothing to replace.",
+              file=sys.stderr)
+        sys.exit(1)
+    if len(matches) > 1:
+        print(f"Warning: found {len(matches)} @font-face blocks, only the first one is replaced.",
+              file=sys.stderr)
+
+    # 1. Collect all characters needed (exclude old @font-face data URI, comments & unescape HTML entities)
+    chars = set(text_for_subset(html, matches))
+    # Ensure full ASCII printable set (32 to 126)
+    for c in range(32, 127):
+        chars.add(chr(c))
+    # Common punctuation
+    chars.update(['：', '，', '。', '！', '？', '；', '“', '”', '‘', '’', '（', '）', '【', '】', '—', '…', '·', '《', '》', '×', '＝', '÷', '＋', '－'])
+    # Strip control characters (such as \n, \r, \t)
+    chars = {ch for ch in chars if ord(ch) >= 32 and not (0x7F <= ord(ch) <= 0x9F)}
+
+    print(f"Total unique characters needed: {len(chars)}")
+
+    from fontTools.ttLib import TTFont
+    from fontTools.subset import Subsetter, Options
+
+    sorted_text = "".join(sorted(chars))
+
+    with tempfile.TemporaryDirectory(prefix="nebulove-subset-") as workdir:
+        tmp_font_path = os.path.join(workdir, "Nebulove.font")
+        tmp_woff2 = os.path.join(workdir, "Nebulove-Subset.woff2")
+
+        # 2 & 3. Download full Nebulove font and subset with mirror fallback.
+        # TTFont 默认惰性加载各表，仅访问 head 无法发现 glyf/cmap 等表损坏；
+        # 将完整子集化与 WOFF2 导出纳入回退循环，避免非 head 表损坏时漏触发镜像回退，也无需重复解析字体。
+        sources = (FONT_URL, FONT_MIRROR_URL, FALLBACK_URL)
+        last_err = None
+        for idx, url in enumerate(sources):
+            try:
+                for p in (tmp_font_path, tmp_woff2):
+                    if os.path.exists(p):
+                        os.remove(p)
+                print(f"Downloading font from {url}...")
+                download(url, tmp_font_path)
+                print("Subsetting font...")
+                # recalcTimestamp=False：TTFont 默认为 True，见下面「固定时间戳」的说明
+                with TTFont(tmp_font_path, recalcTimestamp=False) as font:
+                    subsetter = Subsetter(options=Options())
+                    # 排序是防御性措施：chars 是 set，其遍历顺序受字符串哈希随机化影响而随进程变化；
+                    # 排序后喂给 subsetter 的输入与进程无关（subsetter 结果本身与顺序无关，但少一个变量更好）。
+                    subsetter.populate(text=sorted_text)
+                    subsetter.subset(font)
+
+                    # 固定时间戳，保证同样输入产出字节一致的 WOFF2，
+                    # 否则每次运行都会因为 head.modified 变化而产生无意义的 commit。
+                    # 注意：只改 head.modified 是不够的 —— fontTools 在 head 表 compile 时
+                    # 会执行 `if ttFont.recalcTimestamp: self.modified = timestampNow()`，
+                    # 把刚赋的值又覆盖成当前时间，于是每次产出的 WOFF2 字节都不同
+                    # （压缩后大小会差几十字节），diff 永远不为空，CI 每次都会提交一个
+                    # 「perf: 更新 Nebulove 字体子集」的空转 commit。
+                    # 必须同时关掉 recalcTimestamp，这个固定才真正生效。
+                    # 取 created 而不是 0：0 会被 fontTools 判定为异常小的时间戳并在
+                    # stderr 打 warning（读回时还会被加上 Mac epoch 偏移）。
+                    font["head"].modified = font["head"].created
+
+                    font.flavor = "woff2"
+                    font.save(tmp_woff2)
+
+                woff2_size = os.path.getsize(tmp_woff2)
+                if woff2_size <= 0:
+                    raise IOError("Subsetted WOFF2 file is empty")
+                last_err = None
+                break
+            except Exception as err:
+                last_err = err
+                if idx + 1 < len(sources):
+                    print(f"Font source {url} failed ({err}), trying fallback {sources[idx + 1]}...",
+                          file=sys.stderr)
+        if last_err is not None:
+            print(f"Failed to download and subset valid font: {last_err}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Subsetted WOFF2 size: {woff2_size} bytes ({woff2_size / 1024:.2f} KB)")
+
+        # 4. Convert to base64
+        with open(tmp_woff2, "rb") as f:
+            b64_font = base64.b64encode(f.read()).decode("utf-8")
+
+    # 5. Replace font-face in web/index.html
+    font_css = f'''@font-face{{
+  font-family:"Nebulove";
+  src:url("data:font/woff2;charset=utf-8;base64,{b64_font}") format("woff2"),
+      url("{FALLBACK_URL}") format("woff2");
+  font-weight:100 900;
+  font-display:swap;
+}}'''
+
+    # 仅替换首个真实规则，其他字节（包括示例、注释及脚本）保持不变。
+    start, end = matches[0]
+    new_html = html[:start] + font_css + html[end:]
+
+    if new_html == html:
+        print("web/index.html is already up to date. No changes made.")
+        return
+
+    tmp_html_fd, tmp_html_path = tempfile.mkstemp(
+        prefix=".index.html.", suffix=".tmp", dir=os.path.dirname(INDEX_PATH)
+    )
+    try:
+        with os.fdopen(tmp_html_fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(new_html)
+        # mkstemp 默认 0600；保留原权限，避免其他用户运行的静态服务器无法读取。
+        shutil.copymode(INDEX_PATH, tmp_html_path)
+        os.replace(tmp_html_path, INDEX_PATH)
+    except Exception:
+        if os.path.exists(tmp_html_path):
+            os.remove(tmp_html_path)
+        raise
+
+    print("web/index.html updated successfully!")
+
+if __name__ == "__main__":
+    main()

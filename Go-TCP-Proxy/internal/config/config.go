@@ -1,0 +1,359 @@
+// Package config 负责配置的默认值、加载、校验和持久化。
+package config
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strings"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
+)
+
+// AppName 是配置目录名。历史上沿用了旧的 module 名，改名会让老用户的配置"失踪"，因此保持不变。
+const AppName = "go-proxy-tunnel"
+
+// FileName 是配置文件名。
+const FileName = "config.json"
+
+// Config 是持久化到磁盘的配置。
+type Config struct {
+	LocalAddr  string `json:"local_addr"`
+	RemoteAddr string `json:"remote_addr"`
+	SocksAddr  string `json:"socks_addr"`
+	// SocksUser / SocksPassword 是 Socks5 用户名/密码认证（RFC 1929）的凭据，
+	// SocksUser 为空表示代理不需要认证。两个字段都是 omitempty：
+	// 不用认证时写出的配置文件和以前一模一样，老版本也能原样读回。
+	SocksUser     string `json:"socks_user,omitempty"`
+	SocksPassword string `json:"socks_password,omitempty"`
+}
+
+// MaxSocksCredentialLen 是 RFC 1929 允许的用户名 / 密码最大长度：
+// 报文里各用 1 个字节表示长度，按字节计，不是按字符计。
+const MaxSocksCredentialLen = 255
+
+// Defaults 是出厂默认值。
+var Defaults = Config{
+	LocalAddr:  "127.0.0.1:10808",
+	RemoteAddr: "example.com:80",
+	SocksAddr:  "127.0.0.1:1080",
+}
+
+// ErrNotFound 表示配置文件不存在。
+var ErrNotFound = errors.New("配置文件不存在")
+
+// DefaultPath 返回当前用户的默认配置文件路径。
+func DefaultPath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("无法获取用户配置目录: %w", err)
+	}
+	return filepath.Join(dir, AppName, FileName), nil
+}
+
+// Load 读取 path 处的配置。文件不存在时返回 Defaults 和 ErrNotFound；
+// 文件存在但缺少的字段用 Defaults 回填，避免出现空地址。
+func Load(path string) (Config, error) {
+	data, err := read(path)
+	if err != nil {
+		return Defaults, err
+	}
+
+	cfg := Defaults
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return Defaults, fmt.Errorf("解析配置文件 %s: %w", path, err)
+	}
+	cfg.FillDefaults()
+	return cfg, nil
+}
+
+// RemoteAddrSet 报告 path 处的配置文件是否自己写明了 remote_addr。Load 会用占位符 example.com:80 回填
+// 缺失或为空的字段，回填之后就分不出来了；键名敲错（"remote"、"remoteAddr"）时同样算没有写明。
+// 文件读不出来或解析失败时返回 false。
+func RemoteAddrSet(path string) bool {
+	data, err := read(path)
+	if err != nil {
+		return false
+	}
+	var raw struct {
+		RemoteAddr string `json:"remote_addr"`
+	}
+	return json.Unmarshal(data, &raw) == nil && raw.RemoteAddr != ""
+}
+
+// read 读出 path 处的配置文件并统一成 UTF-8；文件不存在时返回 ErrNotFound。
+func read(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("读取配置文件 %s: %w", path, err)
+	}
+
+	// Windows 记事本、PowerShell 5 的 Set-Content -Encoding UTF8 保存时会在文件开头写入 UTF-8 BOM，
+	// 而 encoding/json 不认它：手动编辑过的配置不应因此变成"解析失败"。
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+	// PowerShell 5 的 > 重定向和 Out-File 默认写的是带 BOM 的 UTF-16LE，encoding/json 只会报一句
+	// 让人摸不着头脑的 "invalid character 'ÿ'"。BOM 明确标出了编码，转成 UTF-8 再解析即可。
+	data = decodeUTF16(data)
+	// 到这里还不是合法 UTF-8，多半是记事本按 ANSI（中文 Windows 上即 GBK）保存的。encoding/json 遇到非法 UTF-8
+	// 不报错，只会悄悄换成 U+FFFD：中文的用户名、密码、网卡名就此变成另一串字符，之后只表现为认证或连接失败。
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("解析配置文件 %s: 文件不是 UTF-8 编码，请另存为 UTF-8", path)
+	}
+
+	return data, nil
+}
+
+// decodeUTF16 把以 UTF-16 BOM（LE 或 BE）开头的数据转成 UTF-8；没有 BOM 时原样返回。
+func decodeUTF16(data []byte) []byte {
+	var order binary.ByteOrder
+	switch {
+	case bytes.HasPrefix(data, []byte{0xff, 0xfe}):
+		order = binary.LittleEndian
+	case bytes.HasPrefix(data, []byte{0xfe, 0xff}):
+		order = binary.BigEndian
+	default:
+		return data
+	}
+	data = data[2:]
+	units := make([]uint16, len(data)/2)
+	for i := range units {
+		units[i] = order.Uint16(data[2*i:])
+	}
+	return []byte(string(utf16.Decode(units)))
+}
+
+// Save 把配置写入 path，必要时创建父目录（0700）。
+// 通过 os.CreateTemp（0600）写临时文件、fsync、再重命名，保证原子替换且不会以过宽的权限落盘：
+// 没有 fsync 的话，rename 之后、数据真正落盘之前断电，部分文件系统会留下一个空的 config.json，
+// 下次启动就会在非交互模式下因"解析配置文件失败"而拒绝启动。
+// 含有非 UTF-8 字节的值无法用 JSON 原样表示，此时返回错误、不动文件。
+func Save(path string, cfg Config) error {
+	// JSON 字符串只能是合法 UTF-8，Encode 会把其余字节悄悄换成 U+FFFD：从非 UTF-8 的终端 / 管道读进来的密码
+	// 照这样落盘，下次启动发给代理的就是另一串字节。本次运行用的是原始字节、不受影响，只是不能保存。
+	for _, f := range []struct{ name, value string }{
+		{"本地监听地址", cfg.LocalAddr}, {"远程目标地址", cfg.RemoteAddr}, {"Socks5 代理地址", cfg.SocksAddr},
+		{"Socks5 代理用户名", cfg.SocksUser}, {"Socks5 代理密码", cfg.SocksPassword},
+	} {
+		if !utf8.ValidString(f.value) {
+			return fmt.Errorf("%s含有非 UTF-8 字节，JSON 无法原样保存，配置未写入文件", f.name)
+		}
+	}
+
+	// 配置文件是给人手动编辑的，不是嵌进 HTML 的：json.Marshal 默认会把 & < > 转义成 \u0026 这类形式，
+	// 密码 "a&b" 落盘后就成了 "a\u0026b"，用户打开文件核对或修改时根本认不出来。Encode 会自带结尾换行。
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(cfg); err != nil {
+		return fmt.Errorf("序列化配置: %w", err)
+	}
+	data := buf.Bytes()
+
+	// 配置文件是符号链接时（dotfiles 仓库里常见的做法）写到它指向的文件：rename 换掉的是目录项，
+	// 直接对着 path 做会把链接本身换成一个普通文件，仓库里的那一份从此不再更新。
+	path = resolveSymlink(path)
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("创建配置目录 %s: %w", dir, err)
+	}
+
+	// 临时文件按实际要写的文件命名：用 -c 指定的 ssh.json 不该在旁边留下 config.json.*.tmp，
+	// 万一中途被杀掉，残留文件的名字也能看出它属于哪份配置。
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("创建临时文件: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // 成功 rename 之后这里会因为文件不存在而静默失败
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("写入临时文件: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("同步临时文件到磁盘: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("保存配置文件到 %s: %w", path, err)
+	}
+	return nil
+}
+
+// FillDefaults 用 Defaults 回填空字段。
+func (c *Config) FillDefaults() {
+	if c.LocalAddr == "" {
+		c.LocalAddr = Defaults.LocalAddr
+	}
+	if c.RemoteAddr == "" {
+		c.RemoteAddr = Defaults.RemoteAddr
+	}
+	if c.SocksAddr == "" {
+		c.SocksAddr = Defaults.SocksAddr
+	}
+}
+
+// Validate 检查三个地址都是合法的 host:port，以及认证凭据是否自洽。
+// 本地监听地址允许 host 为空（等价于监听所有接口，例如 ":10808"），
+// 但远程目标与代理地址必须有 host。
+func (c Config) Validate() error {
+	if err := ValidateListenAddr(c.LocalAddr); err != nil {
+		return fmt.Errorf("本地监听地址无效: %w", err)
+	}
+	if err := ValidateRemoteAddr(c.RemoteAddr); err != nil {
+		return fmt.Errorf("远程目标地址无效: %w", err)
+	}
+	if err := ValidateDialAddr(c.SocksAddr); err != nil {
+		return fmt.Errorf("Socks5 代理地址无效: %w", err)
+	}
+	if c.SocksUser == "" {
+		if c.SocksPassword != "" {
+			return errors.New("设置了 Socks5 代理密码却没有用户名")
+		}
+		return nil
+	}
+	if err := ValidateSocksUser(c.SocksUser); err != nil {
+		return fmt.Errorf("Socks5 代理用户名无效: %w", err)
+	}
+	if err := ValidateSocksPassword(c.SocksPassword); err != nil {
+		return fmt.Errorf("Socks5 代理密码无效: %w", err)
+	}
+	return nil
+}
+
+// resolveSymlink 解开 path 的符号链接链；即使目标文件或父目录尚未创建（悬空符号链接），
+// 也顺着链接找到最终应写入的路径，避免首次保存把符号链接覆盖成普通文件或因父目录是悬空链接而创建失败。
+func resolveSymlink(path string) string {
+	steps := 40
+	var resolve func(string) string
+	resolve = func(cur string) string {
+		for steps > 0 {
+			if target, err := filepath.EvalSymlinks(cur); err == nil {
+				return target
+			}
+			dir, base := filepath.Dir(cur), filepath.Base(cur)
+			if dir != cur {
+				rdir := resolve(dir)
+				if steps == 0 {
+					return path
+				}
+				if rdir != dir {
+					cur = filepath.Join(rdir, base)
+					continue
+				}
+			}
+			target, err := os.Readlink(cur)
+			if err != nil {
+				return cur
+			}
+			steps--
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(dir, target)
+			}
+			cur = filepath.Clean(target)
+		}
+		return path
+	}
+	return resolve(path)
+}
+
+// ValidateSocksUser 校验 Socks5 用户名：非空且不超过 255 字节。
+func ValidateSocksUser(user string) error {
+	if user == "" {
+		return errors.New("不能为空")
+	}
+	if len(user) > MaxSocksCredentialLen {
+		return fmt.Errorf("长度 %d 字节，超过 RFC 1929 允许的 %d 字节", len(user), MaxSocksCredentialLen)
+	}
+	return nil
+}
+
+// ValidateSocksPassword 校验 Socks5 密码：允许为空（RFC 1929 允许，x/net 也接受），但不能超过 255 字节。
+func ValidateSocksPassword(password string) error {
+	if len(password) > MaxSocksCredentialLen {
+		return fmt.Errorf("长度 %d 字节，超过 RFC 1929 允许的 %d 字节", len(password), MaxSocksCredentialLen)
+	}
+	return nil
+}
+
+// ValidateListenAddr 校验监听地址；允许省略 host（如 ":10808"），也允许端口为 0（由系统随机分配）。
+func ValidateListenAddr(addr string) error { return validateAddr(addr, true, true) }
+
+// ValidateDialAddr 校验本机直接发起连接的地址（如 Socks5 代理地址）；host 与 port 都不能为空，端口也不能是 0。
+func ValidateDialAddr(addr string) error { return validateAddr(addr, false, true) }
+
+// ValidateRemoteAddr 校验经由 Socks5 转发的远程目标地址；除 ValidateDialAddr 的要求外，不允许携带 IPv6 zone。
+func ValidateRemoteAddr(addr string) error { return validateAddr(addr, false, false) }
+
+func validateAddr(addr string, listen, allowZone bool) error {
+	if addr == "" {
+		return errors.New("不能为空")
+	}
+	// 控制字符不会出现在任何合法地址里（zone 里的网卡名也一样）。其中的 NUL 还会让 Go 1.26.0–1.26.2 在 Windows 上的
+	// net.LookupPort / Listen / Dial 直接 panic（GO-2026-4971），必须赶在调用它们之前拦下。
+	if strings.ContainsFunc(addr, unicode.IsControl) {
+		return fmt.Errorf("%q 含有控制字符", addr)
+	}
+	// 代理软件的文档和 ALL_PROXY 之类的环境变量里写的都是 socks5://127.0.0.1:1080 这样的 URL，顺手粘贴过来时
+	// SplitHostPort 只会抱怨 too many colons，没有端口的 http://example.com 甚至会被拆成主机 "http"。
+	if strings.Contains(addr, "://") {
+		return fmt.Errorf("%q 带有协议前缀，这里只需要 host:port，请去掉 \"://\" 和它前面的部分", addr)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		// 中文输入法下敲出来的冒号是全角的 "："，肉眼很难和半角的分清，
+		// 而 SplitHostPort 只会报一句让人摸不着头脑的 missing port in address。
+		if strings.Contains(addr, "：") {
+			return fmt.Errorf("%q 里的冒号是全角的，请切换到英文输入法，改用半角的 \":\"", addr)
+		}
+		return fmt.Errorf("%q 不是合法的 host:port: %w", addr, err)
+	}
+	if host == "" && !listen {
+		return fmt.Errorf("%q 缺少主机名", addr)
+	}
+	// "%" 只在本机直接使用的 IPv6 字面量里引入网卡 zone（Windows 的网卡名如"以太网 2"本身就带空格）：
+	//   - 远程目标经由 SOCKS5 报文发送，RFC 1928 没有 zone 字段，x/net 会把整串当作域名发给代理；
+	//   - 域名、IPv4 或空的 "%" 后缀都不是合法的 IPv6 zone。
+	if strings.Contains(host, "%") {
+		if !allowZone {
+			return fmt.Errorf("%q 远程目标地址不支持 IPv6 zone", addr)
+		}
+		if _, err := netip.ParseAddr(host); err != nil {
+			return fmt.Errorf("%q 不是合法的带 zone IPv6 地址: %w", addr, err)
+		}
+	} else if strings.ContainsFunc(host, unicode.IsSpace) {
+		return fmt.Errorf("%q 主机名里有空白字符", addr)
+	}
+	if len(host) > 255 {
+		return fmt.Errorf("%q 主机名长度 %d 字节，超过 255 字节上限", addr, len(host))
+	}
+	if port == "" {
+		return fmt.Errorf("%q 缺少端口", addr)
+	}
+	n, err := net.LookupPort("tcp", port)
+	if err != nil {
+		return fmt.Errorf("%q 端口无效: %w", addr, err)
+	}
+	// 监听端口 0 表示让系统随机分配；但谁也连不上端口 0，用作目标/代理地址只会让
+	// 之后每一条连接都失败，不如在这里就拦下来。
+	if n == 0 && !listen {
+		return fmt.Errorf("%q 端口不能为 0", addr)
+	}
+	return nil
+}

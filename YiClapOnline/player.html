@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YiClapOnline 播放器</title>
+  <link rel="icon" href="./assets/logo.svg" type="image/svg+xml">
+  <link rel="preload" href="./assets/Nebulove.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="./assets/MaterialSymbols.woff2" as="font" type="font/woff2" crossorigin>
+  <!-- player.css / app.js 由下方 loader 按 update.json 的版本号带 ?v= 加载，原因见 index.html -->
+  <!-- material icon font -->
+  <style>
+    @font-face {
+      font-family: 'Material Symbols Rounded';
+      font-style: normal;
+      font-weight: 400;
+      font-display: block; /* 图标字体必须 block：swap 会先把 "play_arrow" 这种连字名当文字显示出来（同 index.html） */
+      src: url('./assets/MaterialSymbols.woff2') format('woff2');
+    }
+    .material-symbols-rounded {
+      font-family: 'Material Symbols Rounded';
+      font-weight: normal;
+      font-style: normal;
+      font-size: 24px;
+      line-height: 1;
+      letter-spacing: normal;
+      text-transform: none;
+      display: inline-block;
+      white-space: nowrap;
+      word-wrap: normal;
+      direction: ltr;
+      -webkit-font-feature-settings: 'liga';
+      font-feature-settings: 'liga';
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* 加载遮罩的关键样式内联在此：player.css 是异步加载的，遮罩不能等它 */
+    html {
+      background-color: hsl(204, 9%, 95%);
+      font-family: sans-serif;
+    }
+
+    /* player.css 到达后会被 Nebulove 覆盖 */
+    html.dark-theme {
+      background-color: hsl(204, 9%, 11%);
+    }
+
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background-color: hsl(204, 9%, 95%);
+      color: hsl(225, 7%, 20%);
+      font-size: 16px;
+      line-height: 1.5;
+      transition: opacity 0.5s ease, visibility 0.5s ease;
+    }
+
+    html.dark-theme .loading-overlay {
+      background-color: hsl(204, 9%, 11%);
+      color: hsl(225, 7%, 89%);
+    }
+
+    .loading-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .loading-spinner {
+      width: 60px;
+      height: 60px;
+      margin-bottom: 20px;
+    }
+
+    /*
+     * 默认隐藏的元素也必须在这里内联（与 index.html 中的做法同理）：
+     * player.css 是异步加载的，在它到达之前这些元素若没有任何样式，
+     * 文字会裸露在页面上闪一下——加载遮罩在歌曲接口返回后就会淡出，
+     * 若此时 player.css 还没到位（冷缓存 / 弱网），下载弹窗就会闪现再消失。
+     * 这些规则与 player.css 里的定义一致，只是提前生效。
+     */
+    .download-modal,
+    .download-modal-overlay { opacity: 0; visibility: hidden; position: fixed; }
+    .download-modal.active,
+    .download-modal-overlay.active { opacity: 1; visibility: visible; }
+  </style>
+
+  <!-- 资源加载器，与 index.html 中的同源；说明见 index.html -->
+  <script>
+    (function () {
+      'use strict';
+      var FETCH_TIMEOUT = 6000;
+
+      try {
+        document.documentElement.classList.add(localStorage.getItem('yiclape:darkmode') === '1' ? 'dark-theme' : 'light-theme');
+      } catch (e) { }
+
+      window.__playerCssReady = false;
+      var booted = false;
+      function boot(version) {
+        if (booted) return;
+        booted = true;
+        var q = version ? '?v=' + encodeURIComponent(version) : '';
+
+        var css = document.createElement('link');
+        css.rel = 'stylesheet';
+        css.href = './player.css' + q;
+        var onCssSettled = function () {
+          if (window.__playerCssReady) return;
+          window.__playerCssReady = true;
+          if (typeof window.__onPlayerCssReady === 'function') {
+            var cb = window.__onPlayerCssReady;
+            window.__onPlayerCssReady = null;
+            cb();
+          }
+        };
+        css.onload = css.onerror = onCssSettled;
+        document.head.appendChild(css);
+
+        var js = document.createElement('script');
+        js.src = './app.js' + q;
+        js.onerror = function () {
+          var showError = function () {
+            var overlay = document.getElementById('loadingOverlay');
+            var spinner = document.querySelector('.loading-spinner');
+            var text = document.querySelector('.loading-text');
+            if (overlay) {
+              overlay.setAttribute('role', 'alert');
+              overlay.removeAttribute('aria-live');
+            }
+            if (spinner) {
+              spinner.hidden = true;
+              spinner.style.display = 'none';
+            }
+            if (text) text.textContent = '播放器脚本加载失败，请检查网络后重试';
+          };
+          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', showError, { once: true });
+          else showError();
+        };
+        document.head.appendChild(js);
+      }
+
+      var controller = typeof AbortController === 'function' ? new AbortController() : null;
+      var timer = setTimeout(function () {
+        if (controller) controller.abort();
+        boot(null);
+      }, FETCH_TIMEOUT);
+      try {
+        var fetchOpts = controller ? { cache: 'no-store', signal: controller.signal } : { cache: 'no-store' };
+        fetch('./update.json?_=' + Date.now(), fetchOpts)
+          .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+          .then(function (j) { clearTimeout(timer); boot(j && j.version ? String(j.version) : null); })
+          .catch(function () { clearTimeout(timer); boot(null); });
+      } catch (e) {
+        clearTimeout(timer);
+        boot(null);
+      }
+    })();
+  </script>
+</head>
+
+<body data-page="player">
+  <div class="bg-cover" id="bgCover" aria-hidden="true"></div>
+  <!-- 加载覆盖层 -->
+  <div class="loading-overlay" id="loadingOverlay" role="status" aria-live="polite">
+    <img src="./assets/loading.svg" alt="" class="loading-spinner">
+    <div class="loading-text">正在加载音乐信息...</div>
+  </div>
+
+  <main>
+    <article>
+
+      <!-- #PLAYER -->
+
+      <div class="player">
+        <div class="container">
+          <div class="music-banner-container">
+            <figure class="music-banner">
+              <img src="./assets/none.webp" width="800" height="800" alt="默认封面" class="img-cover" data-player-banner>
+            </figure>
+          </div>
+
+          <div class="music-content">
+            <div class="text-content">
+              <h2 class="headline-sm" data-title>加载中...</h2>
+              <p class="label-md artist" data-artist>请稍候</p>
+              <div class="vip-parse-banner" data-vip-banner hidden>
+                <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" aria-hidden="true"
+                  style="display: inline-block; vertical-align: middle;">
+                  <path
+                    d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z" />
+                </svg>
+                <span class="vip-parse-text">YiClapOnline 独家为您解析 VIP 歌曲</span>
+              </div>
+            </div>
+
+            <div class="seek-control">
+              <div class="seek-wrapper">
+                <div class="range-wrapper">
+                  <input type="range" min="0" step="1" max="60" value="0" class="range" data-range data-seek
+                    aria-label="播放进度">
+
+                  <div class="range-fill"></div>
+                </div>
+
+                <div class="duration-label wrapper">
+                  <span class="label-md" data-running-time>0:00</span>
+
+                  <span class="label-md" data-duration>0:00</span>
+                </div>
+              </div>
+
+              <!-- 音量控制器由 JavaScript 动态创建 -->
+              <div id="volume-container"></div>
+            </div>
+
+            <div class="player-control wrapper">
+              <button class="btn-icon play" type="button" data-play-btn aria-label="播放">
+                <span class="material-symbols-rounded default-icon" aria-hidden="true">play_arrow</span>
+                <span class="material-symbols-rounded active-icon" aria-hidden="true">pause</span>
+              </button>
+
+              <button class="btn-icon" type="button" data-favorite aria-label="收藏" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">favorite_border</span>
+              </button>
+
+              <button class="btn-icon" type="button" data-download aria-label="下载">
+                <span class="material-symbols-rounded" aria-hidden="true">download</span>
+              </button>
+
+              <button class="btn-icon toggle" type="button" data-loop aria-label="单曲循环" aria-pressed="false">
+                <span class="material-symbols-rounded" aria-hidden="true">repeat_one</span>
+              </button>
+
+              <button class="btn-icon toggle" type="button" data-theme-toggle aria-label="切换主题">
+                <span class="material-symbols-rounded" aria-hidden="true">dark_mode</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <!-- 下载弹窗（音质选择 + 无感下载） -->
+  <div class="download-modal-overlay" id="downloadOverlay"></div>
+  <div class="download-modal" id="downloadModal" role="dialog" aria-modal="true" aria-labelledby="downloadModalTitle">
+    <div class="download-modal-title" id="downloadModalTitle">下载歌曲</div>
+    <div class="download-modal-content" id="downloadList"></div>
+    <div class="download-modal-button">
+      <button id="downloadClose" type="button">关闭</button>
+    </div>
+  </div>
+</body>
+
+</html>

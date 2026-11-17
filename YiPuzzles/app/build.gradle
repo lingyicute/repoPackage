@@ -1,0 +1,75 @@
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+    id 'com.google.devtools.ksp'
+}
+
+android {
+    namespace 'org.lyi.puzzles'
+    defaultConfig {
+        applicationId 'org.lyi.puzzles'
+        minSdkVersion 21
+        targetSdkVersion 34
+        compileSdk 34
+        versionCode 16
+        versionName "1.5.2"
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17.toString()
+    }
+
+    kotlin {
+        jvmToolchain(17)
+    }
+
+    android.applicationVariants.configureEach { variant ->
+        variant.outputs.configureEach {
+            def appName = "yipuzzles"
+            outputFileName = appName + "-${variant.name}-v${variant.versionName}.apk"
+        }
+    }
+
+    lint {
+        lintConfig = file("lint.xml")
+    }
+    testOptions {
+        unitTests {
+            // PreviewBoardSquareTest runs on Robolectric and needs the packaged resources
+            includeAndroidResources = true
+        }
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation('org.robolectric:robolectric:4.13') { exclude group: 'org.bouncycastle' }
+    testImplementation 'org.bouncycastle:bcprov-jdk15on:1.70'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.activity:activity:1.9.3'
+    implementation 'androidx.core:core-splashscreen:1.0.1'
+    implementation 'androidx.preference:preference:1.2.1'
+    implementation 'com.github.bumptech.glide:glide:4.11.0'
+
+    constraints {
+        implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.0") {
+            because("kotlin-stdlib-jdk7 is now a part of kotlin-stdlib")
+        }
+        implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.0") {
+            because("kotlin-stdlib-jdk8 is now a part of kotlin-stdlib")
+        }
+    }
+}

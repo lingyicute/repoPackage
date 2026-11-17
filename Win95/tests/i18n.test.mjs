@@ -1,0 +1,206 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFile, readdir } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { detectLanguage, translateText } from '../src/packages/core/i18n.js';
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * The ZH table as an object, taken from the module source. It is a plain object
+ * literal, so the literal is sliced out by brace matching and evaluated — the
+ * alternative is a regex over 300 lines of quoted text, which reads more keys
+ * than it should.
+ */
+async function dictionary() {
+    const source = await readFile(path.join(root, 'src/packages/core/i18n.js'), 'utf8');
+    const marker = 'const ZH = ';
+    const start = source.indexOf(marker) + marker.length;
+    let depth = 0, end = -1;
+    for (let i = start; i < source.length; i++) {
+        if (source[i] === '{')
+            depth++;
+        else if (source[i] === '}')
+            if (!--depth) { end = i + 1; break; }
+    }
+    assert.ok(end > 0, 'the ZH dictionary literal was found');
+    return new Function('return ' + source.slice(start, end))();
+}
+
+/** Every string the shell can render, quotes and escapes removed. */
+async function renderedText() {
+    const files = [];
+    const walk = async directory => {
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+            const full = path.join(directory, entry.name);
+            if (entry.isDirectory())
+                await walk(full);
+            else if (/\.(?:js|html)$/.test(entry.name) && entry.name !== 'i18n.js')
+                files.push(full);
+        }
+    };
+    await walk(path.join(root, 'src'));
+    const text = [];
+    for (const file of files)
+        text.push(await readFile(file, 'utf8'));
+    /* An apostrophe written \' in the source is the same text on screen. */
+    return text.join('\n').replace(/\\(['"`\\])/g, '$1');
+}
+
+test('startup language follows the browser language', () => {
+    assert.equal(detectLanguage('zh-CN'), 'zh');
+    assert.equal(detectLanguage('zh-TW'), 'zh');
+    assert.equal(detectLanguage('zh'), 'zh');
+    assert.equal(detectLanguage('en-US'), 'en');
+    assert.equal(detectLanguage('ja-JP'), 'en');
+    assert.equal(detectLanguage(''), 'en');
+    assert.equal(detectLanguage(undefined), 'en');
+});
+
+test('Chinese UI strings come from the dictionary, English is untouched', () => {
+    assert.equal(translateText('Start', 'zh'), '开始');
+    assert.equal(translateText('Accessories', 'zh'), '附件');
+    assert.equal(translateText('Games', 'zh'), '游戏');
+    assert.equal(translateText('Communications', 'zh'), '通讯');
+    assert.equal(translateText('System Tools', 'zh'), '系统工具');
+    assert.equal(translateText('Change Password', 'zh'), '更改密码');
+    assert.equal(translateText('Click this button to change your Windows password.', 'zh'), '单击此按钮更改 Windows 密码。');
+    assert.equal(translateText('Type a name to identify yourself to Windows. Enter a password if you want to.', 'zh'), '输入您的名称以标识 Windows 用户。如有密码，请输入密码。');
+    assert.equal(translateText("Tip: If you don't enter a password, you won't get this prompt again at startup.", 'zh'), '提示：如果用户没有密码，下次启动时将不再显示此质询。');
+    assert.equal(translateText('Old password:', 'zh'), '旧密码：');
+    assert.equal(translateText('My Computer', 'zh'), '我的电脑');
+    assert.equal(translateText('Show this next time', 'zh'), '下次显示此窗口');
+    assert.equal(translateText('Start', 'en'), 'Start');
+    assert.equal(translateText('  Files  ', 'zh'), '  文件  ');
+    assert.equal(translateText('Some Untranslated String', 'zh'), 'Some Untranslated String');
+});
+
+test('dynamic UI strings are translated by pattern', () => {
+    assert.equal(translateText('3 object(s)', 'zh'), '3 个对象');
+    assert.equal(translateText('5 objects', 'zh'), '5 个对象');
+    assert.equal(translateText('2 file(s)', 'zh'), '2 个文件');
+    assert.equal(translateText('4 file(s) found', 'zh'), '找到 4 个文件');
+    assert.equal(translateText('2 Players', 'zh'), '2 位玩家');
+    assert.equal(translateText('12.5 bytes', 'zh'), '12.5 字节');
+    assert.equal(translateText("Cannot find 'solitaire'. Make sure the name is correct and try again.", 'zh'), '找不到“solitaire”。请确认名称正确后重试。');
+    assert.equal(translateText('Are you sure you want to send to the Recycle Bin these 4 items?', 'zh'), '确实要将这 4 个项目发送到回收站吗？');
+    assert.equal(translateText('About Notepad', 'zh'), '关于记事本');
+    assert.equal(translateText('Beginner: 42 seconds\nExpert: — seconds', 'zh'), '初级：42 秒\n高级：— 秒');
+    assert.equal(translateText('45 minutes (custom)', 'zh'), '45 分钟（自定义）');
+    assert.equal(translateText('This is the same wait time as the Screen Saver tab in Display Properties; host sleep stays under your computer’s control.', 'zh'), '这与“显示属性”中的“屏幕保护程序”选项卡使用相同的等待时间；主机的睡眠仍由您的计算机控制。');
+});
+
+/**
+ * Keys no source file spells out as one string, so the check below cannot find
+ * them: 'Folder Options' and 'Folder-options' are a settings applet id with its
+ * first letter capitalised (control-panel.js), the print dialog line is a single
+ * table entry for text rendered as separate nodes, and the four media transport
+ * words are entries for a pause control the player does not have yet.
+ */
+const UNRUNLIT_KEYS = [
+    'Folder Options', 'Folder-options',
+    'Paper: A4 Margins: 20 mm  Choose a printer and adjust paper options in the print dialog.',
+    'Playing', 'Paused', 'Pause', 'Stopped'
+];
+
+test('every translation key matches text the shell actually renders', async () => {
+    const zh = await dictionary();
+    const keys = Object.keys(zh);
+    assert.ok(keys.length > 500, `the dictionary is read in full, saw ${keys.length} keys`);
+    const rendered = await renderedText();
+    /* A key whose English text is nowhere in the source can never be looked up:
+       translateText returns the DOM text unchanged when the table misses, which
+       is how editing a key but not the string it names leaves the old copy on
+       screen. Matching is a substring test and so forgiving by design — a key
+       that only appears inside a longer concatenated line still counts. */
+    const orphans = keys.filter(key => key && !rendered.includes(key) && !UNRUNLIT_KEYS.includes(key));
+    assert.deepEqual(orphans, [], 'unreferenced ZH keys: ' + JSON.stringify(orphans));
+});
+
+test('System Properties names each hardware line in both languages', async () => {
+    for (const [en, zh] of [['System:', '系统：'], ['Hardware architecture:', '硬件架构：'], ['Browser', '浏览器'], ['8 logical cores', '8 个逻辑核心'], ['Virtual disk:', '虚拟磁盘：'], ['Used space:', '已用空间：'], ['Registered to:', '授权给：']])
+        assert.equal(translateText(en, 'zh'), zh, en);
+    const source = await readFile(path.join(root, 'src/packages/apps/control-panel.js'), 'utf8');
+    for (const label of ["'System:'", "'Hardware architecture:'", "'Virtual disk:'", "'Used space:'"])
+        assert.ok(source.includes(label), `${label} is the label the dictionary translates`);
+    assert.doesNotMatch(source, /'Version:'|'Processors:'|'Disk:'|'Volume size:'|Virtual disk used:/, 'the labels the General tab no longer shows are gone from the source');
+});
+
+test('name validation and sound captions translate to Chinese', () => {
+    for (const [en, zh] of [
+        ['Please type a name.', '请输入名称。'],
+        ['The file name is not valid.', '文件名无效。'],
+        ['A name cannot contain any of the following characters:', '名称不能包含以下字符：'],
+        ['Startup sound', '启动声音'],
+        ['Shutdown sound', '关闭声音'],
+        ['Chime', '叮咚声'],
+        ['Error beep', '错误提示音'],
+        ['Click', '咔哒声']
+    ])
+        assert.equal(translateText(en, 'zh'), zh, en);
+    assert.equal(
+        translateText('Cannot open "C:\\\\x.lnk": the shortcut points to a shortcut chain that is too deep.', 'zh'),
+        '无法打开“C:\\\\x.lnk”：快捷方式指向的快捷方式链过深。');
+});
+
+/**
+ * The other direction of the same mistake this file guards: a label that is
+ * rendered into the DOM but has no dictionary entry shows English to a Chinese
+ * desktop, and no test notices. Labels built as 'Head' + value are exempt - the
+ * dynamic patterns in applyPatterns own those.
+ */
+test('labels shown by dialogs and sliders are all translatable', async () => {
+    const shapes = [
+        [/s\.ui\.prompt\(\s*'([^'\\]+)'/g, 's.ui.prompt'],
+        [/field\(\s*'([^'\\]+)'/g, 'field'],
+        [/trackbar\(\{\s*label:\s*'([^'\\]+)'/g, 'trackbar label'],
+        [/s\.ui\.message\(\s*'([^'\\]+)'/g, 's.ui.message']
+    ];
+    const walk = async dir => {
+        const found = [];
+        for (const entry of await readdir(dir, { withFileTypes: true })) {
+            const p = path.join(dir, entry.name);
+            if (entry.isDirectory())
+                found.push(...await walk(p));
+            else if (p.endsWith('.js'))
+                found.push(p);
+        }
+        return found;
+    };
+    const missing = [];
+    for (const file of await walk(path.join(root, 'src'))) {
+        const source = await readFile(file, 'utf8');
+        for (const [pattern, kind] of shapes)
+            for (const match of source.matchAll(pattern)) {
+                const label = match[1];
+                if (translateText(label, 'zh') !== label)
+                    continue;
+                if (source.slice(match.index + match[0].length, match.index + match[0].length + 8).trimStart().startsWith('+'))
+                    continue;
+                missing.push(`${kind} ${JSON.stringify(label)} in ${path.relative(root, file)}`);
+            }
+    }
+    assert.deepEqual(missing, [], 'a rendered label with no dictionary entry reads as English in Chinese:\n' + missing.join('\n'));
+});
+
+test('no English label is listed twice in the Chinese dictionary', async () => {
+    /* A repeated key silently lets the later line win, so two different widgets
+       sharing one label can never be told apart - and the earlier line is dead. */
+    const source = await readFile(path.join(root, 'src/packages/core/i18n.js'), 'utf8');
+    const start = source.indexOf('const ZH = ');
+    let depth = 0, end = -1;
+    for (let i = source.indexOf('{', start); i < source.length; i++) {
+        if (source[i] === '{')
+            depth++;
+        else if (source[i] === '}' && !--depth) { end = i + 1; break; }
+    }
+    const literal = source.slice(start, end);
+    const seen = new Set(), repeated = [];
+    for (const [, key] of literal.matchAll(/'((?:[^'\\]|\\.)*)'\s*:/g)) {
+        if (seen.has(key))
+            repeated.push(key);
+        seen.add(key);
+    }
+    assert.deepEqual(repeated, []);
+});

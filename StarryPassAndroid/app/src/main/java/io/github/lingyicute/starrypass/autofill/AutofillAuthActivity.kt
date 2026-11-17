@@ -1,0 +1,943 @@
+/*
+ * StarryPass Android — Floating Material You Autofill Authentication & Policy Sheet
+ * Copyright (C) 2024-2026 lingyicute
+ * Licensed under GNU AGPL-3.0-or-later.
+ */
+package io.github.lingyicute.starrypass.autofill
+
+import android.app.Activity
+import android.app.assist.AssistStructure
+import android.content.Intent
+import android.os.Build
+import android.os.Bundle
+import android.service.autofill.Dataset
+import android.service.autofill.Field
+import android.service.autofill.Presentations
+import android.view.autofill.AutofillId
+import android.view.autofill.AutofillManager
+import android.view.autofill.AutofillValue
+import android.widget.RemoteViews
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Fingerprint
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Remove
+import androidx.compose.material.icons.outlined.Tag
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.lingyicute.starrypass.R
+import io.github.lingyicute.starrypass.StarryPassApp
+import io.github.lingyicute.starrypass.crypto.DeriveRequest
+import io.github.lingyicute.starrypass.crypto.Spv2ErrorCode
+import io.github.lingyicute.starrypass.crypto.Spv2Exception
+import io.github.lingyicute.starrypass.crypto.Spv2Mode
+import io.github.lingyicute.starrypass.crypto.Spv2Spec
+import io.github.lingyicute.starrypass.crypto.Spv2Tier
+import io.github.lingyicute.starrypass.data.AppSettings
+import io.github.lingyicute.starrypass.security.ScreenSecurityEffect
+import io.github.lingyicute.starrypass.ui.modeLabelText
+import io.github.lingyicute.starrypass.ui.theme.StarryPassTheme
+import io.github.lingyicute.starrypass.ui.tierShortLabelText
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
+
+private val AUTOFILL_PIN_QUICK_LENGTHS = listOf(4, 6, 8, 12)
+private val AUTOFILL_DEFAULT_QUICK_LENGTHS = listOf(12, 16, 20, 24, 32)
+
+class AutofillAuthActivity : FragmentActivity() {
+
+    companion object {
+        const val EXTRA_PASSWORD_IDS = "extra_password_ids"
+        const val EXTRA_MANUAL_REQUEST = "extra_manual_request"
+        const val EXTRA_EXPECTED_DOMAIN = "extra_expected_domain"
+        const val EXTRA_EXPECTED_PACKAGE = "extra_expected_package"
+        const val EXTRA_SUGGESTED_CODE = "extra_suggested_code"
+        const val EXTRA_TARGET_LABEL = "extra_target_label"
+        const val EXTRA_PRESET_MODE = "extra_preset_mode"
+        const val EXTRA_PRESET_LENGTH = "extra_preset_length"
+        const val EXTRA_PRESET_COUNTER = "extra_preset_counter"
+        const val EXTRA_PRESET_TIER = "extra_preset_tier"
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        val fallbackIds: List<AutofillId> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableArrayListExtra(EXTRA_PASSWORD_IDS, AutofillId::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayListExtra(EXTRA_PASSWORD_IDS)
+        }.orEmpty()
+
+        val liveStructure: AssistStructure? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(AutofillManager.EXTRA_ASSIST_STRUCTURE, AssistStructure::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(AutofillManager.EXTRA_ASSIST_STRUCTURE)
+        }
+
+        val isManualRequest = intent.getBooleanExtra(EXTRA_MANUAL_REQUEST, false)
+        val expectedDomain = intent.getStringExtra(EXTRA_EXPECTED_DOMAIN)
+        val expectedPackage = intent.getStringExtra(EXTRA_EXPECTED_PACKAGE)
+        // Prefer fresh AutofillIds parsed from the live AssistStructure (critical for Chrome/WebView virtual nodes),
+        // while aborting if the live origin/package changed since onFillRequest or no valid targets remain.
+        var liveParseFailed = false
+        val liveParsed = liveStructure?.let {
+            // A malformed live structure must abort filling, not bypass origin revalidation.
+            try {
+                AssistStructureParser.parse(it)
+            } catch (_: RuntimeException) {
+                liveParseFailed = true
+                null
+            }
+        }
+        val targetIds: List<AutofillId> = AssistStructureParser.resolveAuthenticatedTargets(
+            hasLiveStructure = liveStructure != null,
+            liveParseFailed = liveParseFailed,
+            liveTargets = liveParsed?.resolveTargetIds(isManualRequest).orEmpty(),
+            liveWebDomain = liveParsed?.webDomain,
+            livePackageName = liveParsed?.packageName,
+            expectedWebDomain = expectedDomain,
+            expectedPackageName = expectedPackage,
+            selfPackageName = packageName,
+            fallbackTargets = fallbackIds
+        )
+
+        if (targetIds.isEmpty()) {
+            cancelAutofill()
+            return
+        }
+
+        val initialCode = intent.getStringExtra(EXTRA_SUGGESTED_CODE).orEmpty()
+        val targetLabel = intent.getStringExtra(EXTRA_TARGET_LABEL).orEmpty()
+        val initialMode = Spv2Mode.fromKey(intent.getStringExtra(EXTRA_PRESET_MODE))
+        val initialLength = Spv2Spec.clampLength(
+            intent.getIntExtra(EXTRA_PRESET_LENGTH, Spv2Spec.DEFAULT_LENGTH)
+        )
+        val initialCounter = Spv2Spec.clampCounter(
+            intent.getIntExtra(EXTRA_PRESET_COUNTER, Spv2Spec.DEFAULT_COUNTER)
+        )
+        val initialTier = Spv2Tier.fromKey(intent.getStringExtra(EXTRA_PRESET_TIER))
+
+        val app = application as StarryPassApp
+
+        setContent {
+            val settings by app.preferencesRepository.settingsFlow.collectAsStateWithLifecycle(initialValue = AppSettings())
+            val presets by app.preferencesRepository.presetsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+            val bioEnrolled by app.biometricVault.isEnrolled.collectAsStateWithLifecycle()
+            val scope = rememberCoroutineScope()
+            val focusManager = LocalFocusManager.current
+
+            // Respect user's screenshot protection setting inside Autofill sheet as well
+            ScreenSecurityEffect(flagSecureEnabled = settings.flagSecure)
+
+            // Never persist the master password in saved instance state.
+            var master by remember { mutableStateOf("") }
+            var code by rememberSaveable { mutableStateOf(initialCode) }
+            var mode by rememberSaveable { mutableStateOf(initialMode) }
+            var length by rememberSaveable { mutableIntStateOf(initialLength) }
+            var counter by rememberSaveable { mutableIntStateOf(initialCounter) }
+            var counterText by remember(counter) { mutableStateOf(counter.toString()) }
+            var tier by rememberSaveable { mutableStateOf(initialTier) }
+            var policyExpanded by rememberSaveable { mutableStateOf(false) }
+            var showMaster by rememberSaveable { mutableStateOf(false) }
+            var busy by remember { mutableStateOf(false) }
+            var errorMsg by remember { mutableStateOf<String?>(null) }
+            var deriveJob by remember { mutableStateOf<Job?>(null) }
+            var deriveSeq by remember { mutableIntStateOf(0) }
+            var observedWipe by remember { mutableStateOf(app.sessionWipes.generation.value) }
+
+            LaunchedEffect(master.isEmpty()) {
+                if (master.isEmpty()) {
+                    showMaster = false
+                }
+            }
+
+            LaunchedEffect(app) {
+                app.sessionWipes.generation.collect { generation ->
+                    if (generation != observedWipe) {
+                        observedWipe = generation
+                        deriveSeq++
+                        deriveJob?.cancel()
+                        deriveJob = null
+                        app.biometricVault.cancelPendingAuthentication()
+                        master = ""
+                        showMaster = false
+                        busy = false
+                        errorMsg = null
+                    }
+                }
+            }
+
+            fun cancelInFlightDerive() {
+                deriveSeq++
+                deriveJob?.cancel()
+                deriveJob = null
+                app.biometricVault.cancelPendingAuthentication()
+                busy = false
+                errorMsg = null
+            }
+
+            fun dismissAutofill() {
+                cancelInFlightDerive()
+                master = ""
+                showMaster = false
+                app.biometricVault.cancelPendingAuthentication()
+                cancelAutofill()
+            }
+
+            BackHandler { dismissAutofill() }
+
+            fun executeDerive(secretMaster: String, copyOnly: Boolean) {
+                val cleanCode = Spv2Spec.ecmaTrim(code)
+                if (secretMaster.isEmpty() || cleanCode.isEmpty()) return
+                counterText = counter.toString()
+                val seq = ++deriveSeq
+                val generation = app.sessionWipes.generation.value
+                val request = DeriveRequest(secretMaster, cleanCode, tier, counter, length, mode)
+                busy = true
+                errorMsg = null
+                deriveJob?.cancel()
+                deriveJob = scope.launch {
+                    try {
+                        val res = try {
+                            app.engine.derive(request)
+                        } finally {
+                            withContext(NonCancellable) {
+                                app.engine.wipeSession()
+                            }
+                        }
+                        // A wipe, newer input change, or activity cancellation may happen before the result is delivered.
+                        if (seq != deriveSeq || !app.sessionWipes.isCurrent(generation) || isFinishing || isDestroyed) {
+                            return@launch
+                        }
+                        if (copyOnly) {
+                            val copied = app.clipboardManager.copySensitivePassword(
+                                label = getString(R.string.app_name),
+                                secret = res.password,
+                                autoClearSeconds = settings.clipboardAutoClearSeconds
+                            )
+                            if (copied) {
+                                master = ""
+                                showMaster = false
+                                busy = false
+                                cancelAutofill()
+                            } else {
+                                // Keep the sheet open so the user is not left with nothing copied.
+                                busy = false
+                                errorMsg = getString(R.string.clipboard_copy_failed)
+                            }
+                        } else {
+                            master = ""
+                            showMaster = false
+                            busy = false
+                            completeAutofill(targetIds, cleanCode, res.password)
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (e: Throwable) {
+                        if (seq == deriveSeq && app.sessionWipes.isCurrent(generation)) {
+                            busy = false
+                            // Never surface raw enum names such as OUT_OF_MEMORY to the user.
+                            val outOfMemory = e is OutOfMemoryError ||
+                                (e as? Spv2Exception)?.code == Spv2ErrorCode.OUT_OF_MEMORY
+                            errorMsg = getString(
+                                when {
+                                    !outOfMemory -> R.string.error_derive_generic
+                                    request.tier == Spv2Tier.PARANOID -> R.string.error_derive_oom
+                                    else -> R.string.error_derive_oom_standard
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            fun triggerAction(copyOnly: Boolean) {
+                if (master.isNotEmpty()) {
+                    executeDerive(master, copyOnly = copyOnly)
+                } else if (bioEnrolled) {
+                    cancelInFlightDerive()
+                    app.biometricVault.unlockMasterPassword(
+                        activity = this@AutofillAuthActivity,
+                        onSuccess = { unlocked -> executeDerive(unlocked, copyOnly = copyOnly) },
+                        onError = { err -> errorMsg = err }
+                    )
+                }
+            }
+
+            StarryPassTheme(
+                themePreference = settings.theme,
+                dynamicColor = settings.dynamicColor
+            ) {
+                val colorScheme = MaterialTheme.colorScheme
+                val codeReady = Spv2Spec.ecmaTrim(code).isNotEmpty()
+                val canProceed = !busy && codeReady && (master.isNotEmpty() || bioEnrolled)
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.38f))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { dismissAutofill() },
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                        color = colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.55f)),
+                        modifier = Modifier
+                            .statusBarsPadding()
+                            .widthIn(max = 540.dp)
+                            .fillMaxWidth()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) { /* consume clicks inside sheet */ }
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
+                                .navigationBarsPadding()
+                                .imePadding()
+                                .padding(horizontal = 20.dp, vertical = 18.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            // Sheet Header
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .background(
+                                            colorScheme.primaryContainer,
+                                            RoundedCornerShape(12.dp)
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_starrypass_glyph),
+                                        contentDescription = null,
+                                        tint = colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = stringResource(R.string.autofill_sheet_title),
+                                        style = MaterialTheme.typography.titleLarge,
+                                        color = colorScheme.onSurface
+                                    )
+                                    val cleanTargetLabel = Spv2Spec.ecmaTrim(targetLabel)
+                                    if (cleanTargetLabel.isNotEmpty()) {
+                                        Text(
+                                            text = stringResource(R.string.autofill_detected_target, cleanTargetLabel),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Saved Site Presets Quick Row (1-tap loads code + length + mode + counter + tier)
+                            if (presets.isNotEmpty()) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = stringResource(R.string.autofill_presets_label),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = colorScheme.onSurfaceVariant
+                                    )
+                                    val activeCode = Spv2Spec.ecmaTrim(code)
+                                    // Lazy: users can keep many presets, only the visible chips are composed.
+                                    // Ids are unique: PreferencesRepository.decodePresets drops duplicates.
+                                    LazyRow(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        items(presets, key = { it.id }) { preset ->
+                                            val selected = activeCode == preset.code &&
+                                                length == preset.length &&
+                                                mode == preset.mode &&
+                                                counter == preset.counter &&
+                                                tier == preset.tier
+                                            FilterChip(
+                                                selected = selected,
+                                                onClick = {
+                                                    cancelInFlightDerive()
+                                                    val clampedCounter = Spv2Spec.clampCounter(preset.counter)
+                                                    code = preset.code
+                                                    length = Spv2Spec.clampLength(preset.length)
+                                                    mode = preset.mode
+                                                    counter = clampedCounter
+                                                    counterText = clampedCounter.toString()
+                                                    tier = preset.tier
+                                                },
+                                                label = {
+                                                    Text(
+                                                        if (preset.counter > 1) {
+                                                            "${preset.displayName} #${preset.counter}"
+                                                        } else {
+                                                            preset.displayName
+                                                        }
+                                                    )
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Site Code Input
+                            OutlinedTextField(
+                                value = code,
+                                onValueChange = {
+                                    cancelInFlightDerive()
+                                    code = it
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                label = { Text(stringResource(R.string.field_code_label)) },
+                                leadingIcon = { Icon(Icons.Outlined.Tag, contentDescription = null) },
+                                keyboardOptions = KeyboardOptions(
+                                    capitalization = KeyboardCapitalization.None,
+                                    autoCorrectEnabled = false,
+                                    imeAction = ImeAction.Next
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            // Master Password Input
+                            OutlinedTextField(
+                                value = master,
+                                onValueChange = {
+                                    cancelInFlightDerive()
+                                    master = it
+                                },
+                                singleLine = true,
+                                shape = RoundedCornerShape(14.dp),
+                                label = { Text(stringResource(R.string.field_master_label)) },
+                                leadingIcon = { Icon(Icons.Outlined.Lock, contentDescription = null) },
+                                trailingIcon = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (bioEnrolled) {
+                                            IconButton(
+                                                enabled = !busy,
+                                                onClick = {
+                                                    cancelInFlightDerive()
+                                                    app.biometricVault.unlockMasterPassword(
+                                                        activity = this@AutofillAuthActivity,
+                                                        onSuccess = { unlocked ->
+                                                            cancelInFlightDerive()
+                                                            master = unlocked
+                                                        },
+                                                        onError = { err -> errorMsg = err }
+                                                    )
+                                                }
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Fingerprint,
+                                                    contentDescription = stringResource(R.string.field_biometric_unlock),
+                                                    tint = colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                        IconButton(onClick = { showMaster = !showMaster }) {
+                                            Icon(
+                                                imageVector = if (showMaster) {
+                                                    Icons.Outlined.VisibilityOff
+                                                } else {
+                                                    Icons.Outlined.Visibility
+                                                },
+                                                contentDescription = stringResource(
+                                                    if (showMaster) R.string.field_master_hide else R.string.field_master_show
+                                                )
+                                            )
+                                        }
+                                    }
+                                },
+                                visualTransformation = if (showMaster) {
+                                    VisualTransformation.None
+                                } else {
+                                    PasswordVisualTransformation()
+                                },
+                                keyboardOptions = KeyboardOptions(
+                                    capitalization = KeyboardCapitalization.None,
+                                    autoCorrectEnabled = false,
+                                    keyboardType = KeyboardType.Password,
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        focusManager.clearFocus()
+                                        if (canProceed) triggerAction(copyOnly = false)
+                                    }
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            // Complete Policy Parameters Selector Card (Charset, Length 4..64, Counter 1..9999, Tier)
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = colorScheme.surfaceContainerHigh,
+                                border = BorderStroke(1.dp, colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { policyExpanded = !policyExpanded }
+                                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Tune,
+                                                contentDescription = null,
+                                                tint = colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Column {
+                                                Text(
+                                                    text = stringResource(R.string.autofill_policy_toggle),
+                                                    style = MaterialTheme.typography.labelLarge,
+                                                    color = colorScheme.onSurface
+                                                )
+                                                Text(
+                                                    text = stringResource(
+                                                        R.string.policy_summary_short,
+                                                        length,
+                                                        modeLabelText(mode),
+                                                        counter,
+                                                        tierShortLabelText(tier)
+                                                    ),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = colorScheme.primary,
+                                                    fontWeight = FontWeight.Medium
+                                                )
+                                            }
+                                        }
+                                        Icon(
+                                            imageVector = if (policyExpanded) {
+                                                Icons.Outlined.ExpandLess
+                                            } else {
+                                                Icons.Outlined.ExpandMore
+                                            },
+                                            contentDescription = null,
+                                            tint = colorScheme.onSurfaceVariant
+                                        )
+                                    }
+
+                                    AnimatedVisibility(
+                                        visible = policyExpanded,
+                                        enter = fadeIn() + expandVertically(),
+                                        exit = fadeOut() + shrinkVertically()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            HorizontalDivider(color = colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                                            // 1. Character Set Mode
+                                            Column {
+                                                Text(
+                                                    text = stringResource(R.string.policy_mode_label),
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colorScheme.onSurfaceVariant
+                                                )
+                                                Spacer(Modifier.height(6.dp))
+                                                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                                    Spv2Mode.entries.forEachIndexed { idx, m ->
+                                                        SegmentedButton(
+                                                            selected = mode == m,
+                                                            onClick = {
+                                                                if (mode != m) {
+                                                                    cancelInFlightDerive()
+                                                                    if (m == Spv2Mode.PIN && length > 8) length = 6
+                                                                    else if (mode == Spv2Mode.PIN && length <= 8) length = 16
+                                                                    mode = m
+                                                                }
+                                                            },
+                                                            shape = SegmentedButtonDefaults.itemShape(
+                                                                idx,
+                                                                Spv2Mode.entries.size
+                                                            )
+                                                        ) {
+                                                            Text(modeLabelText(m), maxLines = 1)
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            // 2. Password Length (Quick Chips + 4..64 Custom Slider)
+                                            Column {
+                                                Text(
+                                                    text = stringResource(R.string.policy_length_label, length),
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colorScheme.onSurfaceVariant
+                                                )
+                                                Spacer(Modifier.height(4.dp))
+                                                val quickLengths = if (mode == Spv2Mode.PIN) {
+                                                    AUTOFILL_PIN_QUICK_LENGTHS
+                                                } else {
+                                                    AUTOFILL_DEFAULT_QUICK_LENGTHS
+                                                }
+                                                FlowRow(
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    quickLengths.forEach { presetLen ->
+                                                        FilterChip(
+                                                            selected = length == presetLen,
+                                                            onClick = {
+                                                                cancelInFlightDerive()
+                                                                length = presetLen
+                                                            },
+                                                            label = { Text(presetLen.toString()) }
+                                                        )
+                                                    }
+                                                }
+                                                Slider(
+                                                    value = length.toFloat(),
+                                                    onValueChange = {
+                                                        val rounded = it.roundToInt()
+                                                        if (rounded != length) {
+                                                            cancelInFlightDerive()
+                                                            length = rounded
+                                                        }
+                                                    },
+                                                    valueRange = Spv2Spec.MIN_LENGTH.toFloat()..Spv2Spec.MAX_LENGTH.toFloat(),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                )
+                                            }
+
+                                            // 3. Rotation Counter (1..9999)
+                                            Column {
+                                                Text(
+                                                    text = stringResource(R.string.policy_counter_label),
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colorScheme.onSurfaceVariant
+                                                )
+                                                Spacer(Modifier.height(6.dp))
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                ) {
+                                                    FilledTonalIconButton(
+                                                        onClick = {
+                                                            if (counter > Spv2Spec.MIN_COUNTER) {
+                                                                cancelInFlightDerive()
+                                                                counter -= 1
+                                                                counterText = counter.toString()
+                                                            }
+                                                        },
+                                                        enabled = counter > Spv2Spec.MIN_COUNTER
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Outlined.Remove,
+                                                            contentDescription = stringResource(R.string.counter_dec)
+                                                        )
+                                                    }
+                                                    OutlinedTextField(
+                                                        value = counterText,
+                                                        onValueChange = { raw ->
+                                                            val digits = raw.filter { it in '0'..'9' }.take(4)
+                                                            counterText = digits
+                                                            digits.toIntOrNull()?.let { parsed ->
+                                                                if (parsed in Spv2Spec.MIN_COUNTER..Spv2Spec.MAX_COUNTER && parsed != counter) {
+                                                                    cancelInFlightDerive()
+                                                                    counter = parsed
+                                                                }
+                                                            }
+                                                        },
+                                                        singleLine = true,
+                                                        shape = RoundedCornerShape(12.dp),
+                                                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                                            textAlign = TextAlign.Center,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        ),
+                                                        keyboardOptions = KeyboardOptions(
+                                                            keyboardType = KeyboardType.Number,
+                                                            imeAction = ImeAction.Done
+                                                        ),
+                                                        keyboardActions = KeyboardActions(
+                                                            onDone = {
+                                                                counterText = counter.toString()
+                                                                focusManager.clearFocus()
+                                                            }
+                                                        ),
+                                                        modifier = Modifier
+                                                            .width(92.dp)
+                                                            .onFocusChanged { focus ->
+                                                                // Show the counter actually used, not an invalid entry.
+                                                                if (!focus.isFocused) counterText = counter.toString()
+                                                            }
+                                                    )
+                                                    FilledTonalIconButton(
+                                                        onClick = {
+                                                            if (counter < Spv2Spec.MAX_COUNTER) {
+                                                                cancelInFlightDerive()
+                                                                counter += 1
+                                                                counterText = counter.toString()
+                                                            }
+                                                        },
+                                                        enabled = counter < Spv2Spec.MAX_COUNTER
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Outlined.Add,
+                                                            contentDescription = stringResource(R.string.counter_inc)
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            // 4. Argon2id Hardening Tier (64 MiB / 256 MiB)
+                                            Column {
+                                                Text(
+                                                    text = stringResource(R.string.policy_tier_label),
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = colorScheme.onSurfaceVariant
+                                                )
+                                                Spacer(Modifier.height(6.dp))
+                                                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                                    SegmentedButton(
+                                                        selected = tier == Spv2Tier.STANDARD,
+                                                        onClick = {
+                                                            cancelInFlightDerive()
+                                                            tier = Spv2Tier.STANDARD
+                                                        },
+                                                        shape = SegmentedButtonDefaults.itemShape(0, 2)
+                                                    ) {
+                                                        Text(stringResource(R.string.tier_standard), maxLines = 1)
+                                                    }
+                                                    SegmentedButton(
+                                                        selected = tier == Spv2Tier.PARANOID,
+                                                        onClick = {
+                                                            cancelInFlightDerive()
+                                                            tier = Spv2Tier.PARANOID
+                                                        },
+                                                        shape = SegmentedButtonDefaults.itemShape(1, 2)
+                                                    ) {
+                                                        Text(stringResource(R.string.tier_paranoid), maxLines = 1)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (busy) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            }
+
+                            errorMsg?.let { err ->
+                                Text(
+                                    text = err,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colorScheme.error
+                                )
+                            }
+
+                            // Action Row: Cancel + Copy Fallback + Derive & Fill (or Unlock & Fill)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(onClick = { dismissAutofill() }) {
+                                    Text(stringResource(R.string.action_cancel))
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                OutlinedButton(
+                                    enabled = canProceed,
+                                    onClick = { triggerAction(copyOnly = true) }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.ContentCopy,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(stringResource(R.string.autofill_copy_only_btn))
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    enabled = canProceed,
+                                    onClick = { triggerAction(copyOnly = false) }
+                                ) {
+                                    if (master.isEmpty() && bioEnrolled) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Fingerprint,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(stringResource(R.string.autofill_unlock_and_fill_btn))
+                                    } else {
+                                        Text(stringResource(R.string.autofill_fill_btn))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        (application as? StarryPassApp)?.biometricVault?.refreshState()
+    }
+
+    private fun cancelAutofill() {
+        // Android 12+ requires non-null extras on setResult(RESULT_CANCELED, intent) for Autofill auth activities.
+        val cancelIntent = Intent().putExtras(Bundle.EMPTY)
+        setResult(Activity.RESULT_CANCELED, cancelIntent)
+        finish()
+    }
+
+    private fun completeAutofill(
+        targetIds: List<AutofillId>,
+        codeLabel: String,
+        derivedPassword: String
+    ) {
+        val presentation = RemoteViews(packageName, R.layout.autofill_suggestion_item).apply {
+            setTextViewText(R.id.autofill_title, getString(R.string.app_name))
+            setTextViewText(R.id.autofill_subtitle, codeLabel)
+        }
+        val autofillValue = AutofillValue.forText(derivedPassword)
+
+        val unlockedDataset = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val presentations = Presentations.Builder()
+                .setMenuPresentation(presentation)
+                .build()
+            val populatedField = Field.Builder()
+                .setValue(autofillValue)
+                .setPresentations(presentations)
+                .build()
+            Dataset.Builder(presentations).apply {
+                for (id in targetIds) {
+                    setField(id, populatedField)
+                }
+            }.build()
+        } else {
+            @Suppress("DEPRECATION")
+            Dataset.Builder(presentation).apply {
+                for (id in targetIds) {
+                    setValue(id, autofillValue, presentation)
+                }
+            }.build()
+        }
+
+        val replyIntent = Intent().apply {
+            putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT, unlockedDataset)
+        }
+        setResult(Activity.RESULT_OK, replyIntent)
+        finish()
+    }
+}

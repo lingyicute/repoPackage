@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Uniform screen background; see activity_game.xml for the rationale. -->
+<androidx.drawerlayout.widget.DrawerLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/drawer_layout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
+    android:background="?android:colorBackground"
+    app:statusBarBackground="@android:color/transparent"
+    tools:openDrawer="start">
+
+    <androidx.coordinatorlayout.widget.CoordinatorLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fitsSystemWindows="true"
+        app:statusBarBackground="@null"
+        tools:context="org.lyi.puzzles.activities.HelpActivity">
+
+        <include layout="@layout/toolbar" />
+
+        <!-- Material 3 FAQ list: one expandable filled card per question
+             (see item_help_question.xml). The main_content id lets BaseActivity
+             apply the standard content fade-in and the bottom system bar
+             padding (edge-to-edge), like on all other screens. -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/main_content"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingStart="16dp"
+            android:paddingTop="8dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="16dp"
+            app:layout_behavior="@string/appbar_scrolling_view_behavior"
+            tools:listitem="@layout/item_help_question" />
+
+    </androidx.coordinatorlayout.widget.CoordinatorLayout>
+
+    <com.google.android.material.navigation.NavigationView
+        android:id="@+id/nav_view"
+        android:layout_width="wrap_content"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:fitsSystemWindows="true"
+        app:headerLayout="@layout/nav_header_main"
+        app:menu="@menu/main_drawer" />
+
+</androidx.drawerlayout.widget.DrawerLayout>

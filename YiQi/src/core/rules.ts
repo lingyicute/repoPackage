@@ -1,0 +1,465 @@
+/**
+ * YiQi 规则层：对 OGS `goban-engine`（Apache-2.0）的封装。
+ *
+ * 以「着法序列 + 规则 + 贴目 + 棋盘尺寸」作为唯一接口（见 围棋规则库选型.md）：
+ * goban-engine 负责合法性校验、提子、禁全同形（劫）、数目与计分；
+ * 对弈 UI 与 KataGo 引擎都只消费这里的棋盘快照与着法序列。
+ *
+ * 中国大陆规则：数子法、黑贴 7.5 目（3¾ 子）、禁全局同形（位置超级劫 psk）、
+ * 空点（dame）不填亦计分由数子法自然处理。
+ */
+import { GobanEngine } from 'goban-engine';
+import type { JGOFMove } from 'goban-engine/build/engine/formats/JGOF';
+import { situationalKeyFromPositional } from '../ai/superko';
+import type { BoardState as NNBoardState, Move as NNMove, Player } from '../ai/types';
+
+export type Point = { x: number; y: number };
+/** {x:-1,y:-1} 表示停一手（pass）。 */
+export type GameMove = Point;
+
+export const KOMI = 7.5;
+
+export type RuleErrorCode =
+  | 'occupied'
+  | 'suicide'
+  | 'ko'
+  | 'superko'
+  | 'out_of_bounds'
+  | 'unknown';
+
+export class IllegalMoveError extends Error {
+  readonly code: RuleErrorCode;
+  constructor(code: RuleErrorCode, message: string) {
+    super(message);
+    this.name = 'IllegalMoveError';
+    this.code = code;
+  }
+}
+
+function illegalMoveMessage(code: RuleErrorCode): string {
+  if (code === 'out_of_bounds') return '落点超出棋盘';
+  if (code === 'occupied') return '此处已有棋子';
+  if (code === 'ko' || code === 'superko') return '违反规则：全局同形再现（打劫需先寻劫）';
+  return '违反规则：禁着点（自杀或全局同形）';
+}
+
+export interface ScoreSummary {
+  black: number;
+  white: number;
+  /** 每个点的归属：0 空/单官，1 黑，2 白（计子/地域着色，供画布显示） */
+  ownership: Int8Array;
+}
+
+export class GoGame {
+  readonly size: number;
+  private engine: GobanEngine;
+  private _moves: GameMove[] = [];
+  /** 供 KataGo 的情境键（含行棋方）。 */
+  private _repetitionKeys = new Set<string>();
+  /** 完整历史位置键（位置超级劫强制检查用——引擎自带检查只回看 30 手）。 */
+  private _positionKeys = new Set<string>();
+  private _lastPosKey = '';
+  private _prevPosKey = '';
+  private _currentPlayerCache: Player = 'black';
+  private _probeCells: Uint8Array;
+  private _probeSeen: Uint32Array;
+  private _probeQueue: Int32Array;
+  private _probeStamp = 0;
+  /** 各点曾被哪一方落子占据（位 1 黑、位 2 白），供全局同形判定剪枝。 */
+  private _everOccupied: Uint8Array;
+
+  constructor(size: number) {
+    this.size = size;
+    const area = size * size;
+    this._probeCells = new Uint8Array(area);
+    this._probeSeen = new Uint32Array(area);
+    this._probeQueue = new Int32Array(area);
+    this._everOccupied = new Uint8Array(area);
+    this.engine = GoGame.createEngine(size);
+    this.recordRepetition();
+  }
+
+  private static createEngine(size: number): GobanEngine {
+    return new GobanEngine({
+      width: size,
+      height: size,
+      komi: KOMI,
+      rules: 'chinese',
+      allow_superko: false,
+      superko_algorithm: 'psk',
+    });
+  }
+
+  /** 全部着法（含停一手），从当前分叉回溯的干净主干。 */
+  get moves(): readonly GameMove[] {
+    return this._moves;
+  }
+
+  get playerToMove(): Player {
+    return this._currentPlayerCache;
+  }
+
+  /** 原始棋盘：board[y][x]，0 空 1 黑 2 白。 */
+  get board(): number[][] {
+    return this.engine.board;
+  }
+
+  /** 白方提掉的黑子数 / 黑方提掉的白子数。 */
+  get captures(): { byBlack: number; byWhite: number } {
+    return {
+      byBlack: this.engine.black_prisoners,
+      byWhite: this.engine.white_prisoners,
+    };
+  }
+
+  /** 连续停一手次数（用于两次停一手终局）。 */
+  get consecutivePasses(): number {
+    let n = 0;
+    for (let i = this._moves.length - 1; i >= 0; i--) {
+      const m = this._moves[i]!;
+      if (m.x === -1 && m.y === -1) n++;
+      else break;
+    }
+    return n;
+  }
+
+  get moveNumber(): number {
+    return this._moves.length;
+  }
+
+  /** 落子。非法时抛 IllegalMoveError，棋盘状态不变。 */
+  place(x: number, y: number): void {
+    const probe = this.probeMove(x, y);
+    if (probe.code !== null) {
+      throw new IllegalMoveError(probe.code, illegalMoveMessage(probe.code));
+    }
+    this.engine.place(x, y, false, false, true, true);
+    this._everOccupied[y * this.size + x]! |= this._currentPlayerCache === 'black' ? 1 : 2;
+    this._moves.push({ x, y });
+    this.recordRepetition(probe.posKey);
+  }
+
+  /**
+   * 无副作用的合法性探测：判定条件与 place() 一致（占点、自杀、全局同形），
+   * 不改动引擎，也不需要「试下再撤回」的整局重放。停一手恒合法。
+   */
+  isLegal(x: number, y: number): boolean {
+    if (x === -1 && y === -1) return true;
+    return this.probeMove(x, y).code === null;
+  }
+
+  private probeMove(x: number, y: number): { code: RuleErrorCode | null; posKey?: string } {
+    const n = this.size;
+    if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= n || y >= n) {
+      return { code: 'out_of_bounds' };
+    }
+    const board = this.engine.board;
+    if (board[y]![x] !== 0) return { code: 'occupied' };
+    const me = this._currentPlayerCache === 'black' ? 1 : 2;
+    const opp = 3 - me;
+
+    // 快速排除：若邻接至少一个空点且不接触对方棋子，则既不可能提子也不可能自杀，必然合法。
+    let hasEmptyNeighbor = false;
+    let hasOppNeighbor = false;
+    if (x > 0) { const v = board[y]![x - 1]!; if (v === 0) hasEmptyNeighbor = true; else if (v === opp) hasOppNeighbor = true; }
+    if (x < n - 1) { const v = board[y]![x + 1]!; if (v === 0) hasEmptyNeighbor = true; else if (v === opp) hasOppNeighbor = true; }
+    if (y > 0) { const v = board[y - 1]![x]!; if (v === 0) hasEmptyNeighbor = true; else if (v === opp) hasOppNeighbor = true; }
+    if (y < n - 1) { const v = board[y + 1]![x]!; if (v === 0) hasEmptyNeighbor = true; else if (v === opp) hasOppNeighbor = true; }
+    // 未提子的着法只有落在己方曾占据（其后被提走）的点上，才可能重现历史局面。
+    const at = y * n + x;
+    const mayRepeat = (this._everOccupied[at]! & me) !== 0;
+    if (hasEmptyNeighbor && !hasOppNeighbor && !mayRepeat) return { code: null };
+
+    const area = n * n;
+    const cells = this._probeCells;
+    for (let j = 0; j < n; j++) {
+      const row = board[j]!;
+      const off = j * n;
+      for (let i = 0; i < n; i++) cells[off + i] = row[i]!;
+    }
+    cells[at] = me;
+    const seen = this._probeSeen;
+    const queue = this._probeQueue;
+    const nextStamp = (): number => {
+      if (this._probeStamp >= 0xfffffffe) {
+        seen.fill(0);
+        this._probeStamp = 0;
+      }
+      return ++this._probeStamp;
+    };
+    const flood = (start: number): { len: number; liberty: boolean } => {
+      const tag = nextStamp();
+      const color = cells[start]!;
+      queue[0] = start;
+      seen[start] = tag;
+      let len = 1;
+      let liberty = false;
+      for (let k = 0; k < len; k++) {
+        const idx = queue[k]!;
+        const px = idx % n;
+        if (px > 0) {
+          const nb = idx - 1, v = cells[nb]!;
+          if (v === 0) liberty = true;
+          else if (v === color && seen[nb] !== tag) { seen[nb] = tag; queue[len++] = nb; }
+        }
+        if (px < n - 1) {
+          const nb = idx + 1, v = cells[nb]!;
+          if (v === 0) liberty = true;
+          else if (v === color && seen[nb] !== tag) { seen[nb] = tag; queue[len++] = nb; }
+        }
+        if (idx >= n) {
+          const nb = idx - n, v = cells[nb]!;
+          if (v === 0) liberty = true;
+          else if (v === color && seen[nb] !== tag) { seen[nb] = tag; queue[len++] = nb; }
+        }
+        if (idx < area - n) {
+          const nb = idx + n, v = cells[nb]!;
+          if (v === 0) liberty = true;
+          else if (v === color && seen[nb] !== tag) { seen[nb] = tag; queue[len++] = nb; }
+        }
+      }
+      return { len, liberty };
+    };
+
+    let capturedCount = 0;
+    if (hasOppNeighbor) {
+      const checkCapture = (nb: number): void => {
+        if (cells[nb] !== opp) return; // 已被提走的对方棋串此时为 0，自然跳过
+        const group = flood(nb);
+        if (!group.liberty) {
+          capturedCount += group.len;
+          for (let k = 0; k < group.len; k++) cells[queue[k]!] = 0;
+        }
+      };
+      if (x > 0) checkCapture(at - 1);
+      if (x < n - 1) checkCapture(at + 1);
+      if (y > 0) checkCapture(at - n);
+      if (y < n - 1) checkCapture(at + n);
+    }
+    if (!hasEmptyNeighbor && capturedCount === 0 && !flood(at).liberty) {
+      return { code: 'suicide' };
+    }
+
+    // 未提子且落点从未被己方占据时不可能重现历史局面，多数探测无需构造局面键。
+    // 反例：两子被提、回提一子后对方停一手，再补回另一子即回到被提前的局面。
+    if (capturedCount === 0 && !mayRepeat) return { code: null };
+    const posKey = positionalKeyOfCells(cells, n);
+    if (this._positionKeys.has(posKey)) {
+      return { code: capturedCount === 1 && posKey === this._prevPosKey ? 'ko' : 'superko' };
+    }
+    return { code: null, posKey };
+  }
+
+  /** 停一手。 */
+  pass(): void {
+    this.engine.place(-1, -1);
+    this._moves.push({ x: -1, y: -1 });
+    this.recordRepetition(this._lastPosKey);
+  }
+
+  /** 撤回最近 n 手（默认 1），通过重放着法序列重建引擎，保证状态一致。 */
+  undo(count = 1): void {
+    if (count <= 0) return;
+    const keep = this._moves.slice(0, Math.max(0, this._moves.length - count));
+    this.resetToMoves(keep);
+  }
+
+  /** 用给定着法序列重置整局。 */
+  resetToMoves(moves: readonly GameMove[]): void {
+    // 在独立实例中验证全部着法；失败时保留原局面（包括死子标记）。
+    const next = new GoGame(this.size);
+    for (const m of moves) {
+      if (m.x === -1 && m.y === -1) next.pass();
+      else next.place(m.x, m.y);
+    }
+    this.engine = next.engine;
+    this._moves = next._moves;
+    this._repetitionKeys = next._repetitionKeys;
+    this._positionKeys = next._positionKeys;
+    this._everOccupied = next._everOccupied;
+    this._lastPosKey = next._lastPosKey;
+    this._prevPosKey = next._prevPosKey;
+    this._currentPlayerCache = next._currentPlayerCache;
+  }
+
+  /** 供 KataGo 的 NN 特征层：board[y][x] → 'black' | 'white' | null。 */
+  nnBoard(): NNBoardState {
+    const out: NNBoardState = [];
+    for (let y = 0; y < this.size; y++) {
+      const row: (Player | null)[] = [];
+      for (let x = 0; x < this.size; x++) {
+        const v = this.engine.board[y]![x]!;
+        row.push(v === 1 ? 'black' : v === 2 ? 'white' : null);
+      }
+      out.push(row);
+    }
+    return out;
+  }
+
+  /** 供 KataGo 的 NN 特征层：整局着法序列。 */
+  nnMoveHistory(): NNMove[] {
+    const out: NNMove[] = [];
+    for (let i = 0; i < this._moves.length; i++) {
+      const m = this._moves[i]!;
+      out.push({
+        x: m.x,
+        y: m.y,
+        player: i % 2 === 0 ? 'black' : 'white',
+      });
+    }
+    return out;
+  }
+
+  /** 供 KataGo 的超级劫检查：每个历史局面的情境键（含当前局面）。 */
+  repetitionHistory(): string[] {
+    return [...this._repetitionKeys].sort();
+  }
+
+  private recordRepetition(posKey?: string): void {
+    this._currentPlayerCache = this._moves.length % 2 === 0 ? 'black' : 'white';
+    const key = posKey || positionalKeyOfBoard(this.engine.board, this.size);
+    this._prevPosKey = this._lastPosKey;
+    this._lastPosKey = key;
+    this._repetitionKeys.add(situationalKeyFromPositional(key, this._currentPlayerCache));
+    this._positionKeys.add(key);
+  }
+
+  private inBounds(x: number, y: number): boolean {
+    return Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < this.size && y < this.size;
+  }
+
+  /** 某点所在棋串（同色连通块）。 */
+  groupAt(x: number, y: number): Point[] {
+    if (!this.inBounds(x, y)) return [];
+    const board = this.engine.board;
+    const color = board[y]![x]!;
+    if (!color) return [];
+    const seen = new Set<number>();
+    const stack: Point[] = [{ x, y }];
+    const out: Point[] = [];
+    while (stack.length) {
+      const p = stack.pop()!;
+      const key = p.y * this.size + p.x;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (board[p.y]![p.x] !== color) continue;
+      out.push(p);
+      const neighbors = this.neighborsOf(p.x, p.y);
+      for (const n of neighbors) {
+        if (board[n.y]![n.x] === color && !seen.has(n.y * this.size + n.x)) stack.push(n);
+      }
+    }
+    return out;
+  }
+
+  neighborsOf(x: number, y: number): Point[] {
+    const out: Point[] = [];
+    if (x > 0) out.push({ x: x - 1, y });
+    if (x < this.size - 1) out.push({ x: x + 1, y });
+    if (y > 0) out.push({ x, y: y - 1 });
+    if (y < this.size - 1) out.push({ x, y: y + 1 });
+    return out;
+  }
+
+  isRemoved(x: number, y: number): boolean {
+    if (!this.inBounds(x, y)) return false;
+    return !!this.engine.removal[y]![x];
+  }
+
+  /** 标记/取消整组死子（计分阶段）。 */
+  setGroupRemoved(x: number, y: number, removed: boolean): void {
+    if (!this.inBounds(x, y) || !this.engine.board[y]![x]) return;
+    for (const p of this.groupAt(x, y)) {
+      this.engine.setRemoved(p.x, p.y, removed, false);
+    }
+  }
+
+  clearRemoved(): void {
+    this.engine.clearRemoved();
+  }
+
+  /** 当前死子清单（坐标集合，键为 y*size+x）。 */
+  removedPoints(): Set<number> {
+    const out = new Set<number>();
+    for (let y = 0; y < this.size; y++) {
+      for (let x = 0; x < this.size; x++) {
+        if (this.engine.removal[y]![x]) out.add(y * this.size + x);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 数子法计分（中国规则）： removal 矩阵中的死子按空点处理。
+   * ownership[y*size+x]：1 黑地域/棋子，2 白地域/棋子，0 中立（公共空点）。
+   */
+  score(): ScoreSummary {
+    const s = this.engine.computeScore();
+    const ownership = new Int8Array(this.size * this.size);
+    const mark = (encoded: string, color: number) => {
+      if (!encoded) return;
+      const pts = this.engine.decodeMoves(encoded) as JGOFMove[];
+      for (const p of pts) ownership[p.y * this.size + p.x] = color;
+    };
+    mark(s.black.scoring_positions, 1);
+    mark(s.white.scoring_positions, 2);
+    return { black: s.black.total, white: s.white.total, ownership };
+  }
+
+  /** 导出 SGF（GM[1] 围棋；应用中国规则与贴目）。 */
+  toSGF(meta: { whiteName?: string; blackName?: string; result?: string; date?: string } = {}): string {
+    const escape = (value: string) => value.replace(/\\/g, '\\\\').replace(/\]/g, '\\]').replace(/\r\n|[\r\n\t]/g, ' ');
+    const coord = (v: number) => (v < 0 ? '' : String.fromCharCode(97 + v));
+    let sgf = `(;GM[1]FF[4]CA[UTF-8]AP[YiQi]SZ[${this.size}]KM[${KOMI}]RU[Chinese]PB[${escape(meta.blackName || '黑方')}]PW[${escape(meta.whiteName || '白方')}]`;
+    if (meta.date) sgf += `DT[${escape(meta.date)}]`;
+    if (meta.result) sgf += `RE[${escape(meta.result)}]`;
+    sgf += '\n';
+    for (let i = 0; i < this._moves.length; i++) {
+      const m = this._moves[i]!;
+      const color = i % 2 === 0 ? 'B' : 'W';
+      sgf += `;${color}[${coord(m.x)}${coord(m.y)}]`;
+      if ((i + 1) % 15 === 0) sgf += '\n';
+    }
+    sgf += ')\n';
+    return sgf;
+  }
+}
+
+/**
+ * 与 superko.ts 的 positionalKey 完全相同的 base-3 编码，但直接读取数值棋盘
+ * （0 空 1 黑 2 白），省掉每次落子/探测都构造一遍字符串棋盘的开销。
+ */
+function positionalKeyOfBoard(board: number[][], size: number): string {
+  let key = `${size}:`;
+  let packed = 0;
+  let count = 0;
+  for (let y = 0; y < size; y++) {
+    const row = board[y]!;
+    for (let x = 0; x < size; x++) {
+      packed = packed * 3 + row[x]!;
+      if (++count === 3) {
+        key += String.fromCharCode(65 + packed);
+        packed = 0;
+        count = 0;
+      }
+    }
+  }
+  if (count > 0) key += String.fromCharCode(65 + packed * 3 ** (3 - count));
+  return key;
+}
+
+function positionalKeyOfCells(cells: Uint8Array, size: number): string {
+  let key = `${size}:`;
+  let packed = 0;
+  let count = 0;
+  for (let i = 0; i < cells.length; i++) {
+    packed = packed * 3 + cells[i]!;
+    if (++count === 3) {
+      key += String.fromCharCode(65 + packed);
+      packed = 0;
+      count = 0;
+    }
+  }
+  if (count > 0) key += String.fromCharCode(65 + packed * 3 ** (3 - count));
+  return key;
+}

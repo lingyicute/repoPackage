@@ -1,0 +1,325 @@
+/**
+ * YiQi 入口：装配 UI、绑定事件。
+ */
+import { App } from './ui/app';
+import { BLACK, WHITE } from './ui/board';
+import { playStoneSound } from './ui/sounds';
+import { emptyRecords } from './ui/settings';
+
+const app = new App();
+(window as unknown as { yiqi: App }).yiqi = app;
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+const canvas = $('board') as HTMLCanvasElement;
+const menu = $('menu');
+const btnMenu = $('btnMenu');
+btnMenu.setAttribute('aria-haspopup', 'true');
+btnMenu.setAttribute('aria-controls', 'menu');
+btnMenu.setAttribute('aria-expanded', 'false');
+
+function setMenuOpen(open: boolean): void {
+  menu.classList.toggle('open', open);
+  btnMenu.classList.toggle('active', open);
+  btnMenu.setAttribute('aria-expanded', String(open));
+}
+
+function closeMenu(): void {
+  setMenuOpen(false);
+}
+
+/* ================= 顶栏 ================= */
+$('btnTheme').addEventListener('click', () => app.toggleTheme());
+$('btnPalette').addEventListener('click', () => app.showPalette());
+btnMenu.addEventListener('click', (e) => {
+  e.stopPropagation();
+  setMenuOpen(!menu.classList.contains('open'));
+});
+document.addEventListener('click', (e) => {
+  if (menu.classList.contains('open') && !(e.target as HTMLElement).closest('.menu-wrap')) {
+    closeMenu();
+  }
+});
+
+menu.addEventListener('click', (e) => {
+  const item = (e.target as HTMLElement).closest('.menu-item');
+  if (!item) return;
+  closeMenu();
+  const act = (item as HTMLElement).dataset.act;
+  if (act === 'what') app.showWhatIsGo();
+  else if (act === 'help') app.showHelp();
+  else if (act === 'records') app.showRecords();
+  else if (act === 'sgf') app.exportSGF();
+  else if (act === 'models') app.showDownloadDialog();
+  else if (act === 'sound') {
+    app.settings.sound = !app.settings.sound;
+    app.updateSoundUI();
+    app.saveSettings();
+    if (app.settings.sound) playStoneSound(false, true);
+  } else if (act === 'coords') {
+    app.settings.coords = !app.settings.coords;
+    app.updateCoordsUI();
+    app.saveSettings();
+  } else if (act === 'clear') app.showClearConfirm();
+});
+
+/* ================= 对话框 ================= */
+const scrim = $('scrim');
+scrim.addEventListener('click', (e) => {
+  if (e.target === scrim && app.dialogOpen) app.closeDialog();
+});
+$('dialog').addEventListener('click', (e) => {
+  if (!app.dialogOpen) return;
+  const target = e.target as HTMLElement;
+  const sw = target.closest('.swatch');
+  if (sw) {
+    app.applyAccent((sw as HTMLElement).dataset.accent!);
+    app.showPalette();
+    return;
+  }
+  const btn = target.closest('[data-cmd]');
+  if (!btn) return;
+  const cmd = (btn as HTMLElement).dataset.cmd;
+  if (cmd === 'again') { app.closeDialog(); app.newGame(); app.toast('已开始新对局'); }
+  else if (cmd === 'resign-confirm') { app.confirmResign(); }
+  else if (cmd === 'clear') {
+    app.records = emptyRecords();
+    app.saveRecords();
+    app.newGame();
+    app.closeDialog();
+    app.toast('记录已清除');
+  } else if (cmd === 'startdl') {
+    void app.startDownload();
+  } else if (cmd === 'skipdl') {
+    app.skipDownload();
+  } else if (cmd === 'wg-continue') {
+    app.showDownloadDialog();
+  } else app.closeDialog();
+});
+
+/* ================= 模式 / 尺寸 / 执子 ================= */
+$('modes').addEventListener('click', (e) => {
+  const chip = (e.target as HTMLElement).closest('.chip') as HTMLElement | null;
+  if (!chip) return;
+  const mode = chip.dataset.mode!;
+  if (mode.startsWith('ai-') && !app.ai.ready) {
+    void app.showDownloadDialog();
+    return;
+  }
+  if (mode === app.mode) return;
+  app.setMode(mode);
+});
+
+$('sizes').addEventListener('click', (e) => {
+  const chip = (e.target as HTMLElement).closest('.chip') as HTMLElement | null;
+  if (!chip) return;
+  const size = Number(chip.dataset.size) as 9 | 13 | 19;
+  if (!size || size === app.game.size) return;
+  app.settings.boardSize = size;
+  app.saveSettings();
+  app.newGame();
+  app.toast(`切换到 ${size} 路棋盘，新对局开始`);
+});
+
+$('sides').addEventListener('click', (e) => {
+  const chip = (e.target as HTMLElement).closest('.chip') as HTMLElement | null;
+  if (!chip) return;
+  const side = chip.dataset.side as 'B' | 'W';
+  if (!side || side === app.settings.side) return;
+  app.humanColor = side === 'W' ? WHITE : BLACK;
+  app.settings.side = side;
+  app.saveSettings();
+  document.querySelectorAll('#sides .chip').forEach((c) => c.classList.toggle('sel', (c as HTMLElement).dataset.side === side));
+  app.newGame();
+  app.toast(side === 'W' ? '你执白后行，AI 执黑先行' : '你执黑先行，AI 执白后行');
+});
+
+/* ================= 工具按钮 ================= */
+$('btnUndo').addEventListener('click', () => app.undo());
+$('btnPass').addEventListener('click', () => {
+  const ok = app.humanPlace(-1, -1);
+  if (ok && app.phase !== 'scoring') app.toast('停一手');
+});
+$('btnResign').addEventListener('click', () => app.requestResign());
+$('btnRestart').addEventListener('click', () => { app.newGame(); app.toast('已开始新对局'); });
+$('btnResume').addEventListener('click', () => {
+  app.resumeFromScoring();
+});
+$('btnConfirmScore').addEventListener('click', () => app.confirmScore());
+
+/* ================= 棋盘交互 ================= */
+let touchTap: { x0: number; y0: number; id: number } | null = null;
+const activeTouches = new Set<number>();
+const TAP_SLOP2 = 12 * 12;
+
+function clearTouches(): void {
+  activeTouches.clear();
+  touchTap = null;
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch') {
+    activeTouches.add(e.pointerId);
+    touchTap = activeTouches.size === 1 ? { x0: e.clientX, y0: e.clientY, id: e.pointerId } : null;
+    return;
+  }
+  if (e.button !== 0) return; // 右键/中键不落子
+  e.preventDefault();
+  canvas.focus({ preventScroll: true });
+  tryPlaceFromEvent(e);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (e.pointerType === 'touch') {
+    if (touchTap && e.pointerId === touchTap.id) {
+      const dx = e.clientX - touchTap.x0;
+      const dy = e.clientY - touchTap.y0;
+      if (dx * dx + dy * dy > TAP_SLOP2) touchTap = null;
+    }
+    return;
+  }
+  const c = app.renderer.eventCell(e);
+  const h = app.renderer.hover;
+  // 指针移动触发频繁，逐字段比较即可，无需每次分配两个 JSON 字符串
+  const changed = (c === null) !== (h === null) || (c !== null && h !== null && (c.x !== h.x || c.y !== h.y));
+  app.renderer.hover = c;
+  if (changed) app.renderer.scheduleDraw();
+});
+window.addEventListener('pointerup', (e) => {
+  if (e.pointerType !== 'touch' || !activeTouches.has(e.pointerId)) return;
+  activeTouches.delete(e.pointerId);
+  if (touchTap && e.pointerId === touchTap.id && activeTouches.size === 0) {
+    const dx = e.clientX - touchTap.x0;
+    const dy = e.clientY - touchTap.y0;
+    touchTap = null;
+    if (dx * dx + dy * dy <= TAP_SLOP2 && e.target === canvas) {
+      canvas.focus({ preventScroll: true });
+      tryPlaceFromEvent(e);
+    }
+  }
+});
+window.addEventListener('pointercancel', (e) => {
+  if (e.pointerType === 'touch') {
+    activeTouches.delete(e.pointerId);
+    if (touchTap && e.pointerId === touchTap.id) touchTap = null;
+  }
+});
+window.addEventListener('blur', clearTouches);
+canvas.addEventListener('pointerleave', () => {
+  if (app.renderer.hover !== null) {
+    app.renderer.hover = null;
+    app.renderer.scheduleDraw();
+  }
+});
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+function tryPlaceFromEvent(e: PointerEvent): void {
+  const c = app.renderer.eventCell(e);
+  if (!c) return;
+  if (app.phase === 'scoring') {
+    app.toggleDeadAt(c.x, c.y);
+    return;
+  }
+  app.humanPlace(c.x, c.y);
+}
+
+/* ================= 键盘 ================= */
+document.addEventListener('keydown', (e) => {
+  if (e.isComposing) return;
+  if (app.dialogOpen) {
+    if (e.key === 'Escape') {
+      app.closeDialog();
+      return;
+    }
+    if (e.key === 'Tab') {
+      const focusables = Array.from(
+        $('dialog').querySelectorAll<HTMLElement>('button:not(:disabled),[href],[tabindex]:not([tabindex="-1"])'),
+      ).filter((el) => el.offsetParent !== null);
+      if (focusables.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (!activeEl || !focusables.includes(activeEl) || activeEl === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (!activeEl || !focusables.includes(activeEl) || activeEl === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    return;
+  }
+  const k = e.key;
+  if (menu.classList.contains('open')) {
+    if (k === 'Escape') {
+      closeMenu();
+      btnMenu.focus();
+    }
+    return;
+  }
+  // 浏览器/系统快捷键（Ctrl+R 刷新、Ctrl+P 打印等）不应触发游戏操作
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const active = document.activeElement as HTMLElement | null;
+  if (active && (active.isContentEditable || active.closest('input,textarea,select,[contenteditable="true"]'))) return;
+  // 鼠标点过按钮后焦点会留在按钮上：回车/空格留给该控件原生激活，其余快捷键照常生效
+  const onControl = !!active?.closest('button,a,[role="button"],[role="menuitem"]');
+  if (onControl && (k === 'Enter' || k === ' ')) return;
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '].includes(k)) e.preventDefault();
+  const n = app.game.size;
+  const mv: Record<string, [number, number]> = {
+    ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+    w: [0, -1], s: [0, 1], a: [-1, 0], d: [1, 0], W: [0, -1], S: [0, 1], A: [-1, 0], D: [1, 0],
+  };
+  if (Object.prototype.hasOwnProperty.call(mv, k)) {
+    const [dx, dy] = mv[k]!;
+    app.renderer.cursor = {
+      x: (app.renderer.cursor.x + dx + n) % n,
+      y: (app.renderer.cursor.y + dy + n) % n,
+    };
+    app.renderer.kbdCursor = true;
+    app.renderer.hover = null;
+    app.renderer.scheduleDraw();
+    // 光标已启用：焦点移回棋盘，随后的回车/空格才会落子而非再次触发按钮
+    if (onControl) canvas.focus({ preventScroll: true });
+    return;
+  }
+  // 按住不放只对光标移动有意义；停一手、悔棋、重开不能被连发
+  if (e.repeat) return;
+  if (k === 'Enter' || k === ' ') {
+    // 键盘光标尚未出现（未被方向键/WASD 激活）时，回车/空格不能落子或标记，
+    // 否则用户看不见操作目标，会在 (0,0) 凭空落子
+    if (!app.renderer.kbdCursor) return;
+    const c = { x: app.renderer.cursor.x, y: app.renderer.cursor.y };
+    if (app.phase === 'scoring') { app.toggleDeadAt(c.x, c.y); return; }
+    app.humanPlace(c.x, c.y);
+    app.renderer.kbdCursor = true;
+    app.renderer.hover = null;
+    app.renderer.scheduleDraw();
+    return;
+  }
+  if (k === 'z' || k === 'Z') { app.undo(); return; }
+  if (k === 'p' || k === 'P') {
+    const ok = app.humanPlace(-1, -1);
+    if (ok && app.phase !== 'scoring') app.toast('停一手');
+    return;
+  }
+  if (k === 'r' || k === 'R') { app.newGame(); app.toast('已开始新对局'); }
+});
+
+/* ================= 布局自适应 ================= */
+window.addEventListener('resize', () => app.renderer.onResize());
+window.addEventListener('orientationchange', () => setTimeout(() => app.renderer.fitBoard(), 120));
+window.addEventListener('beforeunload', () => app.saveSession());
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearTouches();
+    app.saveSession();
+  } else {
+    app.syncTimer();
+  }
+});
+
+app.init();

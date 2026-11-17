@@ -1,0 +1,28 @@
+display_name: YiDrop
+packager: lingyicute
+packagerEmail: lingyicute@users.noreply.github.com
+url: https://drop.92li.uk
+buildArch: x86_64
+license: Apache-2.0
+
+icon: assets/img/logo-512.png
+
+requires:
+  - libappindicator
+  - xdg-user-dirs
+
+keywords:
+  - Sharing
+  - LAN
+  - Files
+
+generic_name: An open source cross-platform alternative to AirDrop
+summary: Share files easily with YiDrop
+group: Applications/Utilities
+
+categories:
+  - GTK
+  - FileTransfer
+  - Utility
+
+startup_notify: true

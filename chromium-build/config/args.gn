@@ -1,0 +1,35 @@
+# Stable SOURCE, not an official Google Chrome release build.
+target_os = "android"
+target_cpu = "arm64"
+is_debug = false
+is_component_build = false
+is_official_build = false
+is_chrome_branded = false
+# Non-official builds default this to true, which would ship fatal DCHECKs
+# (slower, larger, and crashing on benign invariant failures) in the APK.
+dcheck_always_on = false
+# config.gni also enables Java asserts whenever !is_official_build, even with
+# dcheck_always_on = false, passing --force-enable-assertions to D8/R8.
+enable_java_asserts = false
+# config.gni marks non-official APKs android:debuggable="true", exposing app
+# data via adb/run-as and disabling ART release optimizations.
+debuggable_apks = false
+# Unbranded Android builds otherwise enable testing/variations/fieldtrial_testing_config.json
+# experiments by default instead of shipping Stable's hardcoded feature defaults.
+disable_fieldtrial_testing_config = true
+android_channel = "default"
+
+# Keep the build local and checkpoint-compatible.
+use_remoteexec = false
+use_siso = false
+android_static_analysis = "off"  # official builds use "off"; saves lint/ErrorProne time
+
+# Standard-hosted runner resource compromises, NOT security-feature switches.
+symbol_level = 0
+blink_symbol_level = 0
+v8_symbol_level = 0
+chrome_pgo_phase = 0
+use_thin_lto = false
+# Prevent concurrent lld/R8 links from thrashing swap or OOMing 7-16 GiB runners
+# (default Android symbol_level=0 heuristics otherwise allow 3 links on 16 GiB).
+concurrent_links = 1

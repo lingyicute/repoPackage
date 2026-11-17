@@ -1,0 +1,140 @@
+name: Tar.gz decompresser
+
+on:
+  workflow_dispatch:
+    inputs:
+      LINK:
+        description: 'The file link'
+        required: true
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      WORK_DIR: a
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: mkdir
+      run: mkdir "$WORK_DIR"
+
+    - name: Set up dependencies
+      run: sudo apt-get update && sudo apt-get install -y wget tree tar gzip
+
+    - name: Wget
+      # LINK 通过环境变量传入，避免链接中的引号被拼进 shell 代码
+      env:
+        LINK: ${{ github.event.inputs.LINK }}
+      run: wget -O "$WORK_DIR/a.tar.gz" "$LINK"
+
+    - name: Tree after wget
+      run: tree -ash "$GITHUB_WORKSPACE/$WORK_DIR"
+
+    - name: Unzip
+      run: tar -zxvf "$WORK_DIR/a.tar.gz" -C "$WORK_DIR"
+
+    - name: Tree after unzip
+      run: tree -ash "$GITHUB_WORKSPACE/$WORK_DIR"
+
+    - name: Process commands (Flatten directories)
+      run: |
+        set -euo pipefail
+        cd "$WORK_DIR"
+        rm -f a.tar.gz
+
+        # 1) 软链接一律删除，不做实体化：软链接无法可靠地作为 Release 资产
+        #    （悬空的会 ENOENT、指向目录的会 EISDIR），而且目标若在本归档内，
+        #    其内容已经作为普通文件保留，删链接不会丢数据。
+        find . -type l -print -delete | sed 's/^/移除软链接: /'
+        #    剩下的非普通文件（FIFO/socket/设备）同样无法发布，一并丢弃，
+        #    否则 `gh release create a/*` 会在 open() 上永久阻塞（FIFO 无写端）。
+        find . -mindepth 1 ! -type d ! -type f -print -delete | sed 's/^/丢弃非普通文件: /'
+
+        # 2) 把子目录里的普通文件全部搬到顶层，一个都不丢。清单先落盘再逐条处理：
+        #    边遍历目录边把文件搬走会踩 readdir 竞态，POSIX 允许 readdir 漏掉
+        #    尚未读到的条目，那些条目会被后面的 rm -rf 吃掉。
+        list_file=$(mktemp)
+        trap 'rm -f "$list_file"' EXIT
+        find . -mindepth 1 -type f -print0 > "$list_file"
+
+        moved=0
+        renamed=0
+        while IFS= read -r -d '' f; do
+          name=${f##*/}          #  basename
+          rel=${f#./}            # 相对 a/ 的路径，只用于打日志
+          case $rel in
+            */*) ;;              # 子目录里的文件需要搬运
+            *)   continue ;;     # 顶层文件原地不动
+          esac
+
+          # 重名时自动改名：foo.txt -> foo.1.txt -> foo.2.txt，绝不覆盖。
+          # `.gitignore` 这类点文件的前导点不是扩展名分隔符，要跳过。
+          dest=$name
+          stem=$name; ext=
+          case $name in
+            *.*)
+              if [[ -n ${name%.*} && ${name%.*} != "." ]]; then
+                stem=${name%.*}
+                ext=.${name##*.}
+              fi
+              ;;
+          esac
+          i=1
+          while [ -e "$dest" ]; do
+            dest="${stem}.${i}${ext}"
+            i=$((i + 1))
+          done
+          if [ "$dest" != "$name" ]; then
+            renamed=$((renamed + 1))
+            echo "重名冲突：$rel 已另存为 $dest"
+          fi
+
+          mv -- "$f" "$dest"
+          moved=$((moved + 1))
+        done < "$list_file"
+
+        # 收尾校验：子目录里不能再有任何条目，才敢 rm -rf；否则宁可报错，
+        # 也不要静默把文件删掉。
+        leftover=$(find . -mindepth 2 ! -type d -print)
+        if [ -n "$leftover" ]; then
+          echo "::error::仍有条目未能处理完，已中止（避免被 rm -rf 删除）："
+          printf '%s\n' "$leftover"
+          exit 1
+        fi
+        find . -mindepth 1 -type d -exec rm -rf {} +
+        echo "扁平化完成：搬运 $moved 个文件（其中 $renamed 个因重名改名）。"
+
+    - name: Tree after process
+      run: tree -ash "$GITHUB_WORKSPACE/$WORK_DIR"
+
+    - name: Create Release and Upload Assets
+      env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINK: ${{ github.event.inputs.LINK }}
+          TAG: targz-d-${{ github.run_number }}
+          RUN_NUMBER: ${{ github.run_number }}
+      run: |
+        set -euo pipefail
+        shopt -s dotglob nullglob
+
+        files=("$WORK_DIR"/*)
+        if [ "${#files[@]}" -eq 0 ]; then
+          echo "::error::解压结果为空，没有文件可以发布（这个 .tar.gz 里可能只有目录）"
+          exit 1
+        fi
+
+        printf 'Tar.gz decompresser 解压的文件：%s\n' "$LINK" > "$GITHUB_WORKSPACE/release-notes.md"
+
+        if gh release view "$TAG" > /dev/null 2>&1; then
+          echo "Release $TAG 已存在（重跑场景），先删除再重新创建。"
+          gh release delete "$TAG" --cleanup-tag --yes
+        fi
+
+        gh release create "$TAG" "${files[@]}" \
+          --title "Tar.gz decompresser 解压成功: 第 $RUN_NUMBER 个文件" \
+          --notes-file "$GITHUB_WORKSPACE/release-notes.md"

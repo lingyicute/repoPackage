@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Nebulove 字体子集化 & 内嵌（方式与 YiMines 一致）
+
+  pip install fonttools brotli
+
+  python3 scripts/subset_font.py                     # 就地
+  python3 scripts/subset_font.py --check             # 只报告，不写入
+  python3 scripts/subset_font.py --all-text          # 保守模式：文件里出现的字符全收
+  python3 scripts/subset_font.py --extra-chars glyphs.txt
+"""
+import argparse, base64, io, os, re, sys, tempfile, urllib.request
+FONT_URL = "https://raw.githubusercontent.com/lingyicute/Nebulove/main/Nebulove.woff2"
+# 不再写入远程地址
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_HTML = os.path.join(os.path.dirname(HERE), "index.html")
+ASCII = {chr(c) for c in range(32, 127)}
+PUNCT = set("：，。！？；‘’“”（）【】—…·《》×＝÷＋－、")
+
+# 同时吃掉由本脚本生成的注释块，否则每次重跑都会在文件里多插一份注释
+GEN_COMMENT_RE = r'/\* ===== Nebulove 子集（内嵌，离线可用）=====.*?===== \*/\s*'
+FONT_FACE_RE = re.compile(r'(?:' + GEN_COMMENT_RE + r')?@font-face\s*\{[^}]*\}', re.S)
+
+
+def strip_non_render_text(html):
+    """剔除不会渲染的文字：HTML 注释、<style>、<script> 里的注释。"""
+    html = re.sub(r'<!--.*?-->', '', html, flags=re.S)
+    html = re.sub(r'<style\b[^>]*>.*?</style>', '', html, flags=re.S | re.I)
+
+    def _js(m):
+        s = re.sub(r'/\*.*?\*/', ' ', m.group(1), flags=re.S)      # 块注释
+        s = re.sub(r'(?m)(?:^|(?<=[;{}\s]))//.*$', ' ', s)        # 行注释（含行尾注释）
+        return s
+
+    return re.sub(r'<script\b[^>]*>(.*?)</script>', _js, html, flags=re.S | re.I)
+
+
+def collect_chars(html, all_text=False, extra=""):
+    if all_text:
+        chars = set(html)
+    else:
+        chars = set(strip_non_render_text(html))
+    chars |= ASCII | PUNCT | set(extra)
+    chars.discard("\n")
+    chars.discard("\r")
+    chars.discard("\t")
+    return chars
+
+
+def build_subset(chars, ttf_path):
+    from fontTools.ttLib import TTFont
+    from fontTools.subset import Subsetter, Options
+
+    font = TTFont(ttf_path, recalcTimestamp=False)   # 不写 head.modified，保证同样输入 → 同样字节
+    subsetter = Subsetter(options=Options())
+    subsetter.populate(text="".join(sorted(chars)))
+    subsetter.subset(font)
+    font.flavor = "woff2"
+    buf = io.BytesIO()
+    font.save(buf)
+    data = buf.getvalue()
+    covered = set(font.getBestCmap().keys())
+    return data, covered
+
+
+def atomic_write(path, data, binary=True):
+    tmp = path + ".part"
+    try:
+        if binary:
+            with open(tmp, "wb") as f:
+                f.write(data)
+        else:
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        raise
+
+
+def download(url, path):
+    # 先写临时文件、读完再原子改名：下载中断时清理 .part，不会在缓存路径留下残缺文件，
+    # 否则下次运行会把它当成“已下载的完整字体”直接复用，报出难以理解的解析错误。
+    with urllib.request.urlopen(url, timeout=60) as r:
+        atomic_write(path, r.read(), binary=True)
+
+
+def make_font_face(b64, woff_kb, b64_kb, count, mode):
+    return (
+        "/* ===== Nebulove 子集（内嵌，离线可用）=====\n"
+        "   由 scripts/subset_font.py 生成：只保留本页会用到的 %d 个字形（%s 模式）。\n"
+        "   1.25 MB woff2 → %.1f KB woff2（base64 后 %.1f KB），随页面一起加载、无网络请求。 ===== */\n"
+        '@font-face {\n'
+        "  font-family: 'Nebulove';\n"
+        '  src: url("data:font/woff2;base64,%s") format("woff2");\n'
+        "  font-weight: normal;\n"
+        "  font-style: normal;\n"
+        "}" % (count, mode, woff_kb, b64_kb, b64)
+    )
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--html", default=DEFAULT_HTML)
+    ap.add_argument("--font-url", default=FONT_URL)
+    ap.add_argument("--ttf", help="本地字体路径（不下载）；默认下载 Nebulove.woff2")
+    ap.add_argument("--extra-chars", help="追加字符集合所在的文本文件")
+    ap.add_argument("--all-text", action="store_true", help="保守模式：文件里出现的字符全收")
+    ap.add_argument("--check", action="store_true", help="只报告，不写入")
+    args = ap.parse_args()
+
+    if not os.path.exists(args.html):
+        sys.exit("找不到页面文件：%s" % args.html)
+    with open(args.html, encoding="utf-8") as f:
+        html = f.read()
+    if not FONT_FACE_RE.search(html):
+        sys.exit("页面里没有找到 @font-face 块，无法替换。")
+
+    extra = ""
+    if args.extra_chars:
+        if not os.path.exists(args.extra_chars):
+            sys.exit("找不到追加字符文件：%s" % args.extra_chars)
+        with open(args.extra_chars, encoding="utf-8") as f:
+            extra = f.read()
+
+    chars = collect_chars(html, all_text=args.all_text, extra=extra)
+    mode = "全文本" if args.all_text else "可渲染文本"
+    print("可渲染字符：%d 个（%s）" % (len(chars), mode))
+
+    ttf = args.ttf or os.path.join(tempfile.gettempdir(), "Nebulove.woff2")
+    if args.ttf:
+        if not os.path.exists(ttf):
+            sys.exit("找不到本地字体文件：%s" % ttf)
+    else:
+        if os.path.exists(ttf):
+            print("复用已下载的完整字体：%s（不重新下载）" % ttf)
+        else:
+            print("下载完整字体：%s" % args.font_url)
+            download(args.font_url, ttf)
+    print("完整字体：%.0f KB（%s）" % (os.path.getsize(ttf) / 1024, os.path.basename(ttf)))
+
+    wofl, covered = build_subset(chars, ttf)
+    missing = {c for c in chars if ord(c) not in covered}
+    print("字体字形：%d 个（可渲染字符 %d 个中，%d 个本字体没有字形）"
+          % (len(covered), len(chars), len(missing)))
+    print("子集：%.2f KB woff2" % (len(wofl) / 1024))
+    if missing:
+        print("⚠️ 字体本身不含这些字符（将回退到系统字体）：%s" %
+              " ".join("U+%04X" % ord(c) for c in sorted(missing)))
+
+    if args.check:
+        # --check 不改页面、不在仓库里生成文件；完整字体若已缓存在临时目录则直接复用。
+        print("--check：不写入页面及仓库内文件（完整字体缓存在 %s）" % ttf)
+        return
+
+    keep = os.path.join(HERE, "Nebulove-subset.woff2")
+    atomic_write(keep, wofl, binary=True)
+    print("子集文件：%s" % keep)
+
+    b64 = base64.b64encode(wofl).decode("ascii")
+    new_face = make_font_face(b64, len(wofl) / 1024, len(b64) / 1024, len(covered), mode)
+    new_html, n = FONT_FACE_RE.subn(lambda _: new_face, html, count=1)
+    if new_html == html:
+        print("页面已经是目标内容，未改动。")
+        return
+    atomic_write(args.html, new_html, binary=False)
+    print("已更新 %s（@font-face 替换 %d 处）" % (args.html, n))
+    print("页面大小：%.0f KB → %.0f KB" % (len(html.encode()) / 1024, len(new_html.encode()) / 1024))
+
+
+if __name__ == "__main__":
+    main()

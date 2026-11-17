@@ -1,0 +1,1242 @@
+/**
+ * YiQi 主控制器：对局流程、人机调度、终局计分、界面状态。
+ * 模式：人机对战（四档，KataGo 人类网络imitate）/ 双人同屏。
+ * 棋盘：9 / 13 / 19 路；规则：中国大陆规则（数子法，黑贴 7.5 目，禁全局同形）。
+ */
+import '../style.css';
+import { GoGame, IllegalMoveError, KOMI } from '../core/rules';
+import { AiPlayer, DIFFICULTY_LABEL, DIFFICULTY_RANK_LABEL, type Difficulty } from '../ai/aiPlayer';
+import { BoardRenderer, BLACK, WHITE } from './board';
+import { playStoneSound, playWinSound, triggerHaptic } from './sounds';
+import { LS, ACCENTS, emptyRecords, isAccentName, migrateRecords, type Records, type SessionSave, type Settings, normalizeSettings, parseSession } from './settings';
+
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+
+const MODE_LABEL: Record<string, string> = {
+  'ai-easy': '简单', 'ai-medium': '中等', 'ai-hard': '困难', 'ai-expert': '专家', 'pvp': '双人',
+};
+const SUBTITLE: Record<string, string> = {
+  'ai-easy': '人机对战 · 简单（20级）',
+  'ai-medium': '人机对战 · 中等（8级）',
+  'ai-hard': '人机对战 · 困难（1段）',
+  'ai-expert': '人机对战 · 专家（3段）',
+  'pvp': '双人同屏',
+};
+const MODE_TO_DIFF: Record<string, Difficulty> = {
+  'ai-easy': 'easy', 'ai-medium': 'medium', 'ai-hard': 'hard', 'ai-expert': 'expert',
+};
+const fmtTime = (s: number): string => {
+  const m = Math.floor(s / 60), ss = s % 60;
+  return `${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+};
+const now = (): number => performance.now();
+
+type Phase = 'play' | 'scoring';
+
+class App {
+  settings: Settings = normalizeSettings(LS.get<unknown>('settings', null));
+  records: Records = migrateRecords(LS.get<unknown>('records', null));
+  game: GoGame;
+  renderer: BoardRenderer;
+
+  mode = 'ai-hard';
+  humanColor: number = BLACK;
+  over = false;
+  phase: Phase = 'play';
+  recorded = false;
+  aiThinking = false;
+  private aiToken = 0;
+  private scoringRevision = 0;
+  private timerId: number | null = null;
+  private timerRunning = false;
+  private timerOrigin = 0;
+  private timerStartedAt = 0;
+  elapsed = 0;
+
+  ai = new AiPlayer();
+  aiDownloadDismissed = false;
+  private lastTurnHtml = '';
+  private lastAnalyzedBoards: { prev: number[][] | null; prev2: number[][] | null } = { prev: null, prev2: null };
+
+  constructor() {
+    this.game = new GoGame(this.settings.boardSize);
+    this.mode = this.settings.mode in MODE_LABEL ? this.settings.mode : 'ai-hard';
+    this.humanColor = this.settings.side === 'W' ? WHITE : BLACK;
+    this.renderer = new BoardRenderer(
+      $('board') as HTMLCanvasElement,
+      $('boardWrap'),
+      {
+        size: this.settings.boardSize,
+        board: this.game.board,
+        lastMove: null,
+        territory: null,
+        removedPoints: new Set(),
+        canPlay: true,
+        scoring: false,
+        previewColor: BLACK,
+      },
+    );
+  }
+
+  /* ================= 主题 ================= */
+
+  /** 页面中的两条 theme-color 按系统配色匹配；手动主题可与系统不同，统一改为当前主题色。 */
+  private syncThemeColor(): void {
+    const color = document.documentElement.dataset.theme === 'light' ? '#faf8fe' : '#14101c';
+    document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', color));
+  }
+
+  applyTheme(theme: 'light' | 'dark'): void {
+    document.documentElement.dataset.theme = theme;
+    this.syncThemeColor();
+    this.settings.theme = theme;
+    LS.set('settings', this.settings);
+    this.renderer.refreshPalette();
+  }
+
+  toggleTheme(): void {
+    const cur = document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
+    this.applyTheme(cur === 'light' ? 'dark' : 'light');
+  }
+
+  applyAccent(name: string): void {
+    if (!isAccentName(name)) return;
+    document.documentElement.dataset.accent = name;
+    this.settings.accent = name;
+    LS.set('settings', this.settings);
+    this.renderer.refreshPalette();
+  }
+
+  /* ================= HUD ================= */
+
+  updateHUD(): void {
+    const mv = $('moveLabel');
+    const tv = $('turnValue');
+    const caps = this.game.captures;
+    $('capB').textContent = String(caps.byBlack);
+    $('capW').textContent = String(caps.byWhite);
+    const label = this.phase === 'scoring' ? '终局计分' : this.over ? `共 ${this.game.moveNumber} 手` : `第 ${this.game.moveNumber + 1} 手`;
+    mv.textContent = label;
+
+    const dot = (p: number) => `<span class="stone-dot ${p === BLACK ? 'black' : 'white'}"></span>`;
+    let html: string;
+    if (this.over) {
+      html = this.resultText ? dot(this.resultWinner === 'black' ? BLACK : WHITE) + `<span>${this.resultText}</span>` : '<span>和棋</span>';
+    } else if (this.phase === 'scoring') {
+      html = `<span>标记死子后确认结果</span>`;
+    } else if (this.mode === 'pvp') {
+      html = dot(this.game.playerToMove === 'black' ? BLACK : WHITE) + `<span>${this.game.playerToMove === 'black' ? '黑棋' : '白棋'}回合</span>`;
+    } else {
+      const toMove = this.game.playerToMove === 'black' ? BLACK : WHITE;
+      if (toMove === this.humanColor) {
+        html = dot(toMove) + '<span>你的回合</span>';
+      } else {
+        html = dot(toMove) + `<span>${this.aiThinking ? 'AI 思考中…' : 'AI 回合'}</span>`;
+      }
+    }
+    // 该节点是 aria-live 区域：内容未变时不重写，避免读屏重复播报
+    if (html !== this.lastTurnHtml) {
+      this.lastTurnHtml = html;
+      tv.innerHTML = html;
+    }
+
+    const humanTurn = !this.over && this.phase === 'play' && (this.mode === 'pvp' || (this.game.playerToMove === 'black' ? BLACK : WHITE) === this.humanColor);
+    ($('btnUndo') as HTMLButtonElement).disabled = this.aiThinking || this.phase === 'scoring' || this.game.moveNumber === 0;
+    ($('btnPass') as HTMLButtonElement).disabled = !humanTurn;
+    ($('btnResign') as HTMLButtonElement).disabled = this.over || this.phase === 'scoring' || this.game.moveNumber === 0;
+
+    this.renderer.state.canPlay = humanTurn;
+    this.renderer.state.scoring = this.phase === 'scoring';
+    this.renderer.state.previewColor = (this.game.playerToMove === 'black' ? BLACK : WHITE);
+    $('subtitle').textContent = SUBTITLE[this.mode] || '';
+    const syncChip = (chip: HTMLElement, selected: boolean): void => {
+      chip.classList.toggle('sel', selected);
+      chip.setAttribute('aria-pressed', String(selected));
+    };
+    document.querySelectorAll<HTMLElement>('#modes .chip').forEach((chip) => {
+      syncChip(chip, chip.dataset.mode === this.mode);
+    });
+    document.querySelectorAll<HTMLElement>('#sizes .chip').forEach((chip) => {
+      syncChip(chip, Number(chip.dataset.size) === this.game.size);
+    });
+    document.querySelectorAll<HTMLElement>('#sides .chip').forEach((chip) => {
+      syncChip(chip, chip.dataset.side === (this.humanColor === BLACK ? 'B' : 'W'));
+    });
+    this.updateAILock();
+  }
+
+  updateAILock(): void {
+    const locked = !this.ai.ready;
+    const lockTip = this.wasmUnsupported ? '当前浏览器不支持 WASM，无法运行 AI' : '需要先下载 AI 模型';
+    document.querySelectorAll('#modes .chip[data-mode^="ai-"]').forEach((c) => {
+      const el = c as HTMLElement;
+      el.classList.toggle('locked', locked);
+      el.title = locked ? lockTip : '';
+    });
+  }
+
+  /* ================= 计时 ================= */
+
+  startTimer(): void {
+    if (this.timerRunning) return;
+    this.timerRunning = true;
+    // 以时钟差值计时：后台标签页会限流 setInterval，逐次 ++ 会少算用时
+    this.timerOrigin = this.elapsed;
+    this.timerStartedAt = now();
+    this.timerId = window.setInterval(() => this.syncTimer(), 1000);
+  }
+
+  /** 按时钟刷新已用秒数与计时显示（计时中才有变化）。 */
+  syncTimer(): void {
+    if (this.timerRunning) {
+      this.elapsed = this.timerOrigin + Math.floor((now() - this.timerStartedAt) / 1000);
+    }
+    $('timer').textContent = fmtTime(this.elapsed);
+  }
+
+  stopTimer(): void {
+    if (this.timerRunning) this.syncTimer();
+    this.timerRunning = false;
+    if (this.timerId) clearInterval(this.timerId);
+    this.timerId = null;
+  }
+
+  /* ================= 对局流程 ================= */
+
+  newGame(opts: { keepTimer?: boolean } = {}): void {
+    this.ai.cancel();
+    this.aiToken++;
+    this.scoringRevision++;
+    this.aiThinking = false;
+    this.game = new GoGame(this.settings.boardSize);
+    this.over = false;
+    this.resultText = null;
+    this.resultSGF = undefined;
+    this.resultWinner = 'tie';
+    this.phase = 'play';
+    this.recorded = false;
+    this.renderer.state.board = this.game.board;
+    this.renderer.state.size = this.game.size;
+    this.renderer.state.lastMove = null;
+    this.renderer.state.territory = null;
+    this.renderer.state.removedPoints = new Set();
+    this.renderer.cursor = { x: 0, y: 0 };
+    this.renderer.hover = null;
+    this.renderer.kbdCursor = false;
+    if (!opts.keepTimer) {
+      this.stopTimer();
+      this.elapsed = 0;
+      $('timer').textContent = '00:00';
+    }
+    this.lastAnalyzedBoards = { prev: null, prev2: null };
+    LS.set('session', null);
+    this.updateScoringUI();
+    this.updateHUD();
+    this.renderer.scheduleDraw();
+    void this.maybeAI();
+  }
+
+  resultText: string | null = null;
+  private resultSGF: string | undefined;
+  resultWinner: 'black' | 'white' | 'tie' = 'tie';
+
+  /** 渲染器棋盘与逻辑棋盘重新指向：GoGame 的 undo/resetToMoves 会整体重建引擎并更换 board 数组引用。 */
+  private syncBoard(): void {
+    this.renderer.state.board = this.game.board;
+    this.renderer.state.size = this.game.size;
+  }
+
+  /** 将最后一手标记同步到当前棋谱末尾（静止态，不重播落子缩放动画）。 */
+  private syncLastMove(): void {
+    const last = this.game.moves[this.game.moves.length - 1];
+    this.renderer.state.lastMove = last ? { x: last.x, y: last.y, at: -1000 } : null;
+  }
+
+  private snapshotBoards(): void {
+    // 重放着法序列，得到当前局面的前一/前二手棋盘（NN 特征层需要）
+    // 只复制最后两手之前的棋盘，避免长棋谱每手都分配一份整盘拷贝
+    const replay = new GoGame(this.game.size);
+    const moves = this.game.moves;
+    const len = moves.length;
+    let prev2: number[][] | null = null;
+    let prev: number[][] | null = null;
+    for (let i = 0; i < len; i++) {
+      if (i === len - 2) prev2 = replay.board.map((r) => r.slice());
+      else if (i === len - 1) prev = replay.board.map((r) => r.slice());
+      const m = moves[i]!;
+      if (m.x === -1) replay.pass();
+      else replay.place(m.x, m.y);
+    }
+    this.lastAnalyzedBoards = {
+      prev,
+      prev2,
+    };
+  }
+
+  /** 正常落子只需滚动两帧；仅悔棋/续局需要完整重放。 */
+  private advanceBoards(previous: number[][]): void {
+    this.lastAnalyzedBoards = { prev: previous, prev2: this.lastAnalyzedBoards.prev };
+  }
+
+  /** 执行一手（人类或 AI）：规则校验、音效、计时、存档与界面刷新；非法时棋盘不变并提示。 */
+  private commitMove(x: number, y: number): boolean {
+    const color = this.game.playerToMove === 'black' ? BLACK : WHITE;
+    const previous = this.game.board.map(row => row.slice());
+    try {
+      if (x === -1) this.game.pass();
+      else this.game.place(x, y);
+    } catch (err) {
+      if (err instanceof IllegalMoveError) {
+        // 规则层拒绝时棋盘不变；防御性地重新同步 board 引用（GoGame 重建引擎时会更换数组）
+        this.syncBoard();
+        this.toast(illegalMessage(err.code));
+        return false;
+      }
+      throw err;
+    }
+    this.advanceBoards(previous);
+    playStoneSound(color === WHITE, this.settings.sound);
+    triggerHaptic('move');
+    this.renderer.state.lastMove = { x, y, at: now() };
+    if (this.game.consecutivePasses >= 2) {
+      this.enterScoring();
+    } else {
+      this.startTimer();
+    }
+    this.updateHUD();
+    this.saveSession();
+    this.renderer.scheduleDraw();
+    return true;
+  }
+
+  /** 人类落子入口。 */
+  humanPlace(x: number, y: number): boolean {
+    if (this.dialogOpen || this.over || this.phase !== 'play' || this.aiThinking) return false;
+    if (this.mode !== 'pvp' && (this.game.playerToMove === 'black' ? BLACK : WHITE) !== this.humanColor) return false;
+    if (x >= 0 && this.game.board[y]![x] !== 0) return false;
+    this.renderer.kbdCursor = false;
+    if (!this.commitMove(x, y)) {
+      // 被规则拒绝：清掉悬浮预览，避免 Ghost 停留在禁着点上
+      this.renderer.hover = null;
+      this.renderer.scheduleDraw();
+      return false;
+    }
+    void this.maybeAI();
+    return true;
+  }
+
+  /* ================= AI ================= */
+
+  async maybeAI(): Promise<void> {
+    if (this.over || this.phase !== 'play' || this.mode === 'pvp' || this.aiThinking) return;
+    const toMove = this.game.playerToMove === 'black' ? BLACK : WHITE;
+    if (toMove === this.humanColor) return;
+    if (!this.ai.ready) {
+      // 模型未就绪：等待（AI 回合空转，直到模型就绪或用户改模式）
+      const token = ++this.aiToken;
+      setTimeout(() => {
+        if (token === this.aiToken) void this.maybeAI();
+      }, 1200);
+      return;
+    }
+    const token = ++this.aiToken;
+    this.aiThinking = true;
+    this.updateHUD();
+    try {
+      const snap = this.lastAnalyzedBoards;
+      const game = this.game;
+      const mv = await this.ai.chooseMove({
+        difficulty: MODE_TO_DIFF[this.mode] || 'hard',
+        board: snapToNN(this.game),
+        previousBoard: nnFromGrid(snap.prev, this.game.size),
+        previousPreviousBoard: nnFromGrid(snap.prev2, this.game.size),
+        currentPlayer: this.game.playerToMove,
+        moveHistory: this.game.nnMoveHistory(),
+        repetitionHistory: this.game.repetitionHistory(),
+        rules: 'chinese-ogs',
+        isLegal: (x, y) => game.isLegal(x, y),
+      });
+      if (token !== this.aiToken || this.over || this.phase !== 'play') return;
+      this.aiThinking = false;
+      if (!this.commitMove(mv.x, mv.y)) {
+        // 落子被规则层拒绝时棋盘未变，若再次请求 AI 会反复得到同一结果而死循环；停一手恒合法
+        console.warn('[yiqi] AI 落子被拒绝，改为停一手', mv);
+        this.commitMove(-1, -1);
+        this.toast('AI 落子无效，已改为停一手');
+      } else if (mv.isPass && this.phase === 'play') {
+        this.toast('AI 选择停一手');
+      }
+      if (this.phase === 'play' && !this.over) void this.maybeAI();
+    } catch (err) {
+      if (token !== this.aiToken) return;
+      this.aiThinking = false;
+      if (err instanceof Error && err.message === 'canceled') {
+        this.updateHUD();
+        return;
+      }
+      console.error('[yiqi] AI 落子失败', err);
+      this.toast('AI 出错：' + (err instanceof Error ? err.message : String(err)));
+      this.updateHUD();
+    }
+  }
+
+  /* ================= 终局计分 ================= */
+
+  /** restored：从存档恢复计分阶段（不自动判死子，也不提示「双方连续停一手」）。 */
+  private enterScoring(restored = false): void {
+    this.scoringRevision++;
+    this.phase = 'scoring';
+    this.stopTimer();
+    this.ai.cancel();
+    this.updateScoringUI();
+    this.updateHUD();
+    this.renderer.scheduleDraw();
+    if (restored) return;
+    if (this.mode !== 'pvp' && this.ai.ready) void this.autoMarkDead();
+    this.toast('双方连续停一手，进入计分');
+  }
+
+  refreshScore(): void {
+    const s = this.game.score();
+    this.renderer.state.removedPoints = this.game.removedPoints();
+    this.renderer.state.territory = s.ownership;
+    this.renderer.scheduleDraw();
+    const el = $('scoreInfo');
+    if (el) {
+      el.textContent = `黑 ${trimNum(s.black)} 子 · 白 ${trimNum(s.white - KOMI)} 子 · 贴目 ${trimNum(KOMI)}`;
+    }
+  }
+
+  private async autoMarkDead(): Promise<void> {
+    const game = this.game;
+    const revision = this.scoringRevision;
+    const snap = this.lastAnalyzedBoards;
+    const ownership = await this.ai.finalOwnership({
+      board: snapToNN(this.game),
+      previousBoard: nnFromGrid(snap.prev, this.game.size),
+      previousPreviousBoard: nnFromGrid(snap.prev2, this.game.size),
+      currentPlayer: this.game.playerToMove,
+      moveHistory: this.game.nnMoveHistory(),
+      repetitionHistory: this.game.repetitionHistory(),
+      rules: 'chinese-ogs',
+    });
+    if (!ownership || this.phase !== 'scoring' || this.over || game !== this.game || revision !== this.scoringRevision) return;
+    const n = this.game.size;
+    // 按棋串多数票判死活，然后整组标记
+    const visited = new Set<number>();
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const key = y * n + x;
+        if (visited.has(key) || this.game.board[y]![x] === 0) continue;
+        const color = this.game.board[y]![x]!;
+        const group = this.game.groupAt(x, y);
+        for (const p of group) visited.add(p.y * n + p.x);
+        let deadVotes = 0;
+        for (const p of group) {
+          const own = ownership[p.y * n + p.x]!;
+          if ((color === BLACK && own < 0) || (color === WHITE && own > 0)) deadVotes++;
+        }
+        if (deadVotes * 2 > group.length) {
+          this.game.setGroupRemoved(x, y, true);
+        }
+      }
+    }
+    if (this.phase === 'scoring') {
+      this.refreshScore();
+      this.saveSession();
+      this.toast('AI 已按形势判断标记死子，可点击棋子修改');
+    }
+  }
+
+  private exitScoring(): void {
+    this.scoringRevision++;
+    this.ai.cancel();
+    this.phase = 'play';
+    this.game.clearRemoved();
+    this.renderer.state.territory = null;
+    this.renderer.state.removedPoints = new Set();
+    this.updateScoringUI();
+    this.updateHUD();
+    this.renderer.scheduleDraw();
+    this.startTimer();
+  }
+
+  /** 「继续对局」：从计分阶段回到对局。 */
+  resumeFromScoring(): void {
+    if (this.phase !== 'scoring') return;
+    this.exitScoring();
+    this.saveSession();
+    void this.maybeAI();
+    this.toast('已回到对局，继续落子');
+  }
+
+  /** 计分阶段：点击棋子切换死子状态。 */
+  toggleDeadAt(x: number, y: number): void {
+    if (this.phase !== 'scoring' || this.over) return;
+    if (!this.game.board[y]![x]) return;
+    this.scoringRevision++; // 手工判断优先于尚未返回的 AI 结果
+    this.game.setGroupRemoved(x, y, !this.game.isRemoved(x, y));
+    triggerHaptic('move');
+    this.refreshScore();
+    this.saveSession();
+  }
+
+  saveSettings(): void {
+    LS.set('settings', this.settings);
+  }
+
+  saveRecords(): void {
+    LS.set('records', this.records);
+  }
+
+  updateScoringUI(): void {
+    const show = this.phase === 'scoring';
+    $('scoringActions').style.display = show ? 'flex' : 'none';
+    $('playHelp').style.display = show ? 'none' : 'block';
+    $('scoringHelp').style.display = show ? 'block' : 'none';
+    if (show) this.refreshScore();
+  }
+
+  confirmScore(): void {
+    if (this.phase !== 'scoring') return;
+    this.scoringRevision++;
+    this.ai.cancel();
+    const s = this.game.score();
+    const diff = s.black - s.white;
+    let winner: 'black' | 'white' | 'tie' = 'tie';
+    let text = '和棋';
+    if (diff > 0) { winner = 'black'; text = `黑胜 ${trimNum(diff)} 目`; }
+    else if (diff < 0) { winner = 'white'; text = `白胜 ${trimNum(-diff)} 目`; }
+    this.over = true;
+    this.phase = 'play';
+    this.resultText = text;
+    this.resultWinner = winner;
+    this.resultSGF = diff === 0 ? '0' : `${diff > 0 ? 'B' : 'W'}+${trimNum(Math.abs(diff))}`;
+    this.renderer.state.territory = null;
+    this.updateScoringUI();
+    this.recordResult(winner);
+    const humanWon = this.mode === 'pvp' ? true : (winner === 'black' ? BLACK : WHITE) === this.humanColor;
+    if (this.mode === 'pvp' || humanWon) {
+      setTimeout(() => { triggerHaptic('win'); playWinSound(this.settings.sound); }, 70);
+    }
+    this.updateHUD();
+    this.saveSession();
+    this.renderer.scheduleDraw();
+    this.scheduleGameOver(650);
+  }
+
+  private recordResult(winner: 'black' | 'white' | 'tie'): void {
+    if (this.mode === 'pvp' || this.recorded || winner === 'tie') return;
+    const diff = MODE_TO_DIFF[this.mode] || 'hard';
+    const r = this.records[diff] || { w: 0, l: 0 };
+    const humanWon = (winner === 'black' ? BLACK : WHITE) === this.humanColor;
+    if (humanWon) r.w++;
+    else r.l++;
+    this.records[diff] = r;
+    this.recorded = true;
+    LS.set('records', this.records);
+  }
+
+  /* ================= 悔棋 ================= */
+
+  undo(): void {
+    if (this.aiThinking || this.phase === 'scoring' || this.game.moveNumber === 0) return;
+    if (this.over) {
+      // 撤销终局结果
+      if (this.mode !== 'pvp' && this.recorded) {
+        const diff = MODE_TO_DIFF[this.mode] || 'hard';
+        const r = this.records[diff];
+        if (r) {
+          const humanWon = (this.resultWinner === 'black' ? BLACK : WHITE) === this.humanColor;
+          if (humanWon) r.w = Math.max(0, r.w - 1);
+          else r.l = Math.max(0, r.l - 1);
+          LS.set('records', this.records);
+        }
+        this.recorded = false;
+      }
+      const resigned = this.resultSGF?.endsWith('+R') ?? false;
+      this.over = false;
+      this.resultText = null;
+      this.resultSGF = undefined;
+      this.scoringRevision++;
+      this.startTimer();
+      if (resigned) {
+        // 认输不产生着法：悔棋只撤销认输，棋盘保持不变
+        this.updateHUD();
+        this.saveSession();
+        this.renderer.scheduleDraw();
+        void this.maybeAI();
+        return;
+      }
+    }
+    // 人机模式回到「轮到你」：轮到你时撤销 AI 的上一手与你的上一手，
+    // 轮到 AI（AI 出错或模型未就绪而停住）时只需撤销你的上一手。
+    const humanToMove = (this.game.playerToMove === 'black' ? BLACK : WHITE) === this.humanColor;
+    const n = this.mode === 'pvp' ? 1 : Math.min(humanToMove ? 2 : 1, this.game.moveNumber);
+    this.ai.cancel();
+    this.aiToken++;
+    this.scoringRevision++;
+    this.game.undo(n);
+    if (this.game.moveNumber === 0) {
+      // 回到空盘：与新局一致，下一手才开始计时
+      this.stopTimer();
+      this.elapsed = 0;
+      $('timer').textContent = '00:00';
+    }
+    this.syncBoard();
+    this.renderer.state.removedPoints = new Set();
+    this.snapshotBoards();
+    this.aiThinking = false;
+    this.syncLastMove();
+    this.updateHUD();
+    this.saveSession();
+    this.renderer.scheduleDraw();
+    void this.maybeAI();
+  }
+
+  /* ================= 认输 ================= */
+
+  /** 当前认输方：双人模式为行棋方，人机模式为人类。 */
+  private resignLoserIsBlack(): boolean {
+    return this.mode === 'pvp' ? this.game.playerToMove === 'black' : this.humanColor === BLACK;
+  }
+
+  requestResign(): void {
+    if (this.over || this.phase === 'scoring' || this.game.moveNumber === 0) return;
+    const loser = this.resignLoserIsBlack() ? '黑方' : '白方';
+    // 双人模式不计入战绩（recordResult 对 pvp 直接跳过），文案须与之一致
+    const body = this.mode === 'pvp'
+      ? `${loser}中盘告负，对局立即结束。`
+      : '你中盘告负，本局将计入战绩。';
+    this.openDialog(`
+      <div class="dlg-icon">${ICO.flag}</div>
+      <div class="dlg-title">确认认输？</div>
+      <div class="dlg-body">${body}</div>
+      <div class="dlg-btns">
+        <button class="btn-pill text" data-cmd="ok">继续比赛</button>
+        <button class="btn-pill primary" data-cmd="resign-confirm">确认认输</button>
+      </div>`);
+  }
+
+  confirmResign(): void {
+    if (this.over || this.phase === 'scoring' || this.game.moveNumber === 0) return;
+    this.closeDialog();
+    this.ai.cancel();
+    this.aiToken++;
+    this.aiThinking = false;
+    this.over = true;
+    this.phase = 'play';
+    this.resultWinner = this.resignLoserIsBlack() ? 'white' : 'black';
+    this.resultText = this.resultWinner === 'black' ? '黑中盘胜' : '白中盘胜';
+    this.resultSGF = this.resultWinner === 'black' ? 'B+R' : 'W+R';
+    this.stopTimer();
+    this.scoringRevision++;
+    this.recordResult(this.resultWinner);
+    this.updateHUD();
+    this.saveSession();
+    this.renderer.scheduleDraw();
+    this.scheduleGameOver(400);
+  }
+
+  /* ================= 存档 ================= */
+
+  saveSession(): void {
+    this.syncTimer();
+    if (!this.game.moveNumber) {
+      LS.set('session', null);
+      return;
+    }
+    const save: SessionSave = {
+      mode: this.mode,
+      side: this.humanColor === BLACK ? 'B' : 'W',
+      size: this.game.size as 9 | 13 | 19,
+      moves: this.game.moves.map((m) => ({ x: m.x, y: m.y })),
+      elapsed: this.elapsed,
+      over: this.over,
+      phase: this.phase,
+      removed: [...this.game.removedPoints()],
+    };
+    LS.set('session', save);
+  }
+
+  restoreSession(): void {
+    const ses = parseSession(LS.get<unknown>('session', null));
+    if (!ses || ses.over) return;
+    const game = new GoGame(ses.size);
+    try {
+      game.resetToMoves(ses.moves);
+    } catch {
+      LS.set('session', null);
+      return;
+    }
+    this.settings.mode = ses.mode;
+    this.settings.side = ses.side;
+    this.settings.boardSize = ses.size;
+    LS.set('settings', this.settings);
+    this.mode = ses.mode;
+    this.humanColor = ses.side === 'W' ? WHITE : BLACK;
+    this.game = game;
+    this.renderer.state.size = ses.size;
+    this.renderer.state.board = this.game.board;
+    this.syncLastMove();
+    this.renderer.cursor = { x: 0, y: 0 };
+    this.renderer.hover = null;
+    this.renderer.kbdCursor = false;
+    this.snapshotBoards();
+    this.renderer.fitBoard();
+    this.elapsed = ses.elapsed;
+    $('timer').textContent = fmtTime(this.elapsed);
+    // 恢复各选项 UI
+    document.querySelectorAll('#modes .chip').forEach((c) => c.classList.toggle('sel', (c as HTMLElement).dataset.mode === this.mode));
+    document.querySelectorAll('#sides .chip').forEach((c) => c.classList.toggle('sel', (c as HTMLElement).dataset.side === ses.side));
+    $('sides').style.display = this.mode === 'pvp' ? 'none' : 'flex';
+    const scoring = ses.phase === 'scoring' || (ses.phase === undefined && this.game.consecutivePasses >= 2);
+    if (scoring) {
+      for (const point of ses.removed ?? []) this.game.setGroupRemoved(point % ses.size, Math.floor(point / ses.size), true);
+      this.enterScoring(true);
+      this.toast('已恢复计分阶段，标记死子后确认结果');
+    } else {
+      this.startTimer();
+      void this.maybeAI();
+    }
+    this.updateHUD();
+    this.renderer.scheduleDraw();
+  }
+
+  /* ================= 下载与 AI 状态 ================= */
+
+  /** 浏览器不支持 WebAssembly 时置真：不弹下载、AI 入口给出明确解释。 */
+  wasmUnsupported = false;
+  /** 浏览器无可用 WebGPU 时置真：下载前先弹一次显式提示（仅影响速度）。 */
+  webgpuMissing = false;
+  private webgpuNoticeShown = false;
+
+  async bootstrapAI(): Promise<void> {
+    const { wasmSupported, webgpuAvailable } = await import('../ai/modelFiles');
+    if (!(await wasmSupported())) {
+      this.wasmUnsupported = true;
+      this.aiDownloadDismissed = true;
+      // AI 永远无法就绪：留在人机模式（含默认的「困难」与恢复的存档）会在 AI 回合无限等待
+      if (this.mode.startsWith('ai-')) {
+        this.setMode('pvp', { toast: false, keepGame: true });
+        this.toast('当前浏览器不支持 WASM，已切换到双人对战');
+      }
+      this.updateAILock();
+      return;
+    }
+    this.webgpuMissing = !(await webgpuAvailable());
+    const cached = await AiPlayer.modelsCached();
+    if (cached) {
+      try {
+        await this.ai.setup(() => { /* 缓存命中，无下载进度 */ });
+        this.updateAILock();
+        this.toast('AI 已就绪');
+        void this.maybeAI();
+        return;
+      } catch (err) {
+        console.error('[yiqi] AI 初始化失败', err);
+        this.toast('AI 初始化失败，可在菜单中重试');
+      }
+    }
+    if (!this.aiDownloadDismissed && this.mode.startsWith('ai-')) {
+      setTimeout(() => {
+        if (!this.aiDownloadDismissed && !this.dialogOpen && !this.ai.ready && this.mode.startsWith('ai-')) {
+          void this.showDownloadDialog();
+        }
+      }, 500);
+    }
+    this.updateAILock();
+  }
+
+  toast(msg: string): void {
+    const t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    if (this.toastTimer) window.clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => t.classList.remove('show'), 2200);
+  }
+  private toastTimer: number | null = null;
+
+  dialogOpen = false;
+  private dialogCloseTimer: number | null = null;
+  private dialogRevision = 0;
+  private dialogReturnFocus: HTMLElement | null = null;
+
+  /* ================= 对话框 ================= */
+
+  openDialog(html: string): void {
+    // 替换弹窗内容（例如切换配色）时仍保留最初的触发元素。
+    if (!this.dialogOpen) {
+      const active = document.activeElement;
+      this.dialogReturnFocus = active instanceof HTMLElement && active !== document.body && !$('dialog').contains(active)
+        ? active : null;
+    }
+    const rev = ++this.dialogRevision;
+    const scrim = $('scrim');
+    $('btnPalette').classList.remove('active');
+    if (this.dialogCloseTimer !== null) {
+      window.clearTimeout(this.dialogCloseTimer);
+      this.dialogCloseTimer = null;
+      scrim.classList.remove('closing');
+    }
+    scrim.style.pointerEvents = '';
+    const dialog = $('dialog');
+    dialog.innerHTML = html;
+    // 为屏幕阅读器提供对话框名称
+    const heading = dialog.querySelector('.dlg-title');
+    if (heading) {
+      heading.id = 'dlgTitle';
+      dialog.setAttribute('aria-labelledby', 'dlgTitle');
+    } else {
+      dialog.removeAttribute('aria-labelledby');
+    }
+    scrim.hidden = false;
+    this.dialogOpen = true;
+    // 选择器列表按 DOM 顺序匹配，并不按逗号前后的优先级；按优先级查找可见可聚焦控件，
+    // 并在延时聚焦时重新读取，避免弹窗随后隐藏主按钮（如下载进度视图）导致焦点丢失。
+    const pickFocus = (): HTMLElement | null => {
+      for (const selector of ['.swatch.sel:not(:disabled)', '.btn-pill.primary:not(:disabled)', 'button:not(:disabled)']) {
+        for (const el of dialog.querySelectorAll<HTMLElement>(selector)) {
+          if (el.getClientRects().length > 0) return el;
+        }
+      }
+      return null;
+    };
+    setTimeout(() => {
+      if (this.dialogOpen && this.dialogRevision === rev) pickFocus()?.focus();
+    }, 30);
+  }
+
+  closeDialog(): void {
+    const scrim = $('scrim');
+    if (scrim.hidden || this.dialogCloseTimer !== null) return;
+    this.dialogRevision++;
+    this.dialogOpen = false;
+    $('btnPalette').classList.remove('active');
+    const active = document.activeElement as HTMLElement | null;
+    if (active && $('dialog').contains(active)) active.blur();
+    let returnFocus = this.dialogReturnFocus;
+    this.dialogReturnFocus = null;
+    // 菜单项在打开弹窗前已隐藏，恢复到菜单按钮；触发元素失效则回到棋盘。
+    if (returnFocus && $('menu').contains(returnFocus)) returnFocus = $('btnMenu');
+    if (!returnFocus?.isConnected || !returnFocus.getClientRects().length || returnFocus.matches(':disabled')) {
+      returnFocus = $('board');
+    }
+    returnFocus.focus({ preventScroll: true });
+    scrim.style.pointerEvents = 'none';
+    // 播放收起动画后再隐藏（与 up/fade 进场对称）
+    scrim.classList.add('closing');
+    this.dialogCloseTimer = window.setTimeout(() => {
+      this.dialogCloseTimer = null;
+      scrim.style.pointerEvents = '';
+      scrim.classList.remove('closing');
+      scrim.hidden = true;
+    }, 170);
+  }
+
+  /* ================= 终局 / 记录 / 规则 对话框 ================= */
+
+  private scheduleGameOver(delay: number): void {
+    const game = this.game;
+    const revision = this.scoringRevision;
+    setTimeout(() => {
+      if (this.over && this.game === game && this.scoringRevision === revision) this.showGameOver();
+    }, delay);
+  }
+
+  showGameOver(): void {
+    const meta = `用时 ${fmtTime(this.elapsed)} · 共 ${this.game.moveNumber} 手`;
+    let icon: string, title: string, body: string;
+    if (this.mode === 'pvp') {
+      icon = ICO.crown;
+      title = this.resultWinner === 'tie' ? '和棋!' : `${this.resultWinner === 'black' ? '黑棋' : '白棋'}获胜!`;
+      body = `${this.resultText || ''}<br>${meta}`;
+    } else if (this.resultWinner !== 'tie' && (this.resultWinner === 'black' ? BLACK : WHITE) === this.humanColor) {
+      const diff = MODE_TO_DIFF[this.mode] || 'hard';
+      const r = this.records[diff] || { w: 0, l: 0 };
+      const sideTxt = this.humanColor === BLACK ? '黑' : '白';
+      icon = ICO.crown;
+      title = '你赢了！';
+      body = `恭喜！你执${sideTxt}在「${DIFFICULTY_LABEL[diff]}」难度战胜了 AI（${DIFFICULTY_RANK_LABEL[diff]}）。<br>${this.resultText} · ${meta}<br>本难度战绩 ${r.w} 胜 ${r.l} 负`;
+    } else if (this.resultWinner === 'tie') {
+      icon = ICO.handshake;
+      title = '和棋!';
+      body = `罕见的结果，势均力敌，${meta}。`;
+    } else {
+      icon = ICO.trophy;
+      title = 'AI 获胜';
+      body = `${this.resultText || ''}，${meta}。<br>调整策略后再试一次吧!`;
+    }
+    this.openDialog(`
+      <div class="dlg-icon">${icon}</div>
+      <div class="dlg-title">${title}</div>
+      <div class="dlg-body" style="text-align:center">${body}</div>
+      <div class="dlg-btns" style="justify-content:center">
+        <button class="btn-pill text" data-cmd="ok">查看棋盘</button>
+        <button class="btn-pill primary" data-cmd="again">再来一局</button>
+      </div>`);
+  }
+
+  showWhatIsGo(): void {
+    this.openDialog(`
+      <div class="dlg-icon">${ICO.help}</div>
+      <div class="dlg-title">什么是围棋?</div>
+      <div class="dlg-body">
+        <b>围棋（Go）</b>起源于中国，距今已有四千余年，是世界上最古老的棋类游戏，也是唯一能与之相称的策略艺术。<br><br>
+        双方在棋盘交叉点上交替落子，目标是<b>围出更多的地盘</b>：用棋子围住对方的棋子即可将它吃掉，最终以围住的空点与存活的棋子合计多者获胜。<br><br>
+        古人把它列入「琴棋书画」四艺。棋盘之上，一子一世界——十九路纵横三百六十一点，变化之多超越宇宙中原子的总数。<br><br>
+        YiQi 采用<b>中国大陆规则</b>（数子法，黑贴 7.5 目），AI 由 <b>KataGo</b> 驱动。
+      </div>
+      <div class="dlg-btns"><button class="btn-pill primary" data-cmd="ok">知道了</button></div>`);
+  }
+
+  showHelp(): void {
+    this.openDialog(`
+      <div class="dlg-icon">${ICO.help}</div>
+      <div class="dlg-title">规则说明</div>
+      <div class="dlg-body">
+        黑白轮流落子，<b>黑棋先行</b>，棋子落在交叉点上。棋子的「气」是紧邻的空点；<b>无气（被围死）的棋子被提离棋盘</b>。<br>
+        <b>禁全局同形</b>：不得落子使全盘形状回到此前出现过的局面（打劫需先在他处落子寻劫）。<b>禁自杀</b>：落子后自身无气且未提对方子，为禁着点。<br>
+        <b>终局</b>：双方连续<b>停一手</b>（虚着）即进入计分。死子从棋盘上拿掉后，用<b>数子法</b>计分：你的活棋子数 + 围住的空点，<b>黑贴 7.5 目</b>（3 又 3/4 子）后多者胜。<br>
+        计分阶段可<b>点击棋子标记/恢复死子</b>（YiQi 会自动标记，通常无需干预），确认后结算。<br>
+        <b>人机模式</b>：可选 9 / 13 / 19 路棋盘，<b>我执黑先行 / 我执白后行</b>，难度分 <b>简单（20级）/ 中等（8级）/ 困难（1段）/ 专家（3段）</b> 四档。AI 由 KataGo 驱动，会像真实段位的棋手一样思考和停一手。<br>
+        <b>双人模式</b>：两位玩家在同一设备上轮流落子。<br>
+        键盘：<b>↑↓←→ / WASD</b> 移动光标，<b>空格 / 回车</b> 落子，<b>Z</b> 悔棋，<b>P</b> 停一手，<b>R</b> 重开。认输请点「认输」，判负并结束本局。
+      </div>
+      <div class="dlg-btns"><button class="btn-pill primary" data-cmd="ok">知道了</button></div>`);
+  }
+
+  showRecords(): void {
+    const rowsOf = (bkt: Record<string, { w: number; l: number }>) =>
+      (['easy', 'medium', 'hard', 'expert'] as Difficulty[]).map((k) => {
+        const r = bkt[k] || { w: 0, l: 0 };
+        const t = r.w + r.l;
+        const rate = t ? Math.round((r.w / t) * 100) : 0;
+        return `<div class="rec-row"><span>${DIFFICULTY_LABEL[k]}</span><span>${r.w} 胜 / ${r.l} 负</span><span class="rate">${rate}%</span></div>`;
+      }).join('');
+    this.openDialog(`
+      <div class="dlg-icon">${ICO.trophy}</div>
+      <div class="dlg-title">战绩统计</div>
+      <div class="dlg-body">
+        <div class="rec-head"><span>人机难度</span><span>战绩</span><span style="text-align:right">胜率</span></div>
+        ${rowsOf(this.records)}
+        <div style="margin-top:10px;font-size:12.5px">仅统计人机对战（执黑执白合并计数），双人模式不计入。</div>
+      </div>
+      <div class="dlg-btns"><button class="btn-pill primary" data-cmd="ok">知道了</button></div>`);
+  }
+
+  showClearConfirm(): void {
+    this.openDialog(`
+      <div class="dlg-icon">${ICO.trash}</div>
+      <div class="dlg-title">清除记录</div>
+      <div class="dlg-body">将清除本机保存的<b>全部人机对战战绩</b>与当前未完成的棋局，此操作不可恢复。</div>
+      <div class="dlg-btns">
+        <button class="btn-pill text" data-cmd="ok">取消</button>
+        <button class="btn-pill primary" data-cmd="clear">清除</button>
+      </div>`);
+  }
+
+  showPalette(): void {
+    const cur = document.documentElement.dataset.accent;
+    const sw = Object.entries(ACCENTS).map(([k, c]) => `
+      <button class="swatch ${k === cur ? 'sel' : ''}" data-accent="${k}" aria-pressed="${k === cur}" style="background:${c};color:${c}" title="${k}">
+        ${k === cur ? '<svg class="ck" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.8l4.8 4.7L19.5 6.8"/></svg>' : ''}
+      </button>`).join('');
+    this.openDialog(`
+      <div class="dlg-title" style="font-size:18px">选择配色</div>
+      <div class="swatches">${sw}</div>`);
+    $('btnPalette').classList.add('active');
+  }
+
+  /* ================= 模型下载对话框 ================= */
+
+  async showDownloadDialog(): Promise<void> {
+    if (this.ai.ready) {
+      this.toast('AI 模型已就绪');
+      return;
+    }
+    // 下载仍在后台进行：直接回到进度视图，不要求再点一次「开始下载」
+    if (this.ai.status === 'downloading' || this.ai.status === 'initializing') {
+      this.openDownloadDialog();
+      void this.startDownload();
+      return;
+    }
+    const rev = this.dialogRevision;
+    // 每次打开都重新实测 WASM/WebGPU 能力（不沿用启动时的缓存结论）
+    {
+      const { wasmSupported, webgpuAvailable } = await import('../ai/modelFiles');
+      this.wasmUnsupported = !(await wasmSupported());
+      this.webgpuMissing = !(await webgpuAvailable());
+      this.updateAILock();
+    }
+    // 关闭同样会使请求过期；不能在用户已关闭原弹窗或替代弹窗后重新打开下载。
+    if (this.dialogRevision !== rev) return;
+    if (this.wasmUnsupported) {
+      this.openDialog(`
+      <div class="dlg-icon">${ICO.chip}</div>
+      <div class="dlg-title">无法启用 AI</div>
+      <div class="dlg-body">当前浏览器不支持 <b>WebAssembly</b>，无法运行 KataGo 模型。<br>双人对战不受影响；换用近年版本的 Chrome / Edge / Firefox / Safari 即可启用人机对战。</div>
+      <div class="dlg-btns">
+        <button class="btn-pill primary" data-cmd="ok">知道了</button>
+      </div>`);
+      return;
+    }
+    if (this.webgpuMissing && !this.webgpuNoticeShown) {
+      this.webgpuNoticeShown = true;
+      this.openDialog(`
+      <div class="dlg-icon"><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13.5H11L9.5 22 19 10h-6.5z"/></svg></div>
+      <div class="dlg-title">未检测到 WebGPU</div>
+      <div class="dlg-body">当前浏览器没有可用的 WebGPU，AI 将以 <b>WASM 模式</b>运行：完全可用，但每手思考约需数秒（WebGPU 下更快）。<br><br>模型下载约 <b>103 MB</b>，是否继续？</div>
+      <div class="dlg-btns">
+        <button class="btn-pill text" data-cmd="skipdl">跳过</button>
+        <button class="btn-pill primary" data-cmd="wg-continue">继续下载</button>
+      </div>`);
+      return;
+    }
+    this.openDownloadDialog();
+  }
+
+  private openDownloadDialog(): void {
+    this.openDialog(`
+      <div class="dlg-icon">${ICO.chip}</div>
+      <div class="dlg-title">下载 AI 模型</div>
+      <div class="dlg-body">
+        人机对战需要首次下载 KataGo 模型（人类模型 + 判断模型），共约 <b>103 MB</b>，下载后保存在浏览器中，长期复用。<br>
+        不下载也可以正常使用<b>双人对战</b>。
+      </div>
+      <div class="dl-progress" id="dlProgress" style="display:none">
+        <div class="dl-bar"><i id="dlBarFill"></i></div>
+        <div class="dl-meta"><span id="dlPercent">0%</span><span id="dlSpeed"></span><span id="dlBytes"></span></div>
+      </div>
+      <div class="dlg-btns">
+        <button class="btn-pill text" data-cmd="skipdl">跳过</button>
+        <button class="btn-pill primary" data-cmd="startdl" id="btnStartDl">开始下载</button>
+      </div>`);
+  }
+
+  private downloadTask: Promise<void> | null = null;
+  private downloadProgress: [number, number, number] | null = null;
+
+  /** 按 id 取当前对话框中的进度控件（对话框重开后节点会更换，故每次现取）。 */
+  private paintDownload(received: number, total: number, speed: number): void {
+    const percent = document.getElementById('dlPercent'), speedLabel = document.getElementById('dlSpeed');
+    const bytes = document.getElementById('dlBytes'), fill = document.getElementById('dlBarFill');
+    const pct = total > 0 ? Math.min(99, Math.floor((received / total) * 100)) : 0;
+    if (percent) percent.textContent = pct + '%';
+    if (fill) fill.style.width = pct + '%';
+    if (total > 0 && received >= total) {
+      // 字节已下完，进入引擎初始化（耗时阶段）
+      if (speedLabel) speedLabel.textContent = '';
+      if (bytes) bytes.textContent = '正在初始化 AI 引擎…';
+      return;
+    }
+    if (speedLabel) speedLabel.textContent = fmtSpeed(speed);
+    if (bytes) bytes.textContent = `${(received / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(0)} MB`;
+  }
+
+  async startDownload(): Promise<void> {
+    const prog = $('dlProgress');
+    if (!prog) return;
+    const btn = $('btnStartDl');
+    prog.style.display = 'block';
+    if (btn) { btn.style.display = 'none'; }
+    const skipBtn = $('dialog').querySelector('[data-cmd="skipdl"]') as HTMLElement | null;
+    if (skipBtn) skipBtn.textContent = '跳过';
+    if (this.downloadTask) {
+      // 已有下载在跑（对话框被关闭后重开）：只把最近进度画到新对话框，完成后的收尾只做一次
+      if (this.downloadProgress) this.paintDownload(...this.downloadProgress);
+      return;
+    }
+    this.downloadTask = this.runDownload().finally(() => {
+      this.downloadTask = null;
+      this.downloadProgress = null;
+    });
+    await this.downloadTask;
+  }
+
+  private async runDownload(): Promise<void> {
+    try {
+      await this.ai.setup((received, total, speed) => {
+        this.downloadProgress = [received, total, speed];
+        this.paintDownload(received, total, speed);
+      });
+      // 就绪：提示并关闭
+      const percent = document.getElementById('dlPercent'), speedLabel = document.getElementById('dlSpeed');
+      const bytes = document.getElementById('dlBytes'), fill = document.getElementById('dlBarFill');
+      if (percent) percent.textContent = '100%';
+      if (fill) fill.style.width = '100%';
+      if (speedLabel) speedLabel.textContent = '';
+      if (bytes) bytes.textContent = '';
+      await new Promise((r) => setTimeout(r, 120));
+      if (this.dialogOpen && document.getElementById('dlProgress')) this.closeDialog();
+      this.updateAILock();
+      this.toast('AI 模型已就绪，开始人机对战吧');
+      void this.maybeAI();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg === 'canceled') return;
+      console.error('[yiqi] 模型下载失败', err);
+      const bytes = document.getElementById('dlBytes'), speedLabel = document.getElementById('dlSpeed');
+      const btn = document.getElementById('btnStartDl');
+      if (!(this.dialogOpen && speedLabel)) this.toast('模型下载失败：' + msg);
+      if (bytes) bytes.textContent = '';
+      if (speedLabel) speedLabel.textContent = '下载失败：' + msg;
+      if (btn) {
+        btn.style.display = '';
+        btn.textContent = '重试';
+      }
+    }
+  }
+
+  skipDownload(): void {
+    this.aiDownloadDismissed = true;
+    this.closeDialog();
+    // 跳过后 AI 不可用，留在人机模式会无法应答——直接切到双人对战（进行中的棋局保留）
+    if (this.mode.startsWith('ai-')) this.setMode('pvp', { toast: false, keepGame: true });
+    this.toast('已跳过：双人对战可用，AI 模型可在菜单中随时下载');
+    this.updateAILock();
+  }
+
+  /** 切换模式（同步 chips/执子区 UI、开新对局；keepGame 时保留进行中的棋局）。 */
+  setMode(mode: string, opts: { toast?: boolean; keepGame?: boolean } = {}): void {
+    this.mode = mode;
+    this.settings.mode = mode;
+    this.saveSettings();
+    document.querySelectorAll('#modes .chip').forEach((c) => c.classList.toggle('sel', (c as HTMLElement).dataset.mode === mode));
+    $('sides').style.display = mode === 'pvp' ? 'none' : 'flex';
+    if (opts.keepGame && this.game.moveNumber > 0 && !this.over) {
+      // 只作废等待中的 AI 调度，棋局与计时原样延续
+      this.ai.cancel();
+      this.aiToken++;
+      this.aiThinking = false;
+      this.updateHUD();
+      this.saveSession();
+    } else {
+      this.newGame();
+    }
+    if (opts.toast !== false) this.toast(mode === 'pvp' ? '双人对战开始' : '人机对战 · ' + $('modes').querySelector(`[data-mode="${mode}"]`)?.textContent?.trim());
+  }
+
+  /* ================= SGF 导出 ================= */
+
+  exportSGF(): void {
+    if (!this.game.moveNumber) {
+      this.toast('当前没有棋谱可导出');
+      return;
+    }
+    const d = new Date();
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const result = this.over ? this.resultSGF : undefined;
+    const sgf = this.game.toSGF({
+      blackName: this.mode === 'pvp' ? '黑方' : (this.humanColor === BLACK ? '你' : `AI（${DIFFICULTY_LABEL[MODE_TO_DIFF[this.mode]]}）`),
+      whiteName: this.mode === 'pvp' ? '白方' : (this.humanColor === WHITE ? '你' : `AI（${DIFFICULTY_LABEL[MODE_TO_DIFF[this.mode]]}）`),
+      result,
+      date,
+    });
+    try {
+      const blob = new Blob([sgf], { type: 'application/x-go-sgf' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `YiQi-${this.game.size}路-${date}.sgf`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      this.toast('棋谱已导出（SGF）');
+    } catch {
+      this.toast('导出失败');
+    }
+  }
+
+  /* ================= 初始化 ================= */
+
+  init(): void {
+    const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    document.documentElement.dataset.theme = this.settings.theme || (colorScheme.matches ? 'dark' : 'light');
+    this.syncThemeColor();
+    colorScheme.addEventListener('change', (e) => {
+      // null 表示跟随系统；手动选择主题后不再响应系统配色变化。
+      if (this.settings.theme !== null) return;
+      document.documentElement.dataset.theme = e.matches ? 'dark' : 'light';
+      this.syncThemeColor();
+      this.renderer.refreshPalette();
+    });
+    document.documentElement.dataset.accent = isAccentName(this.settings.accent) ? this.settings.accent : 'purple';
+    this.renderer.refreshPalette();
+
+    // 选项 chips 初始状态
+    document.querySelectorAll('#modes .chip').forEach((c) => c.classList.toggle('sel', (c as HTMLElement).dataset.mode === this.mode));
+    document.querySelectorAll('#sides .chip').forEach((c) => c.classList.toggle('sel', (c as HTMLElement).dataset.side === this.settings.side));
+    document.querySelectorAll('#sizes .chip').forEach((c) => c.classList.toggle('sel', Number((c as HTMLElement).dataset.size) === this.settings.boardSize));
+    $('sides').style.display = this.mode === 'pvp' ? 'none' : 'flex';
+    this.updateSoundUI();
+    this.updateCoordsUI();
+    this.updateHUD();
+    this.updateScoringUI();
+
+    this.restoreSession();
+    this.renderer.fitBoard();
+    setTimeout(() => this.renderer.fitBoard(), 80);
+    void this.bootstrapAI();
+  }
+
+  updateSoundUI(): void {
+    const on = this.settings.sound;
+    const icOn = $('icSoundOn'), icOff = $('icSoundOff'), txt = $('soundText');
+    if (icOn && icOff && txt) {
+      icOn.style.display = on ? 'block' : 'none';
+      icOff.style.display = on ? 'none' : 'block';
+      txt.textContent = '落子音效：' + (on ? '开' : '关');
+    }
+  }
+
+  updateCoordsUI(): void {
+    const txt = $('coordsText');
+    if (txt) txt.textContent = '棋盘坐标：' + (this.settings.coords ? '开' : '关');
+    this.renderer.showCoords = this.settings.coords;
+    this.renderer.scheduleDraw();
+  }
+}
+
+/* ================= 工具 ================= */
+
+function snapToNN(game: GoGame) {
+  return game.nnBoard();
+}
+function nnFromGrid(grid: number[][] | null, size: number) {
+  if (!grid) return undefined;
+  const out: (null | 'black' | 'white')[][] = [];
+  for (let y = 0; y < size; y++) {
+    const row: (null | 'black' | 'white')[] = [];
+    for (let x = 0; x < size; x++) {
+      const v = grid[y]?.[x] ?? 0;
+      row.push(v === 1 ? 'black' : v === 2 ? 'white' : null);
+    }
+    out.push(row);
+  }
+  return out;
+}
+function trimNum(v: number): string {
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+function fmtSpeed(bps: number): string {
+  if (bps >= 1048576) return (bps / 1048576).toFixed(1) + ' MB/s';
+  return Math.round(bps / 1024) + ' KB/s';
+}
+function illegalMessage(code: string): string {
+  if (code === 'occupied') return '此处已有棋子';
+  if (code === 'suicide') return '禁着点：落子后无气（自杀）';
+  if (code === 'ko' || code === 'superko') return '禁着点：全局同形（打劫需先寻劫）';
+  if (code === 'out_of_bounds') return '落点超出棋盘';
+  return '此处不可落子';
+}
+
+const ICO = {
+  help: '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.6"/><path d="M9.6 9.2a2.5 2.5 0 0 1 4.9.6c0 1.6-2.3 2-2.3 3.5M12.1 16.8h.01"/></svg>',
+  trophy: '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 16.5V21M7 4h10v4.5a5 5 0 0 1-10 0z"/><path d="M7 5.5H4.6a2 2 0 0 0 2 3.7H7M17 5.5h2.4a2 2 0 0 1-2 3.7H17"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5h15M9.5 6V4.5h5V6M6.5 6.5l.9 13.5h9.2l.9-13.5M10 10.5v6M14 10.5v6"/></svg>',
+  crown: '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17.5 3 8l5 3.5L12 5l4 6.5L21 8l-1 9.5z"/><path d="M5 21h14"/></svg>',
+  flag: '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4"/><path d="M5 4h13l-2.5 4L18 12H5"/></svg>',
+  handshake: '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="9" r="3.2"/><circle cx="15.5" cy="9" r="3.2"/><path d="M3.5 20c.6-3 2.6-4.5 5-4.5s4.4 1.5 5 4.5M10.5 20c.6-3 2.6-4.5 5-4.5s4.4 1.5 5 4.5"/></svg>',
+  chip: '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><rect x="9.2" y="9.2" width="5.6" height="5.6" rx="1.2"/><path d="M9 2.8v2.2M15 2.8v2.2M9 19v2.2M15 19v2.2M2.8 9h2.2M2.8 15h2.2M19 9h2.2M19 15h2.2"/></svg>',
+};
+
+export { App };

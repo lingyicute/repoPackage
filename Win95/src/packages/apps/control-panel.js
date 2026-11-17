@@ -1,0 +1,561 @@
+import { el, button, dataText, field, download, fileInput, formatSize, infoGrid } from '@win95/ui/dom.js';
+import { trackbar } from '@win95/ui/trackbar.js';
+import { icon } from '@win95/ui/icons.js';
+import { menuBar } from '@win95/ui/menu.js';
+import { combo } from '@win95/ui/select.js';
+import { POINTER_ROLES, SCHEMES, currentSchemeName, cursorArt, listSchemes, parseCursorFile, resolveScheme, svgDataUrl } from '@win95/shell/cursors.js';
+import { saverWaitMinutes, saverWaitOptions } from './saver-wait.js';
+import { uiLocale } from '@win95/core/i18n.js';
+import { DEFAULT_VOLUME } from '@win95/core/mixer.js';
+const applets = [['display', 'Display', 'display'], ['sounds', 'Sounds', 'volume'], ['keyboard', 'Keyboard', 'keyboard'], ['mouse', 'Mouse', 'mouse'], ['datetime', 'Date/Time', 'clock'], ['regional', 'Regional Settings', 'regional'], ['fonts', 'Fonts', 'font'], ['printers', 'Printers', 'printer'], ['network', 'Network', 'network'], ['system', 'System', 'computer'], ['addremove', 'Add/Remove Programs', 'task'], ['accessibility', 'Accessibility Options', 'accessibility'], ['multimedia', 'Multimedia', 'media'], ['passwords', 'Passwords', 'passwords'], ['modems', 'Modems', 'modem'], ['joystick', 'Joystick', 'joystick'], ['hardware', 'Add New Hardware', 'control'], ['power', 'Power', 'power']];
+
+/** Slider position (0 slowest … 100 fastest) to the double-click interval in ms. */
+export const doubleClickInterval = speed => Math.round(800 - (speed ?? 50) * 6);
+export function controlPanel(s) {
+    const w = s.wm.create({ title: 'Control Panel', icon: 'control', width: 573, height: 388 });
+    w.setMenu(menuBar([{ label: 'File', items: [{ label: 'Close', action: () => w.close() }] }, { label: 'View', items: [{ label: 'Large Icons', checked: true }, { label: 'Refresh', action: () => { } }] }, { label: 'Help', items: [{ label: 'Help Topics', action: () => s.launch('help', { topic: 'settings' }) }, { label: 'About Windows 95', action: () => s.about() }] }]));
+    const grid = el('div', { class: 'control-grid' });
+    for (const [id, title] of applets)
+        grid.append(button('', () => { }, { class: 'control-icon', ondblclick: () => s.launch(id), 'aria-label': title }));
+    for (let i = 0; i < applets.length; i++) {
+        const [id, title, ic] = applets[i], b = grid.children[i];
+        b.append(icon(ic, 32), el('span', { text: title }));
+        b.onkeydown = e => {
+            if (e.key === 'Enter')
+                s.launch(id);
+        };
+    }
+    w.body.append(grid);
+    w.status(`${applets.length} object(s)`);
+    return w;
+}
+/**
+ * A property sheet: tab strip, one page at a time, and OK / Cancel / Apply.
+ * A sheet that passes `dirtyApply` starts with Apply greyed out and asks
+ * `w.markDirty()` from the controls that change something, the way Windows
+ * only lights Apply once the user has changed a setting.
+ */
+export function propertySheet(s, title, ic, tabs, width = 420, height = 420, options = {}) {
+    const w = s.wm.create({ title, icon: ic, width, height, resizable: false });
+    w.body.classList.add('properties-layout');
+    const strip = el('div', { class: 'tab-strip' }), panel = el('div', { class: 'tab-panel' }), buttons = el('div', { class: 'dialog-buttons' });
+    let tabIndex = 0;
+    const panels = tabs.map(([name, build], i) => { const p = el('div', { class: 'control-settings' }); build(p, w); const b = button(name, () => { tabIndex = i; render(); }); strip.append(b); return p; });
+    const render = () => { [...strip.children].forEach((b, i) => b.classList.toggle('active', i === tabIndex)); panel.replaceChildren(panels[tabIndex]); };
+    const clean = () => { if (options.dirtyApply) apply.disabled = true; };
+    const apply = button('Apply', async () => { await w.apply?.(); clean(); });
+    if (options.dirtyApply) {
+        apply.disabled = true;
+        w.markDirty = () => { apply.disabled = false; };
+    }
+    buttons.append(button('OK', async () => {
+        if (w.apply)
+            await w.apply();
+        w.close();
+    }, { class: 'default-button' }), button('Cancel', () => w.close()), apply);
+    w.body.append(strip, panel, buttons);
+    w.element.addEventListener('keydown', e => {
+        if (e.ctrlKey && e.key === 'Tab') {
+            e.preventDefault();
+            tabIndex = (tabIndex + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length;
+            render();
+        }
+        if (e.key === 'Escape')
+            w.close();
+    });
+    render();
+    return w;
+}
+/**
+ * The button toggles the browser's full screen instead of only entering it, and
+ * it says which way it will go. Esc, F11 or the browser's own control can leave
+ * full screen behind the sheet's back, so the caption follows the document
+ * rather than the last click, and the listener goes when the sheet closes.
+ */
+function fullScreenButton(win) {
+    const toggle = button('Full Screen', async () => {
+        try {
+            if (document.fullscreenElement)
+                await document.exitFullscreen?.();
+            else
+                await document.documentElement.requestFullscreen?.();
+        }
+        catch { }
+        sync();
+    });
+    const sync = () => { toggle.textContent = document.fullscreenElement ? 'Exit Full Screen' : 'Full Screen'; };
+    document.addEventListener('fullscreenchange', sync);
+    win.onClosed.push(() => document.removeEventListener('fullscreenchange', sync));
+    return toggle;
+}
+export function displayProperties(s) {
+    let wallpaper = s.settings.get('wallpaper', 'None'), color = s.settings.get('desktopColor', '#008080'), saver = s.settings.get('screensaver', 'Mystify'), saverMinutes = saverWaitMinutes(s.settings.get('saverMinutes', 0)), scheme = s.settings.get('scheme', 'Windows Standard'), backend = s.settings.get('renderer', 'auto');
+    // Each page keeps its own monitor: a shared reference would be overwritten by the
+    // Appearance page, whose preview is detached while the Background tab is active.
+    const makeMonitor = () => { const preview = el('div', { class: 'display-preview', style: { background: color } }, el('div', { class: 'mini-window' })); return { element: el('div', { class: 'display-monitor' }, preview), preview }; };
+    const w = propertySheet(s, 'Display Properties', 'display', [
+        ['Background', p => { const monitor = makeMonitor(); p.append(monitor.element); const list = combo({ mode: 'list', ariaLabel: 'Wallpaper', options: ['None', 'Bricks', 'Clouds', 'Tiles', 'Weave'], value: wallpaper }); list.onchange = () => { wallpaper = list.value; monitor.preview.style.backgroundImage = wallpaper === 'Weave' ? 'repeating-linear-gradient(45deg,transparent 0 2px,#004040 2px 4px)' : wallpaper === 'Bricks' ? 'repeating-linear-gradient(0deg,transparent 0 15px,#004040 15px 16px)' : 'none'; }; p.append(el('div', { class: 'display-options' }, el('div', {}, el('p', { text: 'Wallpaper' }), list), el('div', { class: 'stack' }, button('Browse…', () => fileInput('image/*', f => { const reader = new FileReader(); reader.onload = () => { wallpaper = String(reader.result); monitor.preview.style.backgroundImage = `url(${wallpaper})`; monitor.preview.style.backgroundSize = 'cover'; }; reader.readAsDataURL(f); })), el('label', {}, 'Color:', el('input', { type: 'color', value: color, 'aria-label': 'Desktop color', oninput: e => { color = e.target.value; monitor.preview.style.backgroundColor = color; } }))))); p.append(el('div', { class: 'color-swatches' }, ...['#008080', '#004040', '#000080', '#008000', '#800000', '#800080', '#000000', '#808080', '#c0c0c0', '#ffffff'].map(c => button('', () => { color = c; monitor.preview.style.backgroundColor = c; }, { style: { background: c }, 'aria-label': 'Desktop color ' + c })))); }],
+        ['Screen Saver', (p, win) => {
+                p.append(el('div', { class: 'display-monitor' }, el('div', { class: 'display-preview', style: { background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#00ffff' }, text: 'Windows 95' })));
+                const choose = combo({ ariaLabel: 'Screen saver', options: ['None', 'Mystify', 'Starfield', 'Marquee'], value: saver, onchange: value => saver = value });
+                const wait = el('input', { type: 'number', min: 0, max: 120, value: saverMinutes, 'aria-label': 'Wait minutes', oninput: e => saverMinutes = Math.min(120, saverWaitMinutes(e.target.value)), style: { width: '60px' } });
+                p.append(field('Screen Saver:', choose), el('div', { class: 'row' }, button('Preview', () => s.graphics.screensaver(saver === 'None' ? 'Mystify' : saver)), button('Settings…', async () => {
+                    const text = await s.ui.prompt('Text:', s.settings.get('saverText', 'Windows 95'), 'Marquee Settings', { owner: w });
+                    if (text !== null)
+                        s.settings.set('saverText', text);
+                })), field('Wait (minutes):', wait), el('p', { class: 'muted', text: 'Set the wait time to 0 to turn off the automatic screen saver.' }));
+                const sync = event => {
+                    if (event.detail?.name !== 'saverMinutes')
+                        return;
+                    saverMinutes = saverWaitMinutes(event.detail.value);
+                    wait.value = String(saverMinutes);
+                };
+                s.settings.addEventListener?.('change', sync);
+                win.onClosed.push(() => s.settings.removeEventListener?.('change', sync));
+            }],
+        ['Appearance', p => { const monitor = makeMonitor(); p.append(monitor.element); const select = combo({ ariaLabel: 'Color scheme', options: ['Windows Standard', 'Desert', 'Marine', 'Plum', 'High Contrast Black', 'High Contrast White'], value: scheme, onchange: value => scheme = value }); p.append(field('Scheme:', select), el('p', { text: 'Choose the colors used for window titles, menus, and controls.' }), el('fieldset', {}, el('legend', { text: 'Item' }), el('div', { class: 'row' }, icon('windows', 32), el('span', { text: 'Active Title Bar' })), el('p', { style: { marginTop: '12px' }, text: 'Windows Standard uses the original Windows 95 colors.' }))); }],
+        ['Settings', (p, win) => { p.append(el('div', { class: 'row', style: { marginBottom: '10px' } }, icon('display', 32), el('div', {}, el('b', { text: 'Display' }), el('p', { text: 'Browser display adapter' }))), el('fieldset', {}, el('legend', { text: 'Desktop area' }), el('p', { text: `${innerWidth} by ${innerHeight} pixels` }), el('p', { text: `Scale: ${devicePixelRatio}× device pixels` })), el('fieldset', {}, el('legend', { text: 'Graphics acceleration' }), el('p', { text: 'Current renderer: ' + s.graphics.presenter.backend }), field('Preferred:', combo({ ariaLabel: 'Renderer', options: [['auto', 'Automatic'], ['webgpu', 'WebGPU'], ['webgl2', 'WebGL2'], ['canvas2d', 'Canvas 2D']].map(([value, label]) => ({ value, label })), value: backend, onchange: value => backend = value }))), el('p', { text: 'A change to the renderer takes effect after restarting.' }), fullScreenButton(win)); }]
+    ], 430, 438);
+    w.apply = () => { s.settings.set('desktopColor', color); s.settings.set('wallpaper', wallpaper); s.settings.set('screensaver', saver); s.settings.set('saverMinutes', saverMinutes); s.settings.set('scheme', scheme); s.settings.set('renderer', backend); s.applyAppearance(); };
+    return w;
+}
+export function powerProperties(s) {
+    let minutes = saverWaitMinutes(s.settings.get('saverMinutes', 0));
+    const w = propertySheet(s, 'Power Properties', 'power', [
+        ['Power', (p, win) => {
+                const wait = combo({
+                    ariaLabel: 'Screen saver wait',
+                    options: saverWaitOptions(minutes),
+                    value: String(minutes),
+                    onchange: value => minutes = saverWaitMinutes(value)
+                });
+                p.append(field('Screen saver wait:', wait), el('p', { class: 'muted', text: 'This is the same wait time as the Screen Saver tab in Display Properties; host sleep stays under your computer’s control.' }));
+                const sync = event => {
+                    if (event.detail?.name !== 'saverMinutes')
+                        return;
+                    minutes = saverWaitMinutes(event.detail.value);
+                    wait.setOptions(saverWaitOptions(minutes), String(minutes));
+                };
+                s.settings.addEventListener?.('change', sync);
+                win.onClosed.push(() => s.settings.removeEventListener?.('change', sync));
+            }]
+    ], 430, 390);
+    w.apply = () => s.settings.set('saverMinutes', minutes);
+    return w;
+}
+export function dateTime(s) {
+    const pad = n => String(n).padStart(2, '0');
+    let date = new Date(Date.now() + s.settings.get('clockOffset', 0));
+    /* The calendar works in local dates. toISOString() reports the UTC day,
+       which is one off near midnight and made every Apply rewrite the clock
+       offset by about a day. */
+    let chosen = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`, clock = date.toTimeString().slice(0, 5), zone = s.settings.get('timezone', 'Local time');
+    let dateTimeEdited = false;
+    const w = propertySheet(s, 'Date/Time Properties', 'clock', [
+        ['Date & Time', (p, w) => {
+                const layout = el('div', { class: 'row', style: { alignItems: 'flex-start' } }), calendar = el('div', { style: { flex: 1 } }), dial = el('div', { class: 'analog-clock' });
+                const year = el('input', { type: 'number', min: 1970, max: 2100, value: date.getFullYear(), style: { width: '65px' }, 'aria-label': 'Year' }), month = combo({ ariaLabel: 'Month', options: Array.from({ length: 12 }, (_, i) => ({ value: String(i), label: new Date(2000, i).toLocaleString(uiLocale, { month: 'long' }) })), value: String(date.getMonth()) }), grid = el('div', { class: 'calendar-grid inset' });
+                const draw = () => {
+                    /* The weekday initials follow the UI language: a Chinese calendar heads
+                   its columns with 日一二三四五六. The grid starts on Sunday, which
+                   the column order below has to keep. */
+                    grid.replaceChildren(...Array.from({ length: 7 }, (_, i) => new Date(2000, 0, 2 + i).toLocaleDateString(uiLocale, { weekday: 'narrow' }))
+                        .map(v => el('span', { class: 'weekday', text: v })));
+                    const first = new Date(shownYear, +month.value, 1).getDay(), days = new Date(shownYear, +month.value + 1, 0).getDate();
+                    for (let i = 0; i < first; i++)
+                        grid.append(el('span'));
+                    for (let i = 1; i <= days; i++)
+                        grid.append(button(String(i), () => { date = new Date(shownYear, +month.value, i); chosen = `${shownYear}-${String(+month.value + 1).padStart(2, '0')}-${String(i).padStart(2, '0')}`; dateTimeEdited = true; draw(); }, { class: i === date.getDate() ? 'today' : '' }));
+                };
+                /* A year typed one digit at a time passes through "2" and "20", which
+                   are not years: only a whole four-digit year inside the input's
+                   range is applied, so a half-typed one never rewrites the date. */
+                const typedYear = () => {
+                    const text = year.value.trim(), n = Number(text);
+                    return /^\d{4}$/.test(text) && n >= 1970 && n <= 2100 ? n : null;
+                };
+                let shownYear = date.getFullYear();
+                const changeMonthYear = () => {
+                    const typed = typedYear();
+                    if (typed === null)
+                        return;
+                    shownYear = typed;
+                    const days = new Date(shownYear, +month.value + 1, 0).getDate();
+                    const day = Math.min(date.getDate(), days);
+                    date = new Date(shownYear, +month.value, day);
+                    chosen = `${shownYear}-${pad(+month.value + 1)}-${pad(day)}`;
+                    dateTimeEdited = true;
+                    draw();
+                };
+                year.oninput = changeMonthYear;
+                month.onchange = () => { if (typedYear() === null)
+                    year.value = String(shownYear); changeMonthYear(); };
+                year.onchange = () => { if (typedYear() === null)
+                    year.value = String(shownYear); };
+                calendar.append(el('div', { class: 'calendar-head' }, month, year), grid, el('p', { class: 'muted', style: { marginTop: '10px' }, text: 'Calendar' }));
+                for (let i = 1; i <= 12; i++) {
+                    const a = i * Math.PI / 6;
+                    dial.append(el('span', { class: 'clock-number', text: String(i), style: { left: (62 + Math.sin(a) * 48) + 'px', top: (62 - Math.cos(a) * 48) + 'px' } }));
+                }
+                const hour = el('span', { class: 'clock-hand clock-hour' }), minute = el('span', { class: 'clock-hand clock-minute' }), second = el('span', { class: 'clock-hand clock-second' });
+                dial.append(hour, minute, second);
+                const tick = () => { const now = new Date(Date.now() + s.settings.get('clockOffset', 0)); hour.style.transform = `rotate(${now.getHours() * 30 + now.getMinutes() / 2}deg)`; minute.style.transform = `rotate(${now.getMinutes() * 6}deg)`; second.style.transform = `rotate(${now.getSeconds() * 6}deg)`; };
+                const timer = setInterval(tick, 1000);
+                w.onClosed.push(() => clearInterval(timer));
+                tick();
+                draw();
+                layout.append(calendar, el('div', { style: { width: '142px' } }, dial, el('input', { type: 'time', value: clock, 'aria-label': 'Time', oninput: e => { clock = e.target.value; dateTimeEdited = true; }, style: { width: '110px', margin: '16px' } })));
+                p.append(layout, el('p', { text: 'Changes apply to the clock on this desktop.' }));
+            }],
+        ['Time Zone', p => p.append(field('Time Zone:', combo({ ariaLabel: 'Time zone', options: ['Local time', 'UTC', 'Europe/Warsaw', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'Asia/Tokyo'], value: zone, onchange: value => zone = value })), el('p', { text: 'Choose how the taskbar clock displays the time.' }))]
+    ], 450, 365);
+    w.apply = () => {
+        if (dateTimeEdited) {
+            const target = new Date(`${chosen}T${clock}:00`);
+            if (!Number.isNaN(target.getTime()))
+                s.settings.set('clockOffset', target.getTime() - Date.now());
+        }
+        s.settings.set('timezone', zone);
+        s.updateClock();
+    };
+    return w;
+}
+export function systemProperties(s) {
+    return propertySheet(s, 'System Properties', 'computer', [
+        /* The General tab is the monitor picture Windows 95 shipped and three
+           facts; anything measured - adapter, disk, storage - lives on
+           Performance, where the numbers belong. */
+        ['General', p => {
+                const cores = navigator.hardwareConcurrency || 1;
+                p.append(el('div', { class: 'system-general' },
+                    el('img', { class: 'system-monitor', src: './assets/system-monitor.png', width: 139, height: 133, alt: '' }),
+                    el('div', { class: 'system-facts' },
+                        el('dl', { class: 'system-fact' }, el('dt', { text: 'System:' }), el('dd', { text: 'Microsoft Windows 95' })),
+                        el('dl', { class: 'system-fact' }, el('dt', { text: 'Registered to:' }), el('dd', {}, dataText(s.settings.get('owner', 'Windows User')))),
+                        el('dl', { class: 'system-fact' }, el('dt', { text: 'Hardware architecture:' }), el('dd', { 'aria-label': `Browser, ${cores} logical cores` }, 'Browser', el('br'), `${cores} logical cores`)))));
+            }],
+        ['Device Manager', p => {
+                const list = el('div', { class: 'inset', style: { padding: '10px', minHeight: '200px' } });
+                for (const [ic, label] of [['computer', 'Computer'], ['display', 'Display adapter — ' + s.graphics.presenter.backend], ['disk', 'Virtual C: drive — ' + s.fs.persistence], ['keyboard', 'Browser keyboard'], ['mouse', 'Browser pointing device'], ['volume', 'Web Audio output'], ['network', navigator.onLine ? 'Network — connected' : 'Network — offline']])
+                    list.append(el('div', { class: 'row', style: { padding: '6px' } }, icon(ic, 16), label));
+                p.append(list);
+            }],
+        ['Performance', p => p.append(infoGrid([['Display adapter:', s.graphics.presenter.backend], ['Open windows:', String(s.wm.windows.length)], ['Logical CPUs:', String(navigator.hardwareConcurrency || 1)], ['Files and folders:', String(s.fs.nodes.size)], ['Virtual disk:', s.fs.persistence], ['Used space:', formatSize(s.fs.size('C:\\'))], ['Storage revision:', String(s.fs.revision)]]), button('System Monitor…', () => s.launch('monitor')), button('Export Volume…', () => download('Windows95-Backup.json', s.fs.export(), 'application/json')))]
+    ], 440, 400);
+}
+export function settingsApplet(s, id) {
+    if (id === 'display')
+        return displayProperties(s);
+    if (id === 'datetime')
+        return dateTime(s);
+    if (id === 'system')
+        return systemProperties(s);
+    if (id === 'power')
+        return powerProperties(s);
+    const meta = applets.find(a => a[0] === id) || [id, id[0].toUpperCase() + id.slice(1), 'settings'];
+    const draft = { ...s.settings.get('applet-' + id, {}) };
+    const commits = [];
+    let uiLanguageChangedByUser = false;
+    let w;
+    /* The value a box starts from. A saved draft keeps the box as the user left
+       it, but when the box mirrors a setting other places can change - the colour
+       scheme, the locale - that setting is the truth and wins over the draft, or a
+       stale saved copy would be written back over the newer one on Apply. */
+    class Live {
+        constructor(value) { this.value = value; }
+    }
+    const live = value => new Live(value);
+    const seed = (key, value) => { if (value instanceof Live) draft[key] = value.value; else draft[key] ??= value; };
+    const select = (p, label, key, values, value, onChange = null) => { seed(key, value); const input = combo({ ariaLabel: label, options: values.map(x => typeof x === 'string' ? ({ value: x, label: x }) : x), value: draft[key], onchange: next => { draft[key] = next; onChange?.(next); } }); p.append(field(label, input)); return input; };
+    /* `onCommit` lets a box that is not only this sheet's business - the
+       mixer's Mute all - reach the shared setting while it is clicked. The
+       input comes back so a page that mirrors the setting can redraw it. */
+    const check = (p, label, key, value = false, onCommit = null) => {
+        seed(key, value);
+        const input = el('input', { type: 'checkbox', checked: draft[key], onchange: e => { draft[key] = e.target.checked; onCommit?.(e.target.checked); } });
+        p.append(el('label', { class: 'checkbox-label' }, input, label));
+        return input;
+    };
+    const range = (p, label, key, value = 50) => { seed(key, value); p.append(field(label, trackbar({ label, value: draft[key], onChange: next => draft[key] = next }))); };
+    const pages = [];
+    if (id === 'mouse') {
+        pages.push(['Buttons', p => {
+            p.append(el('div', { class: 'row' }, icon('mouse', 32), el('p', { text: 'Customize your pointing device.' })));
+            check(p, 'Left-handed button configuration', 'leftHanded', live(s.settings.get('leftHanded', false)));
+            range(p, 'Double-click speed:', 'doubleClick', 50);
+            /* The folder is the test area: two clicks inside the interval set
+               on the slider above open it or close it, and a slower pair leaves
+               the picture as it was. */
+            let lastClick = null, open = false;
+            const folder = el('button', { class: 'mouse-test-folder', type: 'button', 'aria-label': 'Double-click to test', 'aria-pressed': 'false' }, icon('folder', 32));
+            folder.addEventListener('click', () => {
+                const now = Date.now();
+                if (lastClick === null || now - lastClick > doubleClickInterval(draft.doubleClick)) {
+                    lastClick = now;
+                    return;
+                }
+                lastClick = null;
+                open = !open;
+                folder.replaceChildren(icon(open ? 'folderOpen' : 'folder', 32));
+                folder.setAttribute('aria-pressed', String(open));
+            });
+            p.append(el('fieldset', { class: 'mouse-test-area' }, el('legend', { text: 'Test area' }), folder));
+            commits.push(() => s.settings.set('leftHanded', !!draft.leftHanded));
+            commits.push(() => s.settings.set('doubleClickMs', doubleClickInterval(draft.doubleClick)));
+        }], ['Motion', p => {
+            const trailsOn = draft.pointerTrails = s.settings.get('pointerTrails', false);
+            const trail = trackbar({ label: 'Pointer trail length', min: 0, max: 100, value: draft.trailLength = s.settings.get('trailLength', 50), ticks: 7, onChange: next => draft.trailLength = next });
+            trail.disabled = !trailsOn;
+            const box = el('input', { type: 'checkbox', checked: trailsOn, onchange: e => { draft.pointerTrails = e.target.checked; trail.disabled = !e.target.checked; } });
+            const emblem = el('span', { class: 'trail-emblem', 'aria-hidden': 'true' });
+            emblem.innerHTML = '<svg viewBox="0 0 40 28" width="36" height="25" aria-hidden="true">'
+                + '<g fill="#fff" stroke="#000" stroke-width="0.9">'
+                + '<path transform="translate(5 3)" d="M0 0v15l3.4-3.2 2.4 5.6 2.7-1.2-2.4-5.5h4.8z"/>'
+                + '<path transform="translate(10 4.5)" d="M0 0v15l3.4-3.2 2.4 5.6 2.7-1.2-2.4-5.5h4.8z"/>'
+                + '<path transform="translate(15 6)" d="M0 0v15l3.4-3.2 2.4 5.6 2.7-1.2-2.4-5.5h4.8z"/>'
+                + '<path transform="translate(20 7.5)" d="M0 0v15l3.4-3.2 2.4 5.6 2.7-1.2-2.4-5.5h4.8z"/>'
+                + '<path transform="translate(25 9)" d="M0 0v15l3.4-3.2 2.4 5.6 2.7-1.2-2.4-5.5h4.8z"/>'
+                + '</g></svg>';
+            p.append(el('fieldset', {}, el('legend', { text: 'Pointer Trail' }), el('div', { class: 'row', style: { gap: '16px', alignItems: 'center' } }, emblem, el('div', { class: 'stack', style: { flex: '1', gap: '10px' } }, el('label', { class: 'checkbox-label' }, box, el('span', { text: 'Show pointer trails' })), el('div', { class: 'row', style: { gap: '8px', alignItems: 'center' } }, el('span', { text: 'Short' }), trail, el('span', { text: 'Long' }))))));
+            commits.push(() => {
+                s.settings.set('pointerTrails', !!draft.pointerTrails);
+                s.settings.set('trailLength', draft.trailLength ?? s.settings.get('trailLength', 50));
+            });
+        }], ['Pointers', p => {
+            // The Pointers tab: a scheme list, the fifteen cursor roles with a
+            // live preview of the selected role, and per-role file overrides
+            // through Browse…, plus Save As…/Delete for user schemes. Nothing
+            // reaches the desktop until Apply/OK commits both settings keys.
+            let schemeName = currentSchemeName(s);
+            let custom = { ...(s.settings.get('cursorCustom', null) || {}) };
+            const savedSchemes = () => s.settings.get('cursorUserSchemes', {}) || {};
+            const isUserScheme = name => Object.prototype.hasOwnProperty.call(savedSchemes(), name);
+            const roleNow = () => POINTER_ROLES.find(r => r.label === roles.value) || POINTER_ROLES[0];
+            const refresh = () => {
+                const role = roleNow(), mine = custom[role.id];
+                const source = mine?.url || svgDataUrl(cursorArt(role.id, resolveScheme(s, schemeName)).svg);
+                previewBox.replaceChildren(el('img', { src: source, alt: role.label }));
+                previewName.textContent = mine?.name || role.file;
+                deleteBtn.disabled = !isUserScheme(schemeName);
+            };
+            const schemeCombo = combo({ ariaLabel: 'Scheme', options: listSchemes(s), value: schemeName, onchange: name => { schemeName = name; custom = { ...(savedSchemes()[name]?.custom || {}) }; refresh(); } });
+            const roles = combo({ mode: 'list', class: 'pointer-role-list', ariaLabel: 'Customize', options: POINTER_ROLES.map(r => r.label), value: POINTER_ROLES[0].label, onchange: refresh });
+            const previewBox = el('div', { class: 'inset pointer-preview' });
+            const previewName = el('p', { class: 'pointer-file' });
+            const browseBtn = button('Browse…', () => fileInput('.cur,.ico,.ani,.png,.gif,.jpg,.svg', async file => {
+                try {
+                    custom[roleNow().id] = await parseCursorFile(file);
+                    refresh();
+                }
+                catch (error) {
+                    await s.ui.message(error.message || String(error), 'Pointers', ['OK'], { owner: w });
+                }
+            }), { style: { minWidth: '75px' } });
+            const saveBtn = button('Save As…', async () => {
+                const answer = await s.ui.prompt('Save this cursor scheme as:', schemeName, 'Save As', { owner: w });
+                if (answer === null || !answer.trim())
+                    return;
+                const name = answer.trim();
+                if (SCHEMES.some(x => x.name === name)) {
+                    await s.ui.message('That name is used by a Windows scheme. Choose another name.', 'Save As', ['OK'], { owner: w });
+                    return;
+                }
+                const base = resolveScheme(s, schemeName);
+                s.settings.set('cursorUserSchemes', { ...savedSchemes(), [name]: { fill: base.fill, outline: base.outline, accent: base.accent, scale: base.scale, variant: base.variant, custom: { ...custom } } });
+                schemeName = name;
+                schemeCombo.setOptions(listSchemes(s), schemeName);
+                refresh();
+            }, { style: { minWidth: '75px' } });
+            const deleteBtn = button('Delete', async () => {
+                if (!isUserScheme(schemeName))
+                    return;
+                if (await s.ui.message(`Delete the '${schemeName}' cursor scheme?`, 'Pointers', ['Yes', 'No'], { owner: w }) !== 'Yes')
+                    return;
+                const all = { ...savedSchemes() };
+                delete all[schemeName];
+                s.settings.set('cursorUserSchemes', all);
+                schemeName = 'Windows Standard';
+                custom = {};
+                schemeCombo.setOptions(listSchemes(s), schemeName);
+                refresh();
+            }, { style: { minWidth: '75px' } });
+            p.append(field('Scheme:', schemeCombo),
+                el('div', { class: 'row', style: { gap: '10px', alignItems: 'stretch' } },
+                    el('div', { style: { flex: '1', minWidth: '0' } }, el('p', { style: { margin: '0 0 5px' }, text: 'Customize:' }), roles),
+                    el('div', { style: { width: '138px', flex: 'none' } }, el('fieldset', { style: { margin: '0' } }, el('legend', { text: 'Preview' }), previewBox, previewName))),
+                el('div', { class: 'row', style: { gap: '6px' } }, browseBtn, saveBtn, deleteBtn));
+            refresh();
+            commits.push(() => {
+                s.settings.set('cursorCustom', { ...custom });
+                s.settings.set('cursorScheme', schemeName);
+            });
+        }]);
+    }
+    else if (id === 'keyboard') {
+        pages.push(['Speed', p => { range(p, 'Repeat delay:', 'delay'); range(p, 'Repeat rate:', 'repeat'); p.append(field('Click here to test:', el('input', { 'aria-label': 'Keyboard test', placeholder: '' })), el('p', { class: 'muted', text: 'Key repeat for browser text fields follows your computer’s keyboard settings.' })); }], ['Language', p => select(p, 'Language:', 'language', ['English (United States)', 'Polski', 'Deutsch', 'Français'], 'English (United States)')]);
+    }
+    else if (id === 'regional') {
+        pages.push(['Regional Settings', p => { const numSample = el('p'), dateSample = el('p'), updateSamples = loc => { numSample.textContent = 'Number: ' + new Intl.NumberFormat(loc).format(1234567.89); dateSample.textContent = 'Date: ' + new Date().toLocaleDateString(loc); }; select(p, 'Locale:', 'locale', ['en-US', 'en-GB', 'pl-PL', 'de-DE', 'fr-FR', 'ja-JP', 'zh-CN'], live(s.settings.get('locale', 'en-US')), updateSamples); updateSamples(draft.locale || s.settings.get('locale', 'en-US')); p.append(el('fieldset', {}, el('legend', { text: 'Samples' }), numSample, dateSample)); commits.push(() => { s.settings.set('locale', draft.locale || 'en-US'); s.updateClock(); }); }], ['Language', p => { const currentLanguage = s.settings.get('ui-language', (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en'); draft.uiLanguage = currentLanguage; const language = combo({ ariaLabel: 'Display language:', options: [{ value: 'en', label: 'English' }, { value: 'zh', label: 'Chinese (Simplified)' }], value: currentLanguage, onchange: next => { draft.uiLanguage = next; uiLanguageChangedByUser = next !== currentLanguage; } }); p.append(field('Display language:', language)); }], ['Time', p => { check(p, 'Use 24-hour time', 'hour24', live(s.settings.get('hour24', false))); commits.push(() => { s.settings.set('hour24', !!draft.hour24); s.updateClock(); }); }]);
+    }
+    else if (id === 'sounds' || id === 'multimedia') {
+        pages.push(['Audio', (p, win) => {
+                select(p, 'Scheme:', 'scheme', ['Windows Default', 'No Sounds'], 'Windows Default');
+                /* The master fader is not this sheet's private value. Volume
+                   Control, the taskbar and every player read the same keys, so
+                   the page opens on what the mixer holds now - not on the copy
+                   stored with the sheet's other fields, which may be older -
+                   and a drag moves the mixer while it happens instead of
+                   waiting for OK. `sync` below finishes the job in the other
+                   direction, so whichever window writes, the other follows.
+
+                   A sheet that writes before it is committed owes the user a
+                   way back, so `base` holds the level the sheet found (or the
+                   one its last OK/Apply committed) and closing without OK
+                   writes it straight back, which is what Windows does: the
+                   sheet's saved level wins over anything else that moved the
+                   fader while the sheet was open, Volume Control included. */
+                const base = {
+                    volume: s.settings.get('volume', DEFAULT_VOLUME),
+                    muted: s.settings.get('muted', false)
+                };
+                draft.volume = base.volume;
+                draft.muted = base.muted;
+                const volume = trackbar({
+                    label: 'Volume:',
+                    value: draft.volume,
+                    onChange: next => { draft.volume = next; s.settings.set('volume', next); }
+                });
+                p.append(field('Volume:', volume));
+                const muted = check(p, 'Mute all sounds', 'muted', draft.muted, next => s.settings.set('muted', next));
+                p.append(el('div', { class: 'row' }, button('Test', () => s.beep('startup')), button('Volume Control…', () => s.launch('volume'))));
+                commits.push(() => {
+                    const level = draft.volume ?? DEFAULT_VOLUME;
+                    const silenced = draft.muted || draft.scheme === 'No Sounds';
+                    s.settings.set('volume', level);
+                    s.settings.set('muted', silenced);
+                    /* OK and Apply make this the new starting point: a Cancel
+                       after an Apply comes back here, not to the old level. */
+                    base.volume = level;
+                    base.muted = silenced;
+                });
+                win.onClose = async () => {
+                    s.settings.set('volume', base.volume);
+                    s.settings.set('muted', base.muted);
+                };
+                const sync = event => {
+                    if (event.detail?.name === 'volume') {
+                        draft.volume = event.detail.value;
+                        volume.value = event.detail.value;
+                    }
+                    else if (event.detail?.name === 'muted') {
+                        draft.muted = !!event.detail.value;
+                        muted.checked = !!event.detail.value;
+                    }
+                };
+                s.settings.addEventListener?.('change', sync);
+                win.onClosed.push(() => s.settings.removeEventListener?.('change', sync));
+            }], ['Recording', p => p.append(el('p', { text: 'Record sound through the microphone selected by your browser.' }), button('Sound Recorder…', () => s.launch('recorder')))]);
+    }
+    else if (id === 'accessibility') {
+        pages.push(['Keyboard', p => { check(p, 'Use StickyKeys', 'sticky'); check(p, 'Use ToggleKeys', 'toggle', live(s.settings.get('toggleKeys', false))); p.append(el('p', { text: 'ToggleKeys plays a tone when Caps Lock changes.' })); commits.push(() => s.settings.set('toggleKeys', !!draft.toggle)); }], ['Display', p => { check(p, 'Use High Contrast', 'highContrast', live(String(s.settings.get('scheme', '')).startsWith('High Contrast'))); select(p, 'Scheme:', 'contrast', ['High Contrast Black', 'High Contrast White'], live(String(s.settings.get('scheme', '')).startsWith('High Contrast') ? s.settings.get('scheme') : 'High Contrast Black')); commits.push(() => { if (draft.highContrast) { s.settings.set('scheme', draft.contrast || 'High Contrast Black'); s.applyAppearance(); } else if (String(s.settings.get('scheme', '')).startsWith('High Contrast')) { s.settings.set('scheme', 'Windows Standard'); s.applyAppearance(); } }); }], ['Sound', p => { check(p, 'Show captions for system sounds', 'captions', live(s.settings.get('soundCaptions', false))); commits.push(() => s.settings.set('soundCaptions', !!draft.captions)); }]);
+    }
+    else if (id === 'addremove') {
+        pages.push(['Install/Uninstall', p => {
+                p.append(el('p', { text: 'Select a Windows component to show or hide it in the Start menu.' }));
+                const installed = el('div', { class: 'inset stack', style: { padding: '10px', height: '210px', overflow: 'auto' } });
+                const hidden = new Set(s.settings.get('hiddenApps', []));
+                for (const app of s.registry.values()) {
+                    if (!app.accessory && !app.game)
+                        continue;
+                    const c = el('input', { type: 'checkbox', checked: !hidden.has(app.id), onchange: e => { e.target.checked ? hidden.delete(app.id) : hidden.add(app.id); } });
+                    installed.append(el('label', { class: 'checkbox-label' }, c, app.name));
+                }
+                p.append(installed);
+                commits.push(() => s.settings.set('hiddenApps', [...hidden]));
+            }], ['Windows Setup', p => p.append(el('p', { text: 'This desktop includes Accessories, Games, Communications, and System Tools.' }), button('Show components', () => s.launch('help', { topic: 'applications' })))]);
+    }
+    else if (id === 'network') {
+        pages.push(['Configuration', p => { p.append(el('p', { text: 'The following network components are available:' }), el('div', { class: 'inset stack', style: { padding: '10px' } }, el('div', { class: 'row' }, icon('network', 16), 'Browser Network Adapter'), el('div', { class: 'row' }, icon('network', 16), 'TCP/IP — Browser HTTPS'), el('div', { class: 'row' }, icon('network', 16), 'Local virtual filesystem')), el('p', { text: navigator.onLine ? 'Connection status: Online' : 'Connection status: Offline' }), button('Internet Explorer…', () => s.launch('internet'))); }], ['Identification', p => { p.append(field('Computer name:', el('input', { value: draft.computer || 'WINDOWS95', oninput: e => draft.computer = e.target.value })), field('Workgroup:', el('input', { value: draft.workgroup || 'WORKGROUP', oninput: e => draft.workgroup = e.target.value })), el('p', { text: 'These names identify your local desktop. Browser networking uses the host computer’s connection.' })); }]);
+    }
+    else if (id === 'passwords') {
+        pages.push(['Change Password', p => {
+            const openChangePassword = () => {
+                const dialog = s.ui.modal('Change Windows Password', { width: 370, height: 188, icon: 'login' });
+                const oldPassword = el('input', { type: 'password', autocomplete: 'current-password', 'aria-label': 'Old password' });
+                const newPassword = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'New password' });
+                const confirmPassword = el('input', { type: 'password', autocomplete: 'new-password', 'aria-label': 'Confirm new password' });
+                const applyPassword = async () => {
+                    const current = s.settings.get('loginPassword', '');
+                    if (current && oldPassword.value !== current) {
+                        await s.ui.message('The old password is incorrect.', 'Change Windows Password', ['OK'], { owner: dialog, icon: 'help' });
+                        oldPassword.focus();
+                        return;
+                    }
+                    if (newPassword.value !== confirmPassword.value) {
+                        await s.ui.message('The new passwords do not match.', 'Change Windows Password', ['OK'], { owner: dialog, icon: 'help' });
+                        confirmPassword.focus();
+                        return;
+                    }
+                    if (!newPassword.value && await s.ui.message('Leaving the new password empty removes your Windows password. You will not be asked for a password at startup. Continue?', 'Change Windows Password', ['Yes', 'No'], { owner: dialog, icon: 'help' }) !== 'Yes') {
+                        newPassword.focus();
+                        return;
+                    }
+                    s.settings.set('loginPassword', newPassword.value);
+                    await dialog.close();
+                    s.ui.message('Your Windows password has been changed.', 'Change Windows Password', ['OK'], { owner: w, icon: 'login' });
+                };
+                dialog.body.append(el('form', { onsubmit: event => { event.preventDefault(); applyPassword(); } },
+                    el('div', { class: 'stack', style: { gap: '8px', padding: '10px 12px' } },
+                        field('Old password:', oldPassword), field('New password:', newPassword), field('Confirm new password:', confirmPassword)),
+                    el('div', { class: 'dialog-buttons' }, el('button', { type: 'submit', class: 'default-button', text: 'OK' }), button('Cancel', () => dialog.close(), { type: 'button' }))));
+                queueMicrotask(() => oldPassword.focus());
+            };
+            p.append(el('fieldset', {}, el('legend', { text: 'Windows Password' }),
+                el('div', { class: 'row', style: { alignItems: 'flex-start', gap: '14px' } }, icon('login', 32),
+                    el('div', { class: 'stack', style: { flex: '1' } }, el('p', { text: 'Click this button to change your Windows password.' }),
+                        button('Change Windows Password…', openChangePassword)))));
+        }], ['User Profiles', p => { draft.owner = s.settings.get('owner', 'Windows User'); p.append(field('User name:', el('input', { value: draft.owner, oninput: e => draft.owner = e.target.value })), el('p', { text: 'Documents and preferences belong to this browser profile.' })); commits.push(() => s.settings.set('owner', draft.owner || 'Windows User')); }], ['Privacy', p => p.append(el('p', { text: 'Your virtual drive is stored in this browser. Export a backup before clearing browser storage.' }), button('Back Up Files…', () => s.launch('backup')))]);
+    }
+    else if (id === 'printers') {
+        pages.push(['Printers', p => p.append(el('div', { class: 'row' }, icon('printer', 32), el('div', {}, el('b', { text: 'Browser Print Service' }), el('p', { text: 'Default printer' }))), el('p', { text: 'Use File → Print in Notepad or WordPad to choose a printer or save as PDF.' }), button('Print Test Page', () => { s.launch('notepad', { text: 'Windows 95 Printer Test Page\n\nBrowser Print Service\n\nThe quick brown fox jumps over the lazy dog.\n0123456789\n\n' + new Date().toLocaleString(uiLocale) }); })),]);
+    }
+    else if (id === 'fonts') {
+        pages.push(['Fonts', p => {
+                const list = el('div', { class: 'inset stack', style: { padding: '12px', maxHeight: '220px', overflow: 'auto' } });
+                for (const name of ['W95FA', 'Arial', 'Times New Roman', 'Courier New', 'Georgia', 'Verdana'])
+                    list.append(el('div', { class: 'row' }, icon('font', 16), button(name, () => { s.launch('wordpad', { text: name }); s.ui.message('The quick brown fox jumps over the lazy dog.\n0123456789', name, ['OK'], { owner: w }); }, { style: { fontFamily: name, textAlign: 'left', background: '#fff', boxShadow: 'none' } })));
+                p.append(list, el('p', { text: 'Font availability is provided by this browser and the Windows 95 desktop font package.' }));
+            }]);
+    }
+    else if (id === 'joystick') {
+        pages.push(['General', p => { const list = el('div', { class: 'inset', style: { minHeight: '100px', padding: '10px' } }); const scan = () => { const pads = [...(navigator.getGamepads?.() || [])].filter(Boolean); list.replaceChildren(...(pads.length ? pads.map(g => el('p', { text: g.id })) : [el('p', { text: 'No game controller detected. Connect a controller and press a button.' })])); }; p.append(list, button('Refresh', scan)); scan(); }]);
+    }
+    else if (id === 'modems' || id === 'hardware') {
+        pages.push(['General', p => p.append(el('div', { class: 'row' }, icon('computer', 32), el('p', { text: 'Browser hardware services' })), el('p', { text: 'The desktop uses your browser’s display, keyboard, pointer, audio, and network connection.' }), el('p', { text: id === 'modems' ? 'Serial modems and telephone calls require a physical device bridge, which is not installed.' : 'Native Windows drivers cannot be installed in this JavaScript environment.' }), button('Device Manager…', () => s.launch('system')))]);
+    }
+    else if (id === 'folder-options') {
+        pages.push(['Folder', p => { check(p, 'Display full path in the title bar', 'fullPath'); check(p, 'Show all files', 'allFiles', true); check(p, 'Show file extensions', 'extensions', true); }]);
+    }
+    else
+        pages.push(['General', p => p.append(el('p', { text: meta[1] + ' settings are stored for this desktop.' }))]);
+    w = propertySheet(s, meta[1] + ' Properties', meta[2], pages, 430, 390);
+    w.apply = async () => {
+        const currentLanguage = s.settings.get('ui-language', (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en');
+        const languageChanged = id === 'regional' && uiLanguageChangedByUser && (draft.uiLanguage === 'en' || draft.uiLanguage === 'zh') && draft.uiLanguage !== currentLanguage;
+        if (languageChanged) {
+            const choice = await s.ui.message('The system will restart to apply the language change. Restart now?', 'Language Change', ['OK', 'Cancel'], { owner: w, icon: 'shutdown' });
+            if (choice !== 'OK') {
+                s.settings.set('applet-' + id, { ...draft, uiLanguage: currentLanguage });
+                return;
+            }
+            s.settings.set('ui-language', draft.uiLanguage);
+        }
+        s.settings.set('applet-' + id, draft);
+        commits.forEach(f => f());
+        if (languageChanged && !await s.restart(w)) {
+            s.settings.set('ui-language', currentLanguage);
+            await s.ui.message('Restart was canceled because an open window could not close. Save your work and try again.', 'Restart Windows', ['OK'], { icon: 'help' });
+        }
+    };
+    return w;
+}

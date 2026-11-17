@@ -1,0 +1,91 @@
+/*
+ This file is part of YiPuzzles. This app implements the functions of the
+ game 2048 in a privacy friendly version.
+
+ YiPuzzles is free software:
+ you can redistribute it and/or modify it under the terms of the
+ GNU General Public License as published by the Free Software Foundation,
+ either version 3 of the License, or any later version.
+
+ YiPuzzles is distributed in the hope
+ that it will be useful, but WITHOUT ANY WARRANTY; without even
+ the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ See the GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with YiPuzzles. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+
+package org.lyi.puzzles.activities.helper;
+
+
+import org.lyi.puzzles.activities.Element;
+
+import java.io.Serializable;
+
+/**
+ * @author Julian Wadephul and Saskia Jacob
+ * @version 20180807
+ */
+public class GameState implements Serializable {
+    /**
+     * Fixed id: the default value is computed from the class members, so every change to this
+     * class would otherwise make the save files written by earlier versions unreadable.
+     */
+    private static final long serialVersionUID = -8669012629409113385L;
+
+    public int n = 4;
+    public int[] numbers;
+    public int[] last_numbers;
+    public int points = 0;
+    public int last_points = 0;
+    public boolean undo = false;
+
+    public GameState(int size) {
+        numbers = new int[size * size];
+    }
+
+    public GameState(Element[][] e, Element[][] e2) {
+        this.n = e.length;
+        numbers = new int[e.length * e.length];
+        int c = 0;
+        for (int i = 0; i < e.length; i++) {
+            for (int j = 0; j < e[i].length; j++) {
+
+                numbers[c++] = e[i][j].number;
+            }
+        }
+        last_numbers = new int[e2.length * e2.length];
+        c = 0;
+        for (int i = 0; i < e2.length; i++) {
+            for (int j = 0; j < e2[i].length; j++) {
+
+                last_numbers[c++] = e2[i][j].number;
+            }
+        }
+    }
+
+    public int getNumber(int i, int j) {
+
+        try {
+            return numbers[i * n + j];
+        } catch (ArrayIndexOutOfBoundsException e) {
+            e.printStackTrace();
+        }
+
+        return 0;
+    }
+
+    public int getLastNumber(int i, int j) {
+
+        try {
+            return last_numbers[i * n + j];
+        } catch (ArrayIndexOutOfBoundsException e) {
+            e.printStackTrace();
+        }
+
+        return 0;
+    }
+
+}

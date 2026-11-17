@@ -1,0 +1,868 @@
+/* 自定义字体 */
+@font-face {
+  font-family: 'Pacifico';
+  src: url('./assets/pacifico.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'Nebulove';
+  src: url('./assets/Nebulove.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: block;
+}
+
+/* 基础样式 */
+:root {
+  --primary-color: #4285F4;
+  --primary-hover: #2b6cd4;
+  --text-color: #333;
+  --background-color: #f9f9f9;
+  --card-bg: #fff;
+  --border-color: #e0e0e0;
+  --shadow-color: rgba(0, 0, 0, 0.1);
+  --top-btn-bg: rgba(255, 255, 255, 0.8);
+  --top-btn-border: rgba(0, 0, 0, 0.1);
+  --play-btn-bg: #eee;
+  --radius-md: 12px;
+  --radius-lg: 24px;
+  --transition-normal: 0.3s ease;
+}
+
+/* 深色主题变量 */
+:root.dark-theme {
+  --primary-color: #64B5F6;
+  --primary-hover: #90CAF9;
+  --text-color: #E0E0E0;
+  --background-color: #121212;
+  --card-bg: #1E1E1E;
+  --border-color: #333;
+  --shadow-color: rgba(0, 0, 0, 0.3);
+  --top-btn-bg: rgba(30, 30, 30, 0.8);
+  --top-btn-border: rgba(255, 255, 255, 0.12);
+  --play-btn-bg: #333;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* iOS Safari 对只写在 body 上的 overflow-x:hidden 不可靠：内容一旦超宽，
+   整页仍可被横向拖动，居中的搜索框会被推出屏幕。html 上也写一份双保险。 */
+html {
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--background-color);
+  font-family: 'Nebulove', sans-serif;
+  color: var(--text-color);
+  line-height: 1.6;
+  min-height: 100vh;
+  overflow-x: hidden;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+input,
+button,
+textarea,
+select {
+  font-family: inherit;
+}
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* 头部和logo */
+header {
+  text-align: center;
+  padding: 16vh 0px 0px 0px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 30px;
+}
+
+.logo img {
+  max-width: 120px;
+  margin-bottom: 10px;
+}
+
+.logo h1 {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 10px 0;
+  color: var(--text-color);
+  font-family: 'Pacifico', cursive;
+}
+
+/* 右上角的收藏 / 主题切换按钮 */
+.top-btn {
+  position: fixed;
+  top: 20px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: var(--top-btn-bg);
+  color: var(--text-color);
+  border: 1px solid var(--top-btn-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  transition: all 0.3s ease;
+  z-index: 999;
+}
+
+.top-btn:hover {
+  background-color: var(--primary-color);
+  color: #fff;
+}
+
+.top-btn:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+#favorites-btn {
+  right: 70px;
+}
+
+#new-theme-toggle {
+  right: 20px;
+}
+
+#quality-btn {
+  right: 120px;
+}
+
+/* 搜索框 */
+.search-container {
+  width: 100%;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.search-box {
+  display: flex;
+  position: relative;
+  width: 100%;
+  height: 56px;
+  box-shadow: 0 4px 20px var(--shadow-color);
+  border-radius: var(--radius-lg);
+  background-color: var(--card-bg);
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  transition: transform var(--transition-normal), box-shadow var(--transition-normal), background-color var(--transition-normal);
+}
+
+.search-box:focus-within {
+  box-shadow: 0 6px 24px var(--shadow-color);
+  transform: translateY(-2px);
+}
+
+.search-box input {
+  flex: 1;
+  /* flex 子项默认 min-width:auto(=固有宽度，由 size 属性×字体字宽决定)。
+     iOS 上 Nebulove(1.28MB) 未加载完时按回退中文字体(PingFang 等)的字宽计算，
+     固有宽度会超过可用空间，把搜索按钮整个挤出搜索框、再被 overflow:hidden 裁掉。
+     允许收缩到 0 后，按钮在任何字体/任何加载阶段都保得住。 */
+  min-width: 0;
+  height: 100%;
+  padding: 0 20px;
+  border: none;
+  font-size: 18px;
+  color: var(--text-color);
+  background: transparent;
+  outline: none;
+  letter-spacing: 0.5px;
+}
+
+.search-box button {
+  width: 100px;
+  height: 100%;
+  /* Safari 对固定宽度子项的 flex 收缩处理与其他引擎不同(会过度压缩)，
+     按钮永远保持原宽，空间不足时由输入框(min-width:0)让位 */
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  font-size: 18px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--transition-normal);
+  letter-spacing: 1px;
+}
+
+.search-box button:hover:not(:disabled) {
+  background-color: var(--primary-hover);
+}
+
+.search-box button:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+/* 搜索按钮内的加载动画 */
+.spinner {
+  width: 24px;
+  height: 24px;
+  animation: spinner 1s linear infinite;
+}
+
+.spinner .path {
+  stroke: white;
+  stroke-linecap: round;
+  animation: dash 1.5s ease-in-out infinite;
+}
+
+@keyframes spinner {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes dash {
+  0% {
+    stroke-dasharray: 1, 150;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: -35;
+  }
+  100% {
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: -124;
+  }
+}
+
+/* 主内容区域 */
+main {
+  flex: 1;
+  padding: 20px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  overflow-y: visible;
+  margin-bottom: 30px;
+}
+
+/* 搜索结果容器 */
+.results-container {
+  width: 100%;
+  max-width: 90%;
+  background-color: var(--card-bg);
+  border-radius: var(--radius-md);
+  box-shadow: 0 2px 10px var(--shadow-color);
+  overflow: hidden;
+  margin-top: 20px;
+  margin-bottom: 20px;
+  transition: background-color var(--transition-normal), box-shadow var(--transition-normal);
+}
+
+.results-header {
+  display: grid;
+  grid-template-columns: 2fr 1fr 80px;
+  padding: 16px 20px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-color);
+  background-color: rgba(66, 133, 244, 0.05);
+  transition: background-color var(--transition-normal), border-color var(--transition-normal);
+}
+
+:root.dark-theme .results-header {
+  background-color: rgba(100, 181, 246, 0.1);
+}
+
+.results-header span:last-child {
+  text-align: right;
+}
+.results-list {
+  overflow-y: visible;
+  width: 100%;
+}
+
+/* 单个搜索结果项 */
+.result-item {
+  display: grid;
+  grid-template-columns: 2fr 1fr 80px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-color);
+  transition: background-color var(--transition-normal), border-color var(--transition-normal);
+}
+
+.result-item:last-child {
+  border-bottom: none;
+}
+
+#favorites-container .results-header,
+#favorites-container .result-item {
+  grid-template-columns: 2fr 1fr 100px;
+}
+
+.result-item:hover {
+  background-color: rgba(66, 133, 244, 0.05);
+}
+
+:root.dark-theme .result-item:hover {
+  background-color: rgba(100, 181, 246, 0.1);
+}
+
+.result-title {
+  font-weight: 500;
+  padding-right: 10px;
+  color: var(--text-color);
+  min-width: 0; /* grid 子项默认 min-width:auto，长标题会撑破列宽而不是显示省略号 */
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.result-title .title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.result-artist {
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color var(--transition-normal);
+  min-width: 0;
+  padding-right: 10px;
+  align-self: center;
+}
+
+:root.dark-theme .result-artist {
+  color: #aaa;
+}
+
+/* VIP 歌曲标记：与播放器内的"独家解析"提示同色系，保持风格一致 */
+.vip-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  padding: 3px 6px;
+  border-radius: 4px;
+  color: #fff;
+  background: #1e83f7; 
+  box-shadow: none; 
+  user-select: none;
+}
+
+.result-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.play-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background-color: var(--play-btn-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  transition: background-color var(--transition-normal), transform var(--transition-normal);
+}
+
+.play-button:hover,
+.play-button:focus-visible {
+  background-color: var(--primary-color);
+  transform: scale(1.1);
+}
+
+.play-button:focus-visible,
+.remove-button:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+.play-button .material-symbols-rounded {
+  font-size: 20px;
+  color: var(--text-color);
+  transition: color var(--transition-normal);
+}
+
+.play-button:hover .material-symbols-rounded,
+.play-button:focus-visible .material-symbols-rounded {
+  color: white;
+}
+
+/* 无搜索结果样式 */
+.no-results, .placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  width: 100%;
+  text-align: center;
+  color: var(--text-color);
+  transition: color var(--transition-normal);
+}
+
+.no-results p {
+  max-width: 400px;
+  margin: 0 auto;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--text-color);
+  opacity: 0.7;
+}
+
+/* 搜索结果计数 */
+.result-count {
+  text-align: center;
+  padding: 12px;
+  color: #777;
+  font-size: 14px;
+  background-color: var(--card-bg);
+  border-top: 1px solid var(--border-color);
+}
+
+:root.dark-theme .result-count {
+  color: #aaa;
+}
+
+/* 页脚 */
+.footer {
+  margin-top: auto;
+  text-align: center;
+  padding: 20px 0;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-color);
+  font-family: 'Pacifico', cursive;
+  opacity: 0.7;
+  transition: border-color var(--transition-normal), color var(--transition-normal);
+}
+
+.footer p {
+  margin: 0;
+  font-size: 14px;
+}
+
+/* 播放器容器 */
+.player-container {
+  position: fixed;
+  top: 0;
+  right: -100%;
+  width: 100%;
+  height: 100%;
+  background-color: var(--background-color);
+  z-index: 1000;
+  transition: right 0.3s ease, visibility 0s linear 0.3s;
+  overflow: hidden;
+  visibility: hidden; /* 收起时不可聚焦、不被读屏器读到；transition 让它在滑出动画结束后再隐藏 */
+}
+
+.player-container.active {
+  right: 0;
+  visibility: visible;
+  transition: right 0.3s ease, visibility 0s;
+}
+
+.player-container iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.close-player {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  width: 40px;
+  height: 40px;
+  background-color: rgba(0, 0, 0, 0.5);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 1010;
+  transition: background-color var(--transition-normal);
+}
+
+.close-player:hover,
+.close-player:focus-visible {
+  background-color: rgba(0, 0, 0, 0.7);
+}
+
+.close-player:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+  .container {
+    padding: 18px;
+  }
+  
+  .logo h1 {
+    font-size: 24px;
+  }
+  
+  .search-box {
+    height: 50px;
+  }
+  
+  .search-box input {
+    font-size: 16px;
+    padding: 0 15px;
+  }
+  
+  .search-box button {
+    font-size: 16px;
+    width: 80px;
+  }
+  
+  .results-container {
+    max-width: 100%;
+  }
+  
+  .results-header, .result-item {
+    grid-template-columns: 3fr 2fr 50px;
+    padding: 12px 15px;
+  }
+  
+  /* 收藏列表特定样式 - 给操作栏更多空间 */
+  #favorites-container .results-header,
+  #favorites-container .result-item {
+    grid-template-columns: 2fr 1.5fr 100px;
+  }
+  
+  .play-button {
+    width: 32px;
+    height: 32px;
+  }
+  
+  .footer {
+    padding: 15px 0;
+    font-size: 12px;
+  }
+  
+  .result-count {
+    font-size: 12px;
+    padding: 10px;
+  }
+}
+
+/* 响应式设计 - 更窄的屏幕 */
+@media (max-width: 480px) {
+  /* 收藏列表在更窄屏幕下的特殊处理 */
+  #favorites-container .results-header,
+  #favorites-container .result-item {
+    grid-template-columns: 1.5fr 1fr 90px;
+    padding: 10px 12px;
+  }
+  
+  #favorites-container .result-action {
+    gap: 6px;
+  }
+
+  #favorites-container .play-button,
+  #favorites-container .remove-button {
+    min-width: 30px;
+    min-height: 30px;
+  }
+}
+
+/* 主加载覆盖层样式 */
+.main-loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: var(--background-color);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10001;
+  opacity: 1;
+  transition: opacity 0.5s ease-out, background-color 0.3s ease;
+}
+
+.main-loading-overlay img {
+  width: 60px;
+}
+
+/* 收藏按钮样式 */
+.remove-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background-color: rgba(255, 62, 85, 0.1);
+  border: none;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+/* 播放/删除按钮之间的间距统一用 gap，不再靠 margin-left(移动端会把按钮挤出列宽) */
+.result-action {
+  gap: 8px;
+}
+
+.play-button {
+  flex-shrink: 0;
+}
+
+.remove-button:hover {
+  background-color: rgba(255, 62, 85, 0.3);
+}
+
+.dark-theme .remove-button {
+  background-color: rgba(255, 62, 85, 0.2);
+}
+
+.dark-theme .remove-button:hover {
+  background-color: rgba(255, 62, 85, 0.4);
+}
+
+.remove-button .material-symbols-rounded {
+  color: #ff3e55;
+  font-size: 16px;
+}
+
+/* 渐入渐出过渡效果 */
+.results-container, .no-results, .placeholder {
+  transition: opacity 0.5s ease, visibility 0.5s ease;
+  opacity: 1;
+  visibility: visible;
+}
+
+.fade-out {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.fade-in {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 更新提示弹窗 */
+.update-modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.9);
+  width: 90%;
+  max-width: 500px;
+  max-height: 80vh;
+  overflow-y: auto;
+  font-family: 'Nebulove', sans-serif; /* 与搜索框一致的全局字体 */
+  background-color: white;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
+  padding: 24px;
+  z-index: 10000;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+}
+
+.update-modal.active {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.update-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-color);
+}
+
+.update-modal-time {
+  font-size: 14px;
+  color: #666;
+  margin-bottom: 16px;
+}
+
+.update-modal-content {
+  margin-bottom: 24px;
+}
+
+.update-modal-content ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.update-modal-content li {
+  margin-bottom: 8px;
+  line-height: 1.5;
+  color: var(--text-color);
+}
+
+.update-modal-button {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.update-modal-button button {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.update-modal-button button:hover:not(:disabled) {
+  background-color: var(--primary-hover);
+}
+
+.update-modal-button button:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+.update-modal-button button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.update-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 9999;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+}
+
+.update-modal-overlay.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* 深色主题下的弹窗样式 */
+:root.dark-theme .update-modal {
+  background-color: #1E1E1E;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+}
+
+:root.dark-theme .update-modal-time {
+  color: #aaa;
+}
+
+/* 音质选择弹窗 */
+.quality-hint {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-color);
+  opacity: 0.72;
+  margin: 0 0 14px;
+}
+
+.quality-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quality-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-color);
+  cursor: pointer;
+  transition: background-color 0.25s ease, border-color 0.25s ease;
+}
+
+.quality-option:hover {
+  background: rgba(66, 133, 244, 0.06);
+}
+
+.quality-option.active {
+  border-color: var(--primary-color);
+  background: rgba(66, 133, 244, 0.12);
+}
+
+.quality-option:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: 2px;
+}
+
+.quality-label {
+  font-weight: 500;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.quality-warn {
+  font-size: 12px;
+  text-align: right;
+  color: #b8740a;
+}
+
+:root.dark-theme .quality-warn {
+  color: #ffce6b;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    /* 无限循环动画(搜索按钮的转圈)压到 0.01ms 会变成高速闪烁，反而更刺眼，只播一次停在末帧 */
+    animation-iteration-count: 1 !important;
+  }
+}

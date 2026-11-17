@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.flatpak-builder/
+build-dir/
+repo/
+*.flatpak
+.venv/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+*.egg-info/
+dist/
+build/

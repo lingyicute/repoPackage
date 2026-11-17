@@ -1,0 +1,79 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: ["main"]
+    paths-ignore:
+      - "web/**"
+      - "scripts/**"
+      - "README.md"
+      - "LICENSE"
+      - "bg.jpg"
+      - "icon_512.png"
+      - ".gitignore"
+      - "tests/**"
+      - ".github/workflows/static.yml"
+      - ".github/workflows/font-subset.yml"
+      - ".github/workflows/test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "build-apk"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Assemble APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platforms;android-34 build-tools;34.0.0 platform-tools
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
+      - name: Build release APK (signed with debug key)
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Create or Update Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          APKS=(app/build/outputs/apk/release/*.apk)
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "Error: No release APK found." >&2
+            exit 1
+          fi
+          for apk in "${APKS[@]}"; do
+            if [ ! -s "$apk" ]; then
+              echo "Error: Release APK is empty: $apk" >&2
+              exit 1
+            fi
+          done
+          TAG="nightly-${{ github.run_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${APKS[@]}" --clobber
+          else
+            gh release create "$TAG" "${APKS[@]}" \
+              --target "${{ github.sha }}" \
+              --title "Nightly No.${{ github.run_number }}" \
+              --notes "自动构建 No.${{ github.run_number }}"
+          fi

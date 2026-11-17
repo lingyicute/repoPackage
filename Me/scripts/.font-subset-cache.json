@@ -1,0 +1,9 @@
+{
+  "fingerprint": "24bc19d65bfe665b0ad572ff5c73ab959b64e57ed5f9c6ab31c57e339499c214",
+  "source": "https://raw.githubusercontent.com/lingyicute/Nebulove/main/Nebulove.ttf",
+  "charset_count": 260,
+  "outputs": {
+    "nebulove-subset.woff2": "999d5c19fdaa9e57d50828dc501c2937c6111c1a7a2b6335628bdd4aa764190b",
+    "emoji-subset.woff2": "5cd71fecece104add7b7b166a68b1b8742bf6b2e46af8c34de043b350a1438b2"
+  }
+}

@@ -1,0 +1,4979 @@
+#!/usr/bin/env python3
+"""
+sbwatch - know what a secureblue (or any chunkah/rpm-ostree OCI image) update
+actually changes, *before* you download it.
+
+Why this works without pulling the image
+----------------------------------------
+secureblue images are built with blue-build + `chunkah` rechunking, so every OCI
+layer is annotated with the RPM packages it carries:
+
+    "annotations": {
+      "org.chunkah.component": "rpm/kernel rpm/curl",
+      "org.chunkah.stability": "0.006"
+    }
+
+Two things fall out of that for free:
+
+ 1. The manifest (~50 KB) is a package -> chunk map. Comparing two manifests
+    tells you which packages' content changed and which chunks have to be
+    re-downloaded (=> the real update size).
+ 2. The whole RPM database ships as its own chunk (`bigfiles/rpmdb.sqlite`), so
+    fetching that *single* blob (~33 MB instead of ~4 GB) gives the exact NEVRA
+    of all ~2200 packages plus their changelogs (where Fedora writes
+    "Fix CVE-YYYY-NNNNN"). That yields a precise per-package version diff.
+
+Everything here is stdlib-only (urllib + sqlite3): no podman, no root, no
+registry login (the anonymous ghcr pull token is enough).
+
+CLI
+---
+  sbwatch tags                  recent dated tags of an image / 近期按日期的标签
+  sbwatch history               every recent build (several per day included) / 近期全部构建（含一天多次）
+  sbwatch layers A B            chunk-level diff + predicted download size / chunk 级差异 + 预计下载量
+  sbwatch pkgs A                exact package list (NEVRA) of one image / 单个镜像的精确软件包列表（NEVRA）
+  sbwatch diff A B              exact package diff + CVE classification / 精确软件包差异 + CVE 分类
+  sbwatch backlog [ref]         security updates this image is still missing / 此镜像仍缺少的安全更新
+  sbwatch check                 stateful digest watch for CI/cron / 有状态 digest 监控（用于 CI/cron）
+                                -> report.md + verdict + $GITHUB_OUTPUT
+
+  All human-readable output is bilingual: English + 中文（所有输出均为中英双语）
+  A / B / ref  = latest | 44 | 20260915 | 9ec80ca-44 | sha256:<digest>
+  (digests are the only immutable way to name one specific build / digest 是命名某次构建的唯一不可变方式)
+"""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+import gzip
+import hashlib
+import http.client
+import json
+import os
+import pathlib
+import re
+import secrets
+import shutil
+import sqlite3
+import stat
+import struct
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zlib
+from collections import Counter
+
+# make bilingual (CJK) output safe even under a C/POSIX locale
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+DEFAULT_IMAGE = "secureblue/silverblue-main-hardened"
+# P0 hardening limits (anti zip-bomb / DoS).
+# Sized against the LIVE image (audited 2026-09-18, secureblue/silverblue-main-hardened
+# 44.20260917.0): the rpmdb blob is ~33 MB compressed / ~92.3 MiB decompressed, and the
+# rpmdb.sqlite tar member itself is 92.3 MiB and grows over time (package count +
+# changelog accumulation). The member cap therefore carries ~2.8x headroom; the old
+# 100 MiB cap was only 8% above the live size and would have broken the whole --exact
+# pipeline the day the db crossed it.
+MAX_BLOB_BYTES = 200 * 1024 * 1024          # 200 MiB compressed. Note: this caps what
+                                            # we actually fetch (rpmdb ~33 MB); some
+                                            # layers we never fetch are larger
+                                            # (initramfs ~235 MiB) - do not use this
+                                            # helper on those without raising the cap.
+MAX_DECOMPRESSED_BYTES = 320 * 1024 * 1024  # 320 MiB decompressed (~3.5x live rpmdb)
+MAX_JSON_BYTES = 16 * 1024 * 1024           # 16 MiB for a document parsed in one piece
+                                            # (manifest, image config, tag page, token
+                                            # reply): the live ones stay under 200 KB,
+                                            # and json.loads() of one at the blob cap
+                                            # takes several times that cap in memory
+MAX_TAR_MEMBERS = 10_000
+MAX_TAR_FILE_SIZE = 256 * 1024 * 1024       # 256 MiB single file inside tar
+BODHI_PAGE_SIZE = 100                       # Bodhi's max rows_per_page
+MAX_BODHI_PAGES = 10                        # 1000 errata/src is far beyond any real case
+BODHI_GIVE_UP_AFTER = 3     # failed lookups in a row before Bodhi counts as down: each
+                            # can block for its whole 40 s timeout, and --max-bodhi 100
+                            # of those outlast the workflow's 25-minute limit. The
+                            # first of a streak is tried twice (Bodhi._fetch_page)
+BODHI_TTL = 6 * 3600        # age at which a cached Bodhi answer is refetched
+NEW_LOG_CAP = 1000  # changelog entries (new in this build) scanned for CVE mentions.
+#                     A guard against a pathological rpmdb, not a tuning knob: the
+#                     live image's longest changelog has 435 entries and all 47,624
+#                     entries of the image scan in ~10 ms. The former 40 was hit by
+#                     every kernel rebase (Fedora regenerates that changelog: 66 of
+#                     66 entries were new on 7.2.15 -> 7.3.3) and cut off two CVE ids.
+# Display caps. These are the only places allowed to shorten a rendered list, and
+# each one must go through clip_list()/clip_text() so the loss is stated and
+# counted. The full data always survives in the JSON outputs.
+HEADLINE_GROUP_CAP = 4   # source packages named in the verdict headline
+HEADLINE_CVE_CAP = 2     # CVE ids named per source package in the headline
+CVE_CELL_CAP = 6         # CVE ids per row in the security table (rest listed in full below)
+EV_CELL_CAP = 190        # characters of evidence per row in the security table
+WHY_CAP = 160            # characters of evidence per row in the sensitive-bump table
+PKG_LIST_CAP = 40        # package names per line in the package-set-change section
+BASELINE_LABEL_CAP = 80  # characters of a baseline label read back from the state file:
+#                          room for check's own "<version> @ <timestamp>" (35) and for a
+#                          whole digest (71), which shortref() then abbreviates. The
+#                          former 26 cut check's own label and appended a 40-character
+#                          marker to it - once more on every --force run.
+BODHI_CACHE_VERSION = 2  # v1 clipped bug titles (200) and notes (1500) BEFORE
+#                          extracting CVE ids from them, so a v1 cache can be
+#                          missing CVEs. A cache without this marker is refetched.
+OLD_LOG_CAP = 1000  # changelog entries (dropped by this build) scanned for lost fixes
+RETAINED_LOG_CAP = 1000  # unchanged entries that may still mention a purportedly gained/lost CVE
+TAG_LIST_RETRIES = 4                        # ghcr is flaky on tags/list pagination
+TAG_LIST_MAX_PAGES = 100                    # of 1000 tags each. Nothing in the repo is
+                                            # ever pruned: 4795 tags on 2026-11-11, ~32
+                                            # more a day, and ghcr lists the oldest
+                                            # first - the former 12 pages would have
+                                            # begun to hide the NEWEST builds in mid-2027
+CACHE_KEEP_DAYS = 14        # `check --prune-days`: age at which cache files are dropped
+TMP_FILE_RE = re.compile(r"\.json\.tmp\.\d+$")   # _atomic_write_json()'s `<file>.tmp.<pid>`
+TMP_FILE_GRACE = 3600       # seconds after which such a file has no live writer left
+MANIFEST_ACCEPT = ",".join([
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+])
+# Tolerant of how people actually type the id: Fedora's python3.15-3.15.2 changelog
+# says "CVE 2026-114583" (a space), others write cve-…, CVE_…, or paste a
+# typographic hyphen. The strict `CVE-\d{4}-\d{4,7}` read none of those, so a
+# CVE fix was reported as "no CVE mentioned". Always go through find_cves().
+# `(?!\d)`: an id longer than seven digits must not be read as its first seven.
+CVE_RE = re.compile(r"CVE[-_ \u2010-\u2013]?(\d{4})[-_\u2010-\u2013](\d{4,7})(?!\d)", re.I)
+SEC_WORDS_RE = re.compile(
+    r"(security fix|fix(es)? .{0,40}vulnerab|buffer overflow|use-after-free|"
+    r"privilege escalation|out.of.bounds)", re.I)
+
+# source packages whose movement deserves attention even without an obvious CVE.
+# Names here are Fedora *source* package names. `python3` is matched version-
+# tolerantly (see _src_matches_pool): Fedora renames the interpreter source each
+# release (python3.12 -> python3.13 -> python3.14 ...). `sudo`, `firefox` and
+# `thunderbird` are absent from some variants (secureblue drops sudo, ships
+# trivalent instead of firefox) but stay listed for the variants that have them.
+IMPORTANT_SRC = {
+    "kernel", "glibc", "openssl", "nss", "systemd", "sudo", "polkit", "rpm-ostree",
+    "ostree", "container-selinux", "selinux-policy", "libcap", "pam", "shadow-utils",
+    "openssh", "curl", "dnf", "rpm", "grub2", "shim", "mutter", "gnome-shell",
+    "gupnp", "webkitgtk", "firefox", "thunderbird", "trivalent",
+    "flatpak", "xdg-desktop-portal",
+    "pipewire", "xorg-x11-server", "xorg-x11-server-Xwayland", "linux-firmware",
+    "crun", "runc", "usbguard",
+    "bubblewrap", "fwupd", "bluez", "cups", "avahi", "libarchive", "expat", "gnutls",
+    "python3",
+}
+
+
+def find_cves(text) -> list:
+    """Every CVE id mentioned in `text`, in the canonical CVE-YYYY-NNNN spelling."""
+    return [f"CVE-{year}-{num}" for year, num in CVE_RE.findall(text or "")]
+
+
+def _src_matches_pool(src: str, pool) -> bool:
+    """Membership test that tolerates Fedora's versioned source names.
+
+    The Python interpreter source is `python3.14` on F44 and will be `python3.15`
+    on F45; the pool lists the stable stem `python3`. A plain `in` test silently
+    stopped matching the day Fedora renamed the source - strip one trailing
+    `.N` component and try again so the pool entry keeps working across releases.
+    """
+    if src in pool:
+        return True
+    base = re.sub(r"\.\d+$", "", src)
+    return base != src and base in pool
+
+
+def log(*a):
+    print(*a, file=sys.stderr, flush=True)
+
+
+class BiText(str):
+    """Bilingual user-facing text with structured access to English and Chinese components."""
+    def __new__(cls, en: str, zh: str):
+        obj = super().__new__(cls, f"{en} / {zh}")
+        obj.en = en
+        obj.zh = zh
+        return obj
+
+
+def T(en: str, zh: str) -> BiText:
+    """Bilingual user-facing message: English first, then Chinese（中英双语输出）."""
+    return BiText(en, zh)
+
+
+def human(nbytes) -> str:
+    n = float(nbytes)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        # test the *rounded* value: 1023.99 passed the `< 1024` check and was
+        # then printed as "1024.0 B" instead of moving up to "1.0 KiB"
+        if round(abs(n), 1) < 1024.0:
+            return f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} TiB"
+
+
+# --------------------------------------------------------------------------- #
+# Truncation disclosure / 截断披露
+# --------------------------------------------------------------------------- #
+# Every cut is marked AND counted. A silent cut is how an erratum carrying 113
+# CVEs read as one carrying 6 (sorted() puts the oldest ids first, so the six
+# shown were 2023/2024 leftovers while 107 ids - every 2026 one - vanished), and
+# how a bare "…" left the reader unable to tell 2 dropped entries from 200.
+# Nothing here may shorten output without saying how much it dropped.
+def _more_marker(extra: int, lang: str) -> str:
+    if lang == "zh":
+        return f"（另有 {extra} 个未显示）"
+    if lang == "both":                     # a string shown in both halves at once
+        return f" (+{extra} more not shown / 另有 {extra} 个未显示)"
+    return f" (+{extra} more not shown)"
+
+
+def clip_list(items, n: int, *, lang: str = "en", joiner: str = ", ",
+              render=None) -> str:
+    """Join at most `n` items, then state exactly how many were left out."""
+    items = list(items)
+    shown = [render(x) if render else str(x) for x in items[:n]]
+    extra = len(items) - len(shown)
+    body = joiner.join(shown)
+    return body + _more_marker(extra, lang) if extra > 0 else body
+
+
+def clip_text(s, n: int, *, lang: str = "en") -> str:
+    """Keep the first `n` characters and say how many characters were dropped."""
+    s = "" if s is None else str(s)
+    if len(s) <= n:
+        return s
+    dropped = len(s) - n
+    if lang == "zh":
+        tail = f"…（另有 {dropped} 个字符未显示）"
+    elif lang == "both":                   # same contract as _more_marker()
+        tail = f"… (+{dropped} chars not shown / 另有 {dropped} 个字符未显示)"
+    else:
+        tail = f"… (+{dropped} chars not shown)"
+    return s[:n] + tail
+
+
+def clip_col(s, n: int) -> str:
+    """Fixed-width column clip: marks the cut so a clipped cell is never read as
+    a complete value."""
+    s = "" if s is None else str(s)
+    return s if len(s) <= n else s[:max(1, n - 1)] + "…"
+
+
+def clip_hash(s, n: int) -> str:
+    """Shorten a digest/identifier to `n` chars, always marked as truncated."""
+    s = str(s or "")
+    return s if len(s) <= n else s[:n] + "…"
+
+
+def ts_short(s) -> str:
+    """Timestamp to whole seconds. Fractional seconds carry nothing the report
+    compares on (builds are identified by digest), so only they are dropped -
+    everything else is kept, and no marker is needed for that one loss."""
+    return str(s or "")[:19]
+
+
+def rfc3339_seconds(s) -> str:
+    """An RFC 3339 timestamp cut to whole seconds, zone kept, UTC spelled `Z`.
+
+    One instant arrives in several spellings: the image config says
+    `2026-11-10T06:56:56Z`, while the `org.opencontainers.image.created`
+    annotation - all that a light resolve reads - carries nanoseconds (e.g.
+    `2026-11-10T06:15:53.905949731+00:00`). A fixed `[:20]` slice turned that
+    build's annotation into `2026-11-10T06:56:56.`: a dangling dot, no zone, and
+    a string that no longer compares like the config's spelling of that instant.
+    """
+    s = re.sub(r"(T\d{2}:\d{2}:\d{2})\.\d+", r"\1", str(s or ""))
+    return re.sub(r"[+-]00:?00$", "Z", s)
+
+
+def _safe_read_limited(resp, limit: int) -> bytes:
+    """Read from HTTPResponse with hard limit to avoid OOM / zip-bomb."""
+    cl = resp.headers.get("Content-Length")
+    if cl and cl.isdigit() and int(cl) > limit:
+        raise SystemExit(T(f"blob Content-Length {cl} > {human(limit)} limit - aborting",
+                           f"blob Content-Length {cl} 超过 {human(limit)} 限制——中止"))
+    chunks = []
+    total = 0
+    while True:
+        chunk = resp.read(1 << 20)  # 1 MiB
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise SystemExit(T(f"blob exceeds {human(limit)} limit during download - possible bomb",
+                               f"下载过程中 blob 超过 {human(limit)} 限制——疑似 zip 炸弹"))
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def check_digest(actual_hex: str, digest: str, what: str, *,
+                 required: bool = False) -> None:
+    """Abort unless content that was fetched by digest hashes to that digest.
+
+    A digest is a promise about bytes, and cosign signs the digest only: without
+    hashing what the registry actually sent, "signature check: PASSED" vouched for
+    a name while the manifest, the config and the rpmdb blob the report is
+    computed from were taken on trust. A tag (no colon) is left alone unless a
+    digest is required; any digest reference must be a valid sha256:<64 hex>.
+    """
+    raw = str(digest or "").strip()
+    if not raw:
+        if required:
+            raise SystemExit(T(
+                f"missing digest for {what} - refusing to trust unverified content",
+                f"{what} 缺少 digest——拒绝信任未校验的内容"))
+        return
+    if ":" not in raw:
+        if required:
+            raise SystemExit(T(
+                f"invalid digest {raw!r} for {what} - expected sha256:<64 hex>",
+                f"{what} 的 digest {raw!r} 无效——应为 sha256:<64位十六进制>"))
+        return
+    algo, _, want = raw.partition(":")
+    algo, want = algo.lower(), want.lower()
+    if algo != "sha256" or not re.fullmatch(r"[0-9a-f]{64}", want):
+        raise SystemExit(T(
+            f"unsupported or malformed digest {raw!r} for {what} - expected sha256:<64 hex>",
+            f"{what} 的 digest {raw!r} 不受支持或格式错误——应为 sha256:<64位十六进制>"))
+    if actual_hex == want:
+        return
+    raise SystemExit(T(
+        f"digest mismatch for {what}: expected sha256:{want}, the content hashes to "
+        f"sha256:{actual_hex} - refusing to analyse data the registry altered",
+        f"{what} 的 digest 不匹配：应为 sha256:{want}，实际内容为 "
+        f"sha256:{actual_hex}——拒绝分析被 registry 改动过的数据"))
+
+
+class RegistryError(SystemExit):
+    """A registry failure that is fatal but already carries a bilingual message.
+
+    Subclassing SystemExit keeps the default behaviour (print + exit 1) while
+    letting the few callers that probe for existence - tag_exists, build_history -
+    catch it specifically instead of swallowing every exception.
+
+    `http_code` carries the HTTP status when there was one. Without it, callers
+    that probe ("does this tag exist?") cannot tell a genuine 404 from a 500, a
+    401 or a dead network - and treating all of those as "no such tag" silently
+    shortened the build history.
+    """
+
+    def __init__(self, msg, http_code=None):
+        super().__init__(msg)
+        self.http_code = http_code
+
+
+class NoArchManifest(RegistryError):
+    """The ref is a multi-arch index, but it carries no manifest for --arch."""
+
+
+class MalformedManifest(RegistryError):
+    """The registry answered, but not with a manifest or config this tool can read."""
+
+
+class _CappedReader:
+    """File-like wrapper around an HTTP response that enforces a byte budget.
+
+    `peek()` lets the caller sniff the gzip magic without consuming it, so the
+    whole blob never has to live in memory.
+    """
+
+    def __init__(self, resp, limit: int, label: str):
+        self._r, self._limit, self._label = resp, limit, label
+        self._n = 0
+        self._buf = b""
+        self._sha = hashlib.sha256()          # of every byte handed out so far
+
+    def peek(self, size: int) -> bytes:
+        if len(self._buf) < size:
+            self._buf += self._read(size - len(self._buf))
+        return self._buf[:size]
+
+    def _read(self, size: int) -> bytes:
+        b = self._r.read(size)
+        self._n += len(b)
+        self._sha.update(b)
+        if self._n > self._limit:
+            raise SystemExit(T(
+                f"blob {self._label} exceeded {human(self._limit)} while downloading - "
+                f"possible bomb",
+                f"下载中 blob {self._label} 超过 {human(self._limit)} 限制——疑似 zip 炸弹"))
+        return b
+
+    def read(self, size: int = -1) -> bytes:
+        if self._buf:
+            out, self._buf = self._buf, b""
+            if size < 0:
+                return out + self._read(size)
+            if len(out) >= size:
+                self._buf = out[size:]
+                return out[:size]
+            return out + self._read(size - len(out))
+        return self._read(size)
+
+    def hexdigest(self) -> str:
+        """sha256 of the bytes read so far - of the whole blob once read() hit EOF."""
+        return self._sha.hexdigest()
+
+
+def verify_cosign_image(full_ref: str, pubkey_path: str,
+                        require: bool = False) -> bool | None:
+    """
+    P0: optional cosign signature verification.
+    full_ref = host/repo@sha256:digest or host/repo:tag
+    Returns True if verified, False if cosign rejected the signature, and None
+    if the check could not be run at all (no key, no cosign binary, timeout): a
+    check that never ran must not be reported as a failed signature.
+    Raises SystemExit instead of returning False/None if require=True.
+    """
+    if not pubkey_path:
+        if require:
+            raise SystemExit(T("--require-cosign requires --cosign-pub",
+                               "--require-cosign 必须同时提供 --cosign-pub"))
+        return None
+    if not os.path.exists(pubkey_path):
+        msg = T(f"cosign pubkey not found: {pubkey_path}",
+                f"找不到 cosign 公钥：{pubkey_path}")
+        if require:
+            raise SystemExit(msg)
+        log(f"  ! {msg} - skipping verification / 跳过校验")
+        return None
+    cosign_bin = shutil.which("cosign")
+    if not cosign_bin:
+        msg = T("cosign binary not found in PATH - install sigstore/cosign to enable verification",
+                "PATH 中找不到 cosign 可执行文件——请安装 sigstore/cosign 以启用校验")
+        if require:
+            raise SystemExit(msg)
+        log(f"  ! {msg} - skipping / 跳过")
+        return None
+    # secureblue publishes cosign.pub at https://github.com/secureblue/secureblue/blob/live/cosign.pub
+    cmd = [cosign_bin, "verify", "--key", pubkey_path, full_ref]
+    log(T(f"  verifying {full_ref} with cosign...",
+          f"  正在使用 cosign 校验 {full_ref}…"))
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        if res.returncode == 0:
+            log(T(f"  cosign verify OK for {full_ref}",
+                  f"  cosign 校验成功：{full_ref}"))
+            return True
+        else:
+            raw = res.stderr or res.stdout
+            msg = T(f"cosign verify FAILED for {full_ref}: {clip_text(raw, 500)}",
+                    f"cosign 校验失败：{full_ref}：{clip_text(raw, 500, lang='zh')}")
+            if require:
+                raise SystemExit(msg)
+            log(f"  ! {msg}")
+            return False
+    except subprocess.TimeoutExpired:
+        msg = T(f"cosign verify timeout for {full_ref}",
+                f"cosign 校验超时：{full_ref}")
+        if require:
+            raise SystemExit(msg)
+        log(f"  ! {msg}")
+        return None
+    except Exception as e:
+        msg = T(f"cosign verify error: {e}",
+                f"cosign 校验出错：{e}")
+        if require:
+            raise SystemExit(msg)
+        log(f"  ! {msg}")
+        return None
+
+
+# (full ref, key path, required) -> what verify_cosign_image() said in this run
+_COSIGN_RESULTS: dict = {}
+
+
+def maybe_verify_resolved(reg: Registry, resolved: dict, args, notes: list | None = None) -> bool:
+    """If --cosign-pub is set, verify the resolved digest.
+
+    The outcome always lands in `notes`, so it ends up in the report: without that,
+    a report looks identical whether the signature was checked, passed, or failed
+    and was merely tolerated (i.e. --cosign-pub without --require-cosign).
+    """
+    pub = getattr(args, "cosign_pub", None)
+    if not pub:
+        if getattr(args, "require_cosign", False):
+            raise SystemExit(T("--require-cosign requires --cosign-pub",
+                               "--require-cosign 必须同时提供 --cosign-pub"))
+        if notes is not None:
+            notes.append(T("signature check: not requested (no --cosign-pub)",
+                           "签名校验：未启用（没有 --cosign-pub）"))
+        return False
+    req = getattr(args, "require_cosign", False)
+    # secureblue signs the index *and* every platform manifest, so the per-arch
+    # digest is verifiable and is the one this report is actually about.
+    digest = resolved.get("digest") or resolved.get("index_digest")
+    if not digest:
+        msg = T("signature check: FAILED - no digest in resolved image",
+                "签名校验：失败——解析到的镜像中没有 digest")
+        log(f"  ! {msg}")
+        if notes is not None:
+            notes.append(msg)
+        if req:
+            raise SystemExit(T("no digest for cosign verification",
+                               "没有可用于 cosign 校验的 digest"))
+        return False
+    full_ref = f"{reg.host}/{reg.repo}@{digest}"
+    # `check` verifies the image it watches up front and do_diff() then reports
+    # on that same digest again. A digest names immutable content, so the answer
+    # cannot change within a run - the second cosign call only repeated the
+    # network round trip (up to its 90 s timeout when cosign hangs).
+    key = (full_ref, pub, req)
+    if key not in _COSIGN_RESULTS:
+        _COSIGN_RESULTS[key] = verify_cosign_image(full_ref, pub, require=req)
+    ok = _COSIGN_RESULTS[key]
+    if notes is not None:
+        if ok:
+            en, zh = "PASSED", "通过"
+        elif ok is None:
+            # cosign missing, key unreadable, timeout: nothing was verified, which
+            # is not the same statement as "the signature is bad"
+            en = "NOT RUN (tolerated: cosign could not run or did not finish - see the log)"
+            zh = "未执行（已被容忍：cosign 无法运行或未完成，见日志）"
+        else:
+            en, zh = "FAILED (tolerated)", "失败（已被容忍）"
+        notes.append(T(
+            f"signature check: {en} - "
+            f"cosign verify --key {os.path.basename(pub)} {shortref(digest)}",
+            f"签名校验：{zh}——"
+            f"cosign verify --key {os.path.basename(pub)} {shortref(digest)}"))
+    return bool(ok)
+
+
+# --------------------------------------------------------------------------- #
+# rpm version comparison
+# --------------------------------------------------------------------------- #
+def _risdigit(c: str) -> bool:
+    """rpm's risdigit(): ASCII digits only (rpm works on bytes, not code points)."""
+    return "0" <= c <= "9"
+
+
+def _risalpha(c: str) -> bool:
+    """rpm's risalpha(): ASCII letters only, so non-ASCII behaves like a separator."""
+    return ("a" <= c <= "z") or ("A" <= c <= "Z")
+
+
+def _risalnum(c: str) -> bool:
+    return _risdigit(c) or _risalpha(c)
+
+
+def rpmvercmp(a: str, b: str) -> int:
+    """rpm's rpmvercmp(), a faithful port of rpmio/rpmvercmp.cc.
+
+    Rules that matter and that a naive segment-split gets wrong:
+      * '~' sorts before everything, including the end of the string
+        (1.0~rc1 < 1.0);
+      * '^' is the mirror image: it sorts *after* the end of the string but
+        *before* any further real segment (1.0 < 1.0^git1 < 1.0.1);
+      * when the two segments are of different classes, a numeric segment is
+        always newer than an alphabetic one (xyz.4 < 8);
+      * numeric segments compare by digit count after leading zeros are
+        stripped, so 10.0001 == 10.1 and 1.0 < 1.0.0.
+    Verified against all 91 vectors in rpm's own tests/rpmvercmp.at
+    (see tests/test_sbwatch.py).
+    """
+    a = a or ""
+    b = b or ""
+    if a == b:
+        return 0
+    i = j = 0
+    na, nb = len(a), len(b)
+    while i < na or j < nb:
+        while i < na and not _risalnum(a[i]) and a[i] != "~" and a[i] != "^":
+            i += 1
+        while j < nb and not _risalnum(b[j]) and b[j] != "~" and b[j] != "^":
+            j += 1
+
+        # '~' sorts before everything else
+        if (i < na and a[i] == "~") or (j < nb and b[j] == "~"):
+            if i >= na or a[i] != "~":
+                return 1
+            if j >= nb or b[j] != "~":
+                return -1
+            i += 1
+            j += 1
+            continue
+
+        # '^' sorts after the end of a string, but before any further segment
+        if (i < na and a[i] == "^") or (j < nb and b[j] == "^"):
+            if i >= na:
+                return -1
+            if j >= nb:
+                return 1
+            if a[i] != "^":
+                return 1
+            if b[j] != "^":
+                return -1
+            i += 1
+            j += 1
+            continue
+
+        if i >= na or j >= nb:
+            break
+
+        # grab one homogeneous segment from each side; a[] decides the class
+        isnum = _risdigit(a[i])
+        si, sj = i, j
+        if isnum:
+            while i < na and _risdigit(a[i]):
+                i += 1
+            while j < nb and _risdigit(b[j]):
+                j += 1
+        else:
+            while i < na and _risalpha(a[i]):
+                i += 1
+            while j < nb and _risalpha(b[j]):
+                j += 1
+        seg_a, seg_b = a[si:i], b[sj:j]
+
+        if not seg_a:
+            return -1                     # cannot happen; rpm's arbitrary choice
+        if not seg_b:
+            # different classes: a numeric segment is always newer than alpha
+            return 1 if isnum else -1
+
+        if isnum:
+            seg_a, seg_b = seg_a.lstrip("0"), seg_b.lstrip("0")
+            if len(seg_a) > len(seg_b):
+                return 1
+            if len(seg_a) < len(seg_b):
+                return -1
+        if seg_a != seg_b:
+            return -1 if seg_a < seg_b else 1
+
+    if i >= na and j >= nb:
+        return 0
+    return -1 if i >= na else 1
+
+
+def evr_cmp(a: dict, b: dict) -> int:
+    # rpmvercmp works on strings. read_header stringifies epoch, but a hand-built
+    # dict (a test, a future caller) can hand us an int - coerce rather than crash.
+    def s(d, k):
+        return str(d.get(k) or ("0" if k == "epoch" else ""))
+    return (rpmvercmp(s(a, "epoch"), s(b, "epoch"))
+            or rpmvercmp(s(a, "version"), s(b, "version"))
+            or rpmvercmp(s(a, "release"), s(b, "release")))
+
+
+# --------------------------------------------------------------------------- #
+# OCI registry client (anonymous, stdlib only)
+# --------------------------------------------------------------------------- #
+class _SameHostAuthRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects, but keep the bearer token on the same origin.
+
+    urllib copies every header onto the redirected request, and a blob GET is
+    always redirected to storage on another host (ghcr.io ->
+    pkg-containers.githubusercontent.com, quay.io -> its CDN, S3 for many
+    others). The pull token was therefore handed to that host as well - and a
+    presigned S3 URL answers 400 to a request carrying a second credential.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            old_url = urllib.parse.urlsplit(req.full_url)
+            new_url = urllib.parse.urlsplit(new.full_url)
+            # An HTTPS -> HTTP redirect is not the same origin, even on one host.
+            if (old_url.scheme, old_url.netloc) != (new_url.scheme, new_url.netloc):
+                new.remove_header("Authorization")
+        return new
+
+
+_OPENER = urllib.request.build_opener(_SameHostAuthRedirect)
+
+
+class Registry:
+    def __init__(self, ref: str, arch: str = "amd64", timeout: int = 90):
+        self.arch = arch
+        self.timeout = timeout
+        self.host, (self.repo, self.default_ref) = self._split(ref)
+        self._tok: str | None = None
+        self._tmp: str | None = None          # created on demand, removed by close()
+
+    # -- scratch space -------------------------------------------------------
+    def _tmpdir(self) -> str:
+        if self._tmp is None:
+            self._tmp = tempfile.mkdtemp(prefix="sbwatch-")
+        return self._tmp
+
+    def close(self) -> None:
+        if self._tmp is not None:
+            shutil.rmtree(self._tmp, ignore_errors=True)
+            self._tmp = None
+
+    @staticmethod
+    def _split(ref: str):
+        # strip first: with the whitespace still in front, the scheme prefix did
+        # not match and " docker://ghcr.io/..." was rejected as host `docker:`
+        ref = (ref or "").strip().removeprefix("docker://").removeprefix("oci:")
+        if ref.count("/") < 1:
+            raise SystemExit(T(f"need a reference like host/ns/name:tag, got: {ref}",
+                               f"需要形如 host/ns/name:tag 的引用，实际收到：{ref}"))
+        first, _, rest_all = ref.partition("/")
+        if "." not in first and ":" not in first and first != "localhost":
+            host, rest = "ghcr.io", ref          # bare ns/name -> ghcr.io (secureblue's home)
+        else:
+            host, rest = first, rest_all
+        if "@" in rest:
+            repo, _, dig = rest.partition("@")
+            if ":" in repo.rsplit("/", 1)[-1]:
+                repo, _, _ = repo.rpartition(":")
+        elif ":" in rest.rsplit("/", 1)[-1]:
+            repo, _, tag = rest.rpartition(":")
+            dig = tag
+        else:
+            repo, dig = rest, "latest"
+        if not repo or repo.startswith("/") or repo.endswith("/"):
+            raise SystemExit(T(f"need a reference like host/ns/name:tag, got: {ref}",
+                               f"需要形如 host/ns/name:tag 的引用，实际收到：{ref}"))
+        return host, (repo, dig or "latest")
+
+    def _token(self):
+        """Anonymous pull token, or None when the registry needs none.
+
+        Every failure here is logged and tolerated: the requests that follow can
+        still be attempted unauthenticated, and turning a public read into a
+        crash over a token would be strictly worse. What must not happen is a
+        *silent* failure - an unauthenticated request to a private repo comes back
+        as a bare 401 later, which reads like "the tag is wrong".
+        """
+        if self._tok is not None:
+            return self._tok or None
+        tok = None
+        try:
+            req = urllib.request.Request(f"https://{self.host}/v2/")
+            with urllib.request.urlopen(req, timeout=self.timeout):
+                # 2xx: anonymous access is enough, no token needed.
+                self._tok = ""
+                return None
+        except urllib.error.HTTPError as e:
+            h = e.headers.get("Www-Authenticate") or ""
+            m = re.match(r"Bearer\s+(.*)", h, re.S)
+            if not m:
+                log(T(f"  ! {self.host}/v2/ answered {e.code} without a Bearer challenge "
+                      f"- continuing unauthenticated",
+                      f"  ！{self.host}/v2/ 返回 {e.code} 且没有 Bearer challenge"
+                      f"——将以未认证方式继续"))
+                self._tok = ""
+                return None
+            parts = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+            realm = parts.get("realm")
+            if not realm:
+                log(T(f"  ! {self.host} Bearer challenge has no realm - continuing "
+                      f"unauthenticated",
+                      f"  ！{self.host} 的 Bearer challenge 没有 realm——将以未认证方式继续"))
+                self._tok = ""
+                return None
+            # The realm is whatever the registry sent, and urlopen() opens file:
+            # and ftp: URLs too: a hostile registry could have a local JSON file
+            # read and its "token" handed back in the next Authorization header.
+            if not re.match(r"https?://", realm, re.I):
+                log(T(f"  ! {self.host} names a token realm that is not http(s) - "
+                      f"continuing unauthenticated",
+                      f"  ！{self.host} 给出的 token realm 不是 http(s)——将以未认证方式继续"))
+                self._tok = ""
+                return None
+            q = {"service": parts.get("service", ""),
+                 "scope": f"repository:{self.repo}:pull"}
+            url = realm + "?" + urllib.parse.urlencode({k: v for k, v in q.items() if v})
+            try:
+                with urllib.request.urlopen(url, timeout=self.timeout) as r:
+                    # The token spec allows either key ("for compatibility
+                    # with OAuth 2.0"), and Azure's registry sends only
+                    # `access_token` - which read as "no token" and then as 401.
+                    # Bounded: the realm is a host of the registry's choosing
+                    # and json.load() would read whatever it sends, to the end.
+                    raw = r.read(MAX_JSON_BYTES + 1)
+                    if len(raw) > MAX_JSON_BYTES:
+                        raise ValueError(f"token reply exceeds {human(MAX_JSON_BYTES)}")
+                    doc = json.loads(raw)
+                    tok = doc.get("token") or doc.get("access_token") or ""
+            except Exception as e2:
+                log(T(f"  ! token fetch failed: {e2}",
+                      f"  ！获取 token 失败：{e2}"))
+        except (urllib.error.URLError, TimeoutError, OSError,
+                http.client.HTTPException) as e:
+            log(T(f"  ! cannot reach {self.host}/v2/ for a token: {e}",
+                  f"  ！无法访问 {self.host}/v2/ 获取 token：{e}"))
+        self._tok = tok or ""
+        return tok or None
+
+    def _open(self, path: str, accept: str):
+        url = f"https://{self.host}/v2/{self.repo}/{path.lstrip('/')}"
+        req = urllib.request.Request(url, headers={"Accept": accept})
+        tok = self._token()
+        if tok:
+            req.add_header("Authorization", "Bearer " + tok)
+        try:
+            return _OPENER.open(req, timeout=self.timeout)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise RegistryError(T(
+                    f"no such tag or digest: {self.repo}/{path} - "
+                    f"run `sbwatch.py history` for valid refs",
+                    f"没有这个 tag 或 digest：{self.repo}/{path}——"
+                    f"用 `sbwatch.py history` 查看可用引用"), http_code=404) from None
+            hint_en = hint_zh = ""
+            if e.code in (401, 403):
+                # ghcr answers 401, not 404, for a repository that does not exist
+                # (and 403 to its token request): a mistyped --image read as
+                # nothing more than "registry error 401".
+                hint_en = (" - most likely there is no such repository, or it is not "
+                           "public (check --image)")
+                hint_zh = "——很可能没有这个仓库，或它不是公开的（请检查 --image）"
+            raise RegistryError(T(f"registry error {e.code} for {self.repo}/{path}{hint_en}",
+                                  f"registry 返回 {e.code}：{self.repo}/{path}{hint_zh}"),
+                                http_code=e.code) from None
+        except (urllib.error.URLError, TimeoutError, OSError,
+                http.client.HTTPException) as e:
+            # HTTPException too: urllib wraps only what request() raises, so a
+            # reply that is not HTTP (BadStatusLine, LineTooLong) came out of
+            # getresponse() raw and ended the run with a traceback.
+            raise RegistryError(T(f"cannot reach {self.host}: {e}",
+                                  f"无法连接 {self.host}：{e}")) from None
+
+    def _read_all(self, resp, what: str) -> bytes:
+        """Read a whole JSON document (manifest, image config, tag page).
+
+        Capped at MAX_JSON_BYTES rather than at the blob cap: unlike a blob, which
+        is streamed to disk, this is held in memory and parsed in one piece.
+        """
+        try:
+            return _safe_read_limited(resp, MAX_JSON_BYTES)
+        except SystemExit:
+            raise
+        except Exception as e:
+            # A RegistryError, like every other registry failure: the callers
+            # that tolerate one (history scan, tag probes) can then tolerate a
+            # connection that died mid-transfer too.
+            raise RegistryError(T(f"failed reading {what}: {e}",
+                                  f"读取 {what} 失败：{e}")) from None
+
+    def get(self, path: str, accept: str) -> bytes:
+        with self._open(path, accept) as r:
+            # Manifests and image configs only - layers go through fetch_blob().
+            # Through _read_all(): a timeout / reset / IncompleteRead while reading
+            # the body escaped from here as a bare traceback.
+            return self._read_all(r, f"{self.repo}/{path}")
+
+    def index_digest(self, ref: str) -> str:
+        """The digest `ref` points at - resolve()'s `index_digest` - in one request.
+
+        That is all a tag label needs; resolve() also fetches the platform
+        manifest, i.e. a second round trip per tag.
+        """
+        with self._open(f"manifests/{ref}", MANIFEST_ACCEPT) as r:
+            dig = r.headers.get("Docker-Content-Digest")
+            if dig:
+                return dig
+            return "sha256:" + hashlib.sha256(self._read_all(r, f"manifest {ref}")).hexdigest()
+
+    def resolve(self, ref: str | None = None, light: bool = False) -> dict:
+        """manifest + config for one architecture, plus a normalized chunk list."""
+        try:
+            return self._resolve(ref, light)
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
+            # A 200 whose body is no manifest (a proxy's error page, a layer
+            # without `size`) used to end `diff` and `check` with a traceback.
+            what = ref or self.default_ref
+            raise MalformedManifest(T(
+                f"{self.repo}:{what} is not a readable image manifest "
+                f"({type(e).__name__}: {e})",
+                f"{self.repo}:{what} 不是可读取的镜像 manifest"
+                f"（{type(e).__name__}：{e}）")) from None
+
+    def _resolve(self, ref: str | None, light: bool) -> dict:
+        what = ref or self.default_ref
+        with self._open(f"manifests/{what}", MANIFEST_ACCEPT) as r:
+            raw = self._read_all(r, f"manifest {what}")
+            top_digest = r.headers.get("Docker-Content-Digest") or ""
+            ctype = r.headers.get("Content-Type", "")
+        actual = hashlib.sha256(raw).hexdigest()
+        # both the digest that was asked for and the one the registry announced
+        # have to be the digest of the bytes that were read
+        check_digest(actual, what, f"manifest {clip_hash(what, 19)}")
+        check_digest(actual, top_digest, f"manifest {what}")
+        top_digest = "sha256:" + actual
+        man = json.loads(raw)
+        out = {"ref": what, "index_digest": top_digest, "mediaType": ctype,
+               "is_index": "index" in ctype or "manifests" in man}
+        ann = dict(man.get("annotations") or {})
+        if "index" in ctype or "manifests" in man:
+            pick = None
+            for m in man.get("manifests", []):
+                p = m.get("platform") or {}
+                if p.get("architecture") == self.arch and p.get("os", "linux") == "linux":
+                    pick = m
+                    break
+            if pick is None:
+                raise NoArchManifest(T(f"no {self.arch} manifest in {self.repo}:{what}",
+                                       f"{self.repo}:{what} 中没有 {self.arch} 架构的 manifest"))
+            ann.update(dict(pick.get("annotations") or {}))
+            pick_dig = pick.get("digest") or ""
+            raw = self.get(f"manifests/{pick_dig}", MANIFEST_ACCEPT)
+            plat_hex = hashlib.sha256(raw).hexdigest()
+            check_digest(plat_hex, pick_dig,
+                         f"manifest {clip_hash(pick_dig, 19)}", required=True)
+            man = json.loads(raw)
+            out["digest"] = "sha256:" + plat_hex
+            ann.update(dict(man.get("annotations") or {}))
+        else:
+            out["digest"] = top_digest
+        out["manifest"] = man
+        cfg = {}
+        if not light:
+            cfg_dig = (man.get("config") or {}).get("digest") or ""
+            raw = self.get(f"blobs/{cfg_dig}",
+                           "application/vnd.oci.image.config.v1+json")
+            check_digest(hashlib.sha256(raw).hexdigest(), cfg_dig,
+                         f"image config {clip_hash(cfg_dig, 19)}", required=True)
+            cfg = json.loads(raw)
+            ann.update(dict((cfg.get("config") or {}).get("Labels") or {}))
+        out["config"] = cfg
+        out["annotations"] = ann
+        # RFC3339 with nanoseconds -> whole seconds + zone. Only the fractional
+        # part goes, and nothing downstream compares finer than a second.
+        out["created"] = rfc3339_seconds(cfg.get("created")
+                                         or ann.get("org.opencontainers.image.created"))
+        out["layers"] = []
+        for l in man.get("layers", []):
+            la = l.get("annotations") or {}
+            out["layers"].append({
+                "digest": l["digest"],
+                "size": int(l["size"]),
+                "components": la.get("org.chunkah.component", "chunkah/unclaimed").split(),
+                "stability": float(la.get("org.chunkah.stability", 0) or 0),
+            })
+        return out
+
+    def fetch_blob(self, digest: str, dest: str) -> str:
+        """Stream one blob to *dest*, gunzipping on the fly, with hard size caps.
+
+        Nothing is ever held fully in memory: a chunk is read, decompressed and
+        written 1 MiB at a time, and either cap aborts as soon as it is crossed.
+        """
+        d = clip_hash(digest, 19)
+        with self._open(f"blobs/{digest}", "application/octet-stream") as r:
+            cl = r.headers.get("Content-Length")
+            if cl and cl.isdigit() and int(cl) > MAX_BLOB_BYTES:
+                raise SystemExit(T(f"blob Content-Length {cl} > {human(MAX_BLOB_BYTES)} limit",
+                                   f"blob 的 Content-Length {cl} 超过 {human(MAX_BLOB_BYTES)} 限制"))
+            src = _CappedReader(r, MAX_BLOB_BYTES, d)
+            written = 0
+            try:
+                try:
+                    # inside the try: the very first read can already fail
+                    magic = src.peek(2)
+                    stream = gzip.GzipFile(fileobj=src) if magic == b"\x1f\x8b" else src
+                    with open(dest, "wb") as o:
+                        while True:
+                            chunk = stream.read(1 << 20)
+                            if not chunk:
+                                break
+                            written += len(chunk)
+                            if written > MAX_DECOMPRESSED_BYTES:
+                                raise SystemExit(T(
+                                    f"decompressed layer > {human(MAX_DECOMPRESSED_BYTES)} limit - "
+                                    f"possible zip bomb (layer {d})",
+                                    f"层解压后超过 {human(MAX_DECOMPRESSED_BYTES)} 限制——"
+                                    f"疑似 zip 炸弹（层 {d}）"))
+                            o.write(chunk)
+                    # gzip stops at its end-of-stream marker; whatever follows is
+                    # still part of the blob that the digest is a digest of
+                    while src.read(1 << 20):
+                        pass
+                except SystemExit:
+                    raise
+                except (OSError, gzip.BadGzipFile, EOFError, zlib.error,
+                        http.client.HTTPException) as e:    # IncompleteRead is one
+                    raise SystemExit(T(f"failed to read/decompress layer {d}: {e}",
+                                       f"读取/解压层 {d} 失败：{e}")) from None
+                check_digest(src.hexdigest(), digest, f"layer {d}", required=True)
+            except BaseException:
+                try:
+                    os.unlink(dest)
+                except OSError:
+                    pass
+                raise
+        return dest
+
+    def extract_member(self, layer: dict, match: str) -> str:
+        """Fetch one layer and return a local path to the file inside it named *match*.
+
+        The tar is walked lazily, so MAX_TAR_MEMBERS is enforced *while* parsing
+        instead of after every member object has already been built in memory.
+        """
+        d = clip_hash(layer["digest"], 19)
+        tmp = self._tmpdir()
+        blob_path = os.path.join(tmp, re.sub(r"\W+", "_", layer["digest"]) + ".blob")
+        self.fetch_blob(layer["digest"], blob_path)
+        dest = os.path.join(tmp, re.sub(r"\W+", "_", match) + ".extracted")
+
+        def scan_target(tf, want):
+            """Second pass: fetch the file a symlink entry pointed at."""
+            for n, m in enumerate(tf):
+                if n >= MAX_TAR_MEMBERS:
+                    raise SystemExit(T(
+                        f"tar has more than {MAX_TAR_MEMBERS} members (layer {d})",
+                        f"tar 成员数超过 {MAX_TAR_MEMBERS}（层 {d}）"))
+                if m.name.lstrip("./") == want and m.isfile():
+                    return m
+            return None
+
+        try:
+            try:
+                # "r:", a plain tar: fetch_blob() already gunzipped the layer under
+                # its caps, and tarfile's default mode would transparently decompress
+                # an inner gzip/bzip2/xz stream once more - under no cap at all.
+                with tarfile.open(blob_path, "r:") as tf:
+                    chosen, target = pick_tar_member(tf, match, d)
+                if chosen is None and target:      # the entry is a symlink into the layer
+                    with tarfile.open(blob_path, "r:") as tf:
+                        chosen = scan_target(tf, target)
+            except tarfile.TarError as e:
+                raise SystemExit(T(f"not a readable tar (layer {d}): {e}",
+                                   f"无法解析 tar（层 {d}）：{e}")) from None
+            if chosen is None:
+                raise SystemExit(T(f"'{match}' not found in layer {d}",
+                                   f"在层 {d} 中找不到 '{match}'"))
+            if chosen.size > MAX_TAR_FILE_SIZE:
+                raise SystemExit(T(
+                    f"tar member {chosen.name} size {human(chosen.size)} > "
+                    f"{human(MAX_TAR_FILE_SIZE)} limit",
+                    f"tar 成员 {chosen.name} 大小 {human(chosen.size)} 超过 "
+                    f"{human(MAX_TAR_FILE_SIZE)} 限制"))
+            try:
+                with tarfile.open(blob_path, "r:") as tf:
+                    f = tf.extractfile(chosen)
+                    if f is None:
+                        raise SystemExit(T("unreadable tar member", "无法读取的 tar 成员"))
+                    total_written = 0
+                    with open(dest, "wb") as o:
+                        while True:
+                            chunk = f.read(1 << 20)
+                            if not chunk:
+                                break
+                            total_written += len(chunk)
+                            if total_written > MAX_TAR_FILE_SIZE:
+                                raise SystemExit(T(f"extracted file > {human(MAX_TAR_FILE_SIZE)} limit",
+                                                   f"解出的文件超过 {human(MAX_TAR_FILE_SIZE)} 限制"))
+                            o.write(chunk)
+            except BaseException:
+                try:
+                    os.unlink(dest)
+                except OSError:
+                    pass
+                raise
+        finally:
+            try:
+                os.unlink(blob_path)
+            except OSError:
+                pass
+        return dest
+
+
+def _resolve_tar_link(member_name: str, linkname: str) -> str:
+    """Normalise a tar symlink target inside the archive's root namespace.
+
+    Only a leading `/` makes a target absolute. Everything else is relative to
+    the directory that holds the link, leading dot or not: `db/rpmdb.sqlite` used
+    to be looked up at the archive root, where no such member exists.
+    """
+    link = linkname or ""
+    if not link.startswith("/") and "/" in member_name:
+        link = member_name.rsplit("/", 1)[0] + "/" + link
+    parts: list = []
+    for seg in link.split("/"):
+        if not seg or seg == ".":
+            continue
+        if seg == "..":
+            if parts:
+                parts.pop()
+        else:
+            parts.append(seg)
+    return "/".join(parts)
+
+
+def pick_tar_member(tf, match: str, label: str = ""):
+    """Lazily scan *tf*; return (largest matching regular member, symlink target).
+
+    "Largest", not "first": the live rpmdb chunk carries TWO entries whose name
+    contains `rpmdb.sqlite` - the real ~92 MiB database under
+    `usr/lib/sysimage/rpm-ostree-base-db/` and a 0-byte placeholder at
+    `usr/share/rpm/rpmdb.sqlite`. Tar member order is a property of whatever
+    tool wrote the layer, not a contract; picking by size makes the choice
+    order-independent instead of silently extracting an empty database the day
+    the order flips.
+    """
+    best = None
+    target = None
+    for n, m in enumerate(tf):
+        if n >= MAX_TAR_MEMBERS:
+            raise SystemExit(T(
+                f"tar has more than {MAX_TAR_MEMBERS} members (layer {label})",
+                f"tar 成员数超过 {MAX_TAR_MEMBERS}（层 {label}）"))
+        nm = m.name.lstrip("./")
+        if match not in nm:
+            continue
+        if m.isfile():
+            if best is None or m.size > best.size:
+                best = m
+        elif m.issym():
+            target = _resolve_tar_link(nm, m.linkname)
+    return best, target
+
+
+# --------------------------------------------------------------------------- #
+# reading the RPM database out of the `bigfiles/rpmdb.sqlite` chunk
+# --------------------------------------------------------------------------- #
+# Tag numbers as in rpm's rpmtag.h. 1010 is Distribution: listed as "vendor", it
+# pushed the real Vendor (1011) into "license" and left License (1014) unread.
+RPMTAG = {
+    1000: "name", 1001: "version", 1002: "release", 1003: "epoch", 1004: "summary",
+    1005: "description", 1007: "buildhost", 1011: "vendor",
+    1014: "license", 1022: "arch", 1044: "sourcerpm", 1080: "changelogtime",
+    1081: "changelogname", 1082: "changelogtext",
+}
+STR_TYPES = {6, 8, 9}   # 6=STRING, 8=STRING_ARRAY, 9=I18NSTRING
+CHUNK_MATCH = "rpmdb.sqlite"
+# rpm pseudo-packages: they have no source rpm, no arch and no Fedora erratum, and
+# they churn on every keyring rotation, so they only add noise to a diff.
+PSEUDO_PACKAGES = {"gpg-pubkey"}
+
+
+class PackageTable(dict):
+    """{binary name: entry} plus the bookkeeping the report needs.
+
+    Two facts a plain dict could not carry:
+
+    * `collisions` - two packages sharing one name on different architectures
+      (multilib: `foo.i686` next to `foo.x86_64`). The table is keyed by name
+      because rpm-ostree's rpm-diff and secureblue's notification script are both
+      name-keyed; so one of the two has to win, but the loser used to disappear
+      without a trace, taking any change to it with it.
+    * `headers_rejected` / `fields_skipped` - what read_header() could not parse.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.collisions: list = []
+        self.headers_rejected = 0
+        self.fields_skipped = 0
+
+
+def read_header(blob: bytes, stats: dict | None = None) -> dict:
+    """Parse the rpm header stored in the sqlite/ndb `Packages` table.
+
+    `stats` (optional) counts the two ways this parser can come back empty: a
+    header whose size fields do not add up, and individual tags that failed to
+    decode. Both used to be silent, and a silently empty `changelogtime` is how
+    a CVE scan stops working without anybody noticing - every changelog entry
+    then carries time 0, which makes the "new entry" test in classify_change()
+    match nothing.
+    """
+    if stats is None:
+        stats = {}
+    if not isinstance(blob, (bytes, bytearray)):
+        # NULL, TEXT or a number in the blob column: rpm never writes one, but a
+        # damaged or crafted rpmdb can, and slicing it was a TypeError that ended
+        # the whole run instead of costing one header.
+        stats["headers_rejected"] = stats.get("headers_rejected", 0) + 1
+        return {}
+    if blob[:3] == b"\x8e\xad\xe8":          # legacy header w/ magic + reserved
+        # magic(3) + version(1) + reserved(4) = 8 bytes, then nindex and hlen:
+        # the same four words rpm's hdrblobRead() reads before the index
+        if len(blob) < 16:
+            stats["headers_rejected"] = stats.get("headers_rejected", 0) + 1
+            return {}
+        nindex, hlen = struct.unpack(">II", blob[8:16])
+        base = 16
+    else:                                    # rpm>=4.16 ndb blob: nindex, hlen, ...
+        if len(blob) < 8:
+            stats["headers_rejected"] = stats.get("headers_rejected", 0) + 1
+            return {}
+        nindex, hlen = struct.unpack(">II", blob[:8])
+        base = 8
+    # `base`, not a hard-coded 8: the legacy layout puts the index at offset 16.
+    # The index itself must fit, whatever slack the data store gets: the entry
+    # unpack below is not guarded, so a short index crashed the whole parse.
+    if base + 16 * nindex > len(blob) or base + 16 * nindex + hlen > len(blob) + 40:
+        stats["headers_rejected"] = stats.get("headers_rejected", 0) + 1
+        return {}
+    store = base + 16 * nindex
+    out: dict = {}
+    for i in range(nindex):
+        tag, typ, off, cnt = struct.unpack(">IIII", blob[base + 16 * i: base + 16 * i + 16])
+        name = RPMTAG.get(tag)
+        if not name or name in out:
+            continue
+        p = store + off
+        try:
+            if name == "changelogtime":
+                if typ != 4:
+                    raise ValueError("changelogtime must be INT32")
+                out[name] = list(struct.unpack(">%dI" % cnt, blob[p:p + 4 * cnt]))
+                continue
+            if name == "epoch":
+                if typ != 4 or cnt < 1:
+                    raise ValueError("epoch must be INT32 with count >= 1")
+                out[name] = str(struct.unpack(">I", blob[p:p + 4])[0])
+                continue
+            if typ in STR_TYPES:
+                if name in ("changelogname", "changelogtext") or typ == 8:
+                    arr, q = [], p
+                    for _ in range(cnt):
+                        e = blob.index(b"\0", q)
+                        arr.append(blob[q:e].decode("utf-8", "replace"))
+                        q = e + 1
+                    out[name] = arr if cnt > 1 else (arr[0] if arr else "")
+                else:
+                    # An I18NSTRING holds one string per locale, C locale first
+                    # (glfw, libraqm, usb_modeswitch ... translate their Summary),
+                    # so only a plain STRING has to be a single value. Rejecting
+                    # count > 1 outright reported 12 "undecodable" fields on the
+                    # live image - a parse warning in every single report.
+                    if cnt != 1 and not (typ == 9 and cnt > 1):
+                        raise ValueError("scalar string tag with count != 1")
+                    out[name] = blob[p:blob.index(b"\0", p)].decode("utf-8", "replace")
+        except (ValueError, struct.error):
+            stats["fields_skipped"] = stats.get("fields_skipped", 0) + 1
+            continue
+    return out
+
+
+def rpmdb_chunk(resolved: dict) -> dict | None:
+    """The single layer that carries rpmdb.sqlite, by the same rule package_list()
+    uses to fetch it.
+
+    Extracted so that the `check --fast` short-circuit and the real fetch can never
+    disagree about which layer is the rpmdb: if they picked different layers the
+    fast path could skip a fetch whose result it had not actually verified.
+    """
+    cands = [l for l in resolved["layers"]
+             if any(CHUNK_MATCH in c for c in l["components"])]
+    if not cands:
+        return None
+    cands.sort(key=lambda l: l["size"])
+    return cands[0]
+
+
+def table_put(pkgs: "PackageTable", e: dict) -> None:
+    """Insert one binary package into the name-keyed table.
+
+    Same name, different architecture (multilib: `foo.i686` next to `foo.x86_64`)
+    is the one case where two entries compete for one key. The higher EVR wins -
+    that is what the rest of this file assumes - but the loser is *recorded*, so
+    the report can say that a change to it would not be visible in the diff.
+    """
+    name = e["name"]
+    old = pkgs.get(name)
+    if old is None:
+        pkgs[name] = e
+        return
+    if old.get("arch") != e.get("arch"):
+        winner, loser = (e, old) if evr_cmp(e, old) > 0 else (old, e)
+        pkgs.collisions.append({"name": name, "kept_arch": winner.get("arch"),
+                                "kept_evr": winner.get("evr"),
+                                "shadowed_arch": loser.get("arch"),
+                                "shadowed_evr": loser.get("evr")})
+        pkgs[name] = winner
+        return
+    if evr_cmp(e, old) > 0:
+        pkgs[name] = e
+
+
+def package_list(reg: Registry, resolved: dict) -> dict:
+    """{binary name: {evr, srpm, src, changelog[]}} for a single image."""
+    chunk = rpmdb_chunk(resolved)
+    if chunk is None:
+        raise SystemExit(T(
+            "no standalone rpmdb chunk in this image (needs chunkah 'bigfiles' layout); "
+            "use `layers` or --exact 0 instead",
+            "此镜像中没有独立的 rpmdb chunk（需要 chunkah 'bigfiles' 布局）；"
+            "请改用 `layers` 或 --exact 0"))
+    path = reg.extract_member(chunk, CHUNK_MATCH)
+    con = None
+    try:
+        try:
+            # A percent-encoded URI, not f"file:{path}": the scratch directory sits
+            # under the user's TMPDIR, and a `#`, `?` or `%` in it cut or decoded the
+            # path into one that does not exist.
+            uri = pathlib.Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+            con = sqlite3.connect(uri, uri=True)
+            # Iterated, not fetchall()ed: the blobs add up to most of the ~92 MiB
+            # database, and only the one being parsed has to be in memory.
+            rows = con.execute("select blob from Packages")
+            pkgs = PackageTable()
+            stats: dict = {}
+            for (blob,) in rows:
+                h = read_header(blob, stats)
+                name = h.get("name")
+                if not name or not h.get("version"):
+                    continue
+                if name in PSEUDO_PACKAGES:
+                    continue
+                srpm = (h.get("sourcerpm") or "").removesuffix(".src.rpm").removesuffix(".nosrc.rpm")
+                src = re.sub(r"-\d[^-]*-[^-]*$", "", srpm) or name
+                times = h.get("changelogtime") or []
+                names = h.get("changelogname") or []
+                texts = h.get("changelogtext") or []
+                if isinstance(texts, str):
+                    texts = [texts]
+                if isinstance(names, str):
+                    names = [names]
+                chlog = [{"time": (times[i] if i < len(times) else 0),
+                          "who": (names[i] if i < len(names) else ""),
+                          "text": t} for i, t in enumerate(texts)]
+                e = {"name": name, "version": h.get("version", ""), "release": h.get("release", ""),
+                     "epoch": h.get("epoch", ""), "arch": h.get("arch", ""), "srpm": srpm, "src": src,
+                     "changelog": chlog}
+                e["evr"] = e["version"] + "-" + e["release"]
+                e["nvr"] = f"{name}-{e['version']}-{e['release']}"
+                table_put(pkgs, e)
+        except sqlite3.DatabaseError as e:
+            # sqlite says which it was: no such table, not a database, unable to open
+            raise SystemExit(T(f"unexpected rpmdb schema (no Packages table): {e}",
+                               f"rpmdb 结构不符合预期（没有 Packages 表）：{e}")) from None
+    finally:
+        if con is not None:
+            con.close()
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    pkgs.headers_rejected = stats.get("headers_rejected", 0)
+    pkgs.fields_skipped = stats.get("fields_skipped", 0)
+    return pkgs
+
+
+# --------------------------------------------------------------------------- #
+# Fedora Bodhi: errata for a build (type=security, severity, CVE list)
+# --------------------------------------------------------------------------- #
+class Bodhi:
+    BASE = "https://bodhi.fedoraproject.org"
+
+    def __init__(self, cache_dir=None, sleep=0.3, max_calls=80, ttl=BODHI_TTL):
+        self.cache_dir, self.sleep, self.max_calls, self.ttl = cache_dir, sleep, max_calls, ttl
+        self.calls, self._mem = 0, {}
+        self.failed = 0          # queries that errored => verdict must not claim "clean"
+        self.skipped = 0         # queries we never made because of --max-bodhi
+        self.truncated_src = set()   # srcs where we could not read every erratum
+        self._streak = 0         # failed queries in a row
+        self.down = False        # set after BODHI_GIVE_UP_AFTER of them: stop asking
+        if cache_dir:
+            try:
+                os.makedirs(cache_dir, exist_ok=True)
+            except OSError as e:
+                # the cache is an optimisation: no directory means no cache, not no run
+                log(T(f"  ! cannot use the Bodhi cache directory {cache_dir}: {e} - "
+                      f"continuing without a cache",
+                      f"  ！无法使用 Bodhi 缓存目录 {cache_dir}：{e}——不使用缓存继续"))
+                self.cache_dir = None
+
+    def _cf(self, key):
+        """Cache file of one `<src>-<release>` key, never shared with another key.
+
+        `\\W+ -> _` alone is lossy: `foo-bar`, `foo_bar`, `foo.bar` and `foo+bar`
+        all landed in one file, and nothing in it says whose answer it is - so
+        one source package's errata were served as another's, whose own errata
+        were then never read. A key the substitution cannot confuse (`name-F44`)
+        keeps its readable name; any other one gets a digest of its exact
+        spelling appended.
+        """
+        if not self.cache_dir:
+            return None
+        safe = re.sub(r"\W+", "_", key)
+        if not re.fullmatch(r"[A-Za-z0-9]+-[A-Za-z0-9]+", key):
+            safe += "-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        return os.path.join(self.cache_dir, f"bodhi-{safe}.json")
+
+    def _read_cache_entry(self, cf):
+        """Full cache entry {"total", "truncated", "updates"}, or None.
+
+        Only a current versioned object can establish complete CVE coverage.
+        Bare lists predate pagination and the removal of title/notes clipping;
+        accepting one bypassed the version guard and silently hid security fixes.
+        Unreadable or obsolete entries are refetched, never treated as clean.
+        """
+        try:
+            with open(cf) as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("updates"), list):
+                # A cache written before BODHI_CACHE_VERSION carried clipped bug
+                # titles / notes, i.e. it can be missing CVE ids. Refetching costs
+                # one request; trusting it costs a wrong verdict.
+                if data.get("cache_version") != BODHI_CACHE_VERSION:
+                    return None
+                return data
+            return None
+        except Exception as e:
+            log(T(f"  ! bodhi cache {os.path.basename(cf)} unreadable ({e}), refetching",
+                  f"  ！Bodhi 缓存 {os.path.basename(cf)} 无法读取（{e}），重新获取"))
+            try:
+                os.unlink(cf)
+            except OSError:
+                pass
+            return None
+
+    def _fetch_page(self, url: str, src: str) -> tuple:
+        """One page of /updates/ as (document, updates), validated.
+
+        A failure out of the blue gets a second try. Bodhi takes 20 s for some
+        queries and now and then misses the 40 s timeout, answering the same
+        query moments later - and that one miss put "errata coverage incomplete"
+        into the verdict and raised `skip` to `consider`. Not while a failure
+        streak is running and not past --max-bodhi: with Bodhi down, every
+        further attempt is another timeout to sit through.
+        """
+        retried = False
+        while True:
+            self.calls += 1
+            try:
+                with urllib.request.urlopen(url, timeout=40) as r:
+                    data = json.load(r)
+                if not isinstance(data, dict):
+                    raise ValueError("Bodhi response is not a JSON object")
+                page_ups = data.get("updates", [])
+                if page_ups is not None and (not isinstance(page_ups, list)
+                                             or any(not isinstance(u, dict) for u in page_ups)):
+                    raise ValueError("Bodhi updates must be a list of JSON objects")
+                return data, page_ups or []
+            except Exception as ex:
+                if retried or self._streak or self.calls >= self.max_calls:
+                    raise
+                retried = True
+                log(T(f"  ! bodhi lookup failed for {src} ({ex}) - trying once more",
+                      f"  ！查询 Bodhi 失败：{src}（{ex}）——再试一次"))
+                time.sleep(self.sleep)
+
+    def updates_for_src(self, src: str, release: str) -> list:
+        """Every Fedora erratum for one source package in one release.
+
+        Bodhi paginates. Asking for rows_per_page=100 and reading only the first
+        page silently drops the rest: the live F44 kernel has 127 errata, so 27 of
+        them - and any security fix among them - used to be invisible. We now walk
+        every page (bounded by MAX_BODHI_PAGES) and, if the bound is hit, record
+        the package in `truncated_src` so the report can say the audit was partial
+        instead of quietly claiming completeness.
+        """
+        key = f"{src}-{release}"
+        # Memory first. classify_change() asks once per *binary* package, so every
+        # subpackage of kernel, linux-firmware, ... arrives with the same key, and
+        # checking the disk first re-read and re-parsed the whole cache file for
+        # each of them - right after a fetch too, as the file just written won.
+        if key in self._mem:
+            ent = self._mem[key]
+            return ent["updates"] if isinstance(ent, dict) else ent
+        cf = self._cf(key)
+        if cf and os.path.exists(cf) and time.time() - os.path.getmtime(cf) < self.ttl:
+            cached = self._read_cache_entry(cf)
+            if cached is not None:
+                self._mem[key] = cached
+                if cached.get("truncated"):
+                    self.truncated_src.add(src)
+                return cached["updates"]
+        if self.down:
+            # Not attempted, but counted as failed (once per source package): the
+            # verdict must still say that the errata coverage is incomplete.
+            self.failed += 1
+            self._mem[key] = {"total": None, "truncated": False, "updates": []}
+            return []
+        if self.calls >= self.max_calls:
+            self.skipped += 1
+            # Classification asks once per binary and the backlog asks again.
+            # Count this unqueried source/release once, without re-reading a stale
+            # disk cache each time. Never persist a budget miss as a clean answer.
+            self._mem[key] = {"total": None, "truncated": False, "updates": []}
+            return []
+
+        res: list = []
+        total = None
+        truncated = False
+        budget_cut = False
+        ok = False
+        for page in range(1, MAX_BODHI_PAGES + 1):
+            if page > 1 and self.calls >= self.max_calls:
+                # --max-bodhi caps API calls, and every page is one call: the
+                # guard above only ran before page 1, so a 127-erratum package
+                # walked past the budget. Stop here and say the audit is partial.
+                truncated = budget_cut = True
+                log(T(f"  ! bodhi: --max-bodhi reached after {len(res)} of {total} errata "
+                      f"for {src} - this package's audit is INCOMPLETE",
+                      f"  ！Bodhi：{src} 只取到 {total} 条勘误中的 {len(res)} 条时 --max-bodhi "
+                      f"已用尽——该包的审计不完整"))
+                break
+            url = f"{self.BASE}/updates/?" + urllib.parse.urlencode(
+                {"packages": src, "releases": release,
+                 "rows_per_page": str(BODHI_PAGE_SIZE), "page": str(page)})
+            try:
+                data, page_ups = self._fetch_page(url, src)
+            except Exception as ex:
+                self.failed += 1
+                log(T(f"  ! bodhi lookup failed for {src} (page {page}): {ex}",
+                      f"  ！查询 Bodhi 失败：{src}（第 {page} 页）：{ex}"))
+                self._streak += 1
+                if self._streak >= BODHI_GIVE_UP_AFTER:
+                    self.down = True
+                    log(T(f"  ! bodhi: {self._streak} lookups in a row failed - treating "
+                          f"Bodhi as unreachable, the remaining lookups of this run are "
+                          f"not attempted (they count as failed)",
+                          f"  ！Bodhi：连续 {self._streak} 次查询失败——视为不可用，"
+                          f"本次运行不再尝试其余查询（计为失败）"))
+                ok = False
+                break
+            ok = True
+            self._streak = 0
+            total = data.get("total", total)
+            for u in page_ups:
+                # Bodhi's /updates/ payload has NO "cves" key (verified against the
+                # live API); CVE ids live in the notes text and in bugs[].title,
+                # e.g. "CVE-2026-2673 openssl: TLS 1.3 server may choose ...".
+                # Neither field is clipped: Bodhi's payload has no "cves" key,
+                # so these ARE the CVE source, and a 200-character title cap
+                # silently dropped ids from any longer one (Fedora's webkitgtk
+                # errata carry 113 of them). Display-side clipping is marked and
+                # counted instead - see clip_text()/clip_list().
+                bugs = [{"bug_id": bg.get("bug_id"),
+                         "title": bg.get("title") or "",
+                         "security": bool(bg.get("security"))}
+                        for bg in (u.get("bugs") or []) if isinstance(bg, dict)]
+                res.append({
+                    "alias": u.get("alias"), "type": u.get("type"),
+                    "severity": u.get("severity"), "status": u.get("status"),
+                    "title": u.get("title"), "notes": u.get("notes") or "",
+                    "cves": sorted(set(find_cves(u.get("notes")))
+                                   | set(find_cves(u.get("title")))
+                                   | {m for bg in bugs
+                                      for m in find_cves(bg["title"])}),
+                    "bugs": bugs,
+                    "date_approved": u.get("date_approved"),
+                    "date_stable": u.get("date_stable"),
+                    "nvrs": [b.get("nvr") for b in (u.get("builds") or []) if isinstance(b, dict)],
+                })
+            if len(page_ups) < BODHI_PAGE_SIZE:
+                break                       # last page
+            if isinstance(total, int) and len(res) >= total:
+                break
+            if page == MAX_BODHI_PAGES:
+                truncated = True
+                log(T(f"  ! bodhi: stopped at {len(res)} of {total} errata for {src} "
+                      f"(MAX_BODHI_PAGES={MAX_BODHI_PAGES}) - this package's audit is "
+                      f"INCOMPLETE",
+                      f"  ！Bodhi：{src} 只取到 {total} 条勘误中的 {len(res)} 条"
+                      f"（MAX_BODHI_PAGES={MAX_BODHI_PAGES}）——该包的审计不完整"))
+                break
+            time.sleep(self.sleep)
+        if truncated:
+            self.truncated_src.add(src)
+        # never cache a failed query: an empty answer would blind later runs. A
+        # budget-cut one is not cached either - the next run may have the budget.
+        if cf and ok and not budget_cut:
+            _cache_write(cf, {"cache_version": BODHI_CACHE_VERSION,
+                              "total": total, "truncated": truncated,
+                              "updates": res}, "Bodhi")
+        self._mem[key] = {"total": total, "truncated": truncated, "updates": res}
+        return res
+
+
+SEV_RANK = {"critical": 4, "urgent": 4, "important": 3, "high": 3, "moderate": 2,
+            "medium": 2, "low": 1, "none": 0, "unspecified": 0, "": 0}
+
+
+# Bodhi errata statuses that mean "this build really is in a Fedora repo".
+# secureblue composes from the stable repos, so only a stable erratum can have
+# shipped a build that is inside the image. Anything else (unpushed / pending /
+# testing / obsolete) must never be allowed to raise the verdict.
+PUSHED_STATUSES = {"stable"}
+
+
+def nvr_candidates_split(pkg: dict) -> tuple:
+    """(exact spellings, release-normalised spellings) of this NEVRA for Bodhi.
+
+    The split exists because the two sets answer different questions:
+
+    * **exact** keeps the package's own release string. A hit means "this very
+      build is in a Fedora erratum", which is the only kind of match rpm-ostree
+      turns into an advisory: `rpmostree_advisories_variant()` asks libdnf for
+      `dnf_package_get_advisories(pkg, HY_EQ)`, and libdnf accepts a match only
+      when `pool_evrcmp(advisory_evr, pkg_evr, EVRCMP_COMPARE) == 0`
+      (libdnf/sack/query.cpp, Query::getAdvisoryPkgs). The release string takes
+      part in that comparison.
+    * **normalised** additionally strips secureblue's local release marker, so
+      `kernel-7.2.5-200.secureblue.1.fc44` can be matched against Fedora's
+      `kernel-7.2.5-200.fc44`. That hit is genuinely informative - secureblue's
+      kernel *is* a rebuild of that Fedora build (secureblue/kernel's
+      copr_script.sh clones Fedora's kernel dist-git and only sets
+      `%define buildid .secureblue.N`) - but rpm-ostree never attaches the
+      advisory to this package, so it must not feed the notification prediction.
+
+    Name spellings: Bodhi lists errata builds by their *source* build NVR, while
+    the image only exposes *binary* NEVRAs. 246 of the live image's 1107 source
+    packages have no same-named binary (shim -> shim-x64/shim-ia32, webkitgtk ->
+    webkit2gtk4.1, krb5 -> krb5-libs, grub2, bind, git, dnf, python3.14, ...), and
+    every binary in a koji build shares the source build's EVR, so
+    `{src}-{version}-{release}` is a valid additional spelling. secureblue's own
+    packages (trivalent, brew-proxy, no_rlimit_as, run0edit, homebrew, crane, ...)
+    carry no dist tag and have no Fedora counterpart at all - correctly, no
+    spelling of theirs ever matches.
+    """
+    names = [pkg["name"]]
+    src = pkg.get("src")
+    if src and src != pkg["name"]:
+        names.append(src)
+    exact = [f"{nm}-{pkg['version']}-{pkg['release']}" for nm in names]
+    normalised = []
+    stripped = re.sub(r"\.secureblue\.\d+", "", pkg["release"])
+    if stripped != pkg["release"]:
+        normalised = [f"{nm}-{pkg['version']}-{stripped}" for nm in names]
+    if src:
+        bevr = _build_evr(pkg)
+        if bevr and bevr != "?" and bevr != f"{pkg['version']}-{pkg['release']}":
+            bstripped = re.sub(r"\.secureblue\.\d+", "", bevr)
+            exact.append(f"{src}-{bevr}")
+            if bstripped != bevr:
+                normalised.append(f"{src}-{bstripped}")
+    return list(dict.fromkeys(exact)), list(dict.fromkeys(normalised))
+
+
+def nvr_candidates(pkg: dict) -> list:
+    """Every Fedora spelling of this NEVRA to try against Bodhi (exact first)."""
+    exact, normalised = nvr_candidates_split(pkg)
+    return list(dict.fromkeys(exact + normalised))
+
+
+def _missing_entries(these: list, other: list) -> list:
+    """Entries of `these` that `other` does not contain, counted by multiplicity.
+
+    A changelog entry is identified by (time, who, text) - the same triple rpm
+    stores. Comparing bare timestamps made a *new* entry that happens to share a
+    second with an existing one invisible (its CVE was silently not scanned), and
+    a duplicate of an existing entry look like a new one.
+    """
+    if not these:
+        return []
+    if not other:
+        return list(these)       # nothing to cancel against: skip the Counter
+    have = Counter((c.get("time"), c.get("who"), c.get("text")) for c in other)
+    out = []
+    for c in these:
+        key = (c.get("time"), c.get("who"), c.get("text"))
+        if have.get(key):
+            have[key] -= 1
+        else:
+            out.append(c)
+    return out
+
+
+def _dist_tag(release) -> str:
+    """`.fc45` out of an rpm release string, or "" when it carries none."""
+    m = re.search(r"\.fc\d+", release or "")
+    return m.group(0) if m else ""
+
+
+def _passed_build(old: dict, new: dict, nvrs) -> str | None:
+    """The erratum build, if any, that an update from `old` to `new` passes over.
+
+    That is a build newer than the old one and not newer than the new one, in
+    Fedora's namespace (see _is_behind). Neither image contains it, so no NVR
+    spelling of either side can match its erratum.
+
+    Only on the old build's own Fedora release: the release numbers of two
+    branches do not order against each other. Across a rebase the old image's
+    `bluez-5.87-1.fc44` compared as behind `bluez-5.87-1.fc45` - its twin on the
+    other branch, whose fix it already has.
+    """
+    old_dist = _dist_tag(old.get("release"))
+    for b in nvrs or []:
+        parts = (b or "").rsplit("-", 2)
+        if len(parts) != 3:
+            continue
+        bn, bv, br = parts
+        # Bodhi names the source build; accept it for this binary or its source
+        if bn != new["name"] and bn != new.get("src"):
+            continue
+        if not old_dist or _dist_tag(br) != old_dist:
+            continue
+        by_src = bn != new["name"]
+        if (_is_behind(old, bv, br, use_build_evr=by_src)
+                and not _is_behind(new, bv, br, use_build_evr=by_src)):
+            return b
+    return None
+
+
+def classify_order(changed: list) -> list:
+    """Changed packages in the order their errata should be looked up.
+
+    --max-bodhi caps the lookups, and plain name order spent the budget on
+    whatever sorts first: on a 100-source update `abattis-cantarell-fonts` got
+    its query while systemd, webkitgtk and xdg-desktop-portal were "not queried".
+    Security-sensitive sources go first; the sort is stable, so both halves keep
+    their name order.
+    """
+    return sorted(changed,
+                  key=lambda c: not _src_matches_pool(c.get("src") or "", IMPORTANT_SRC))
+
+
+def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) -> dict:
+    info = {"security": False, "cves": set(), "cves_dropped": set(), "aliases": [],
+            "severities": [], "bodhi_type": None, "why": [], "erratum": None,
+            # set only by a *pushed* type=security erratum that shipped a build in
+            # the NEW image *and* matched its release string exactly - the exact
+            # condition that puts an advisory into rpm-ostree's .advisories, which
+            # is what secureblue keys off.
+            "has_security_erratum": False, "erratum_severity": "",
+            # set when a security erratum was found only after stripping the local
+            # release marker: real fix content, but not an advisory of this build
+            # (so it never drives the notification prediction).
+            "advisory_corresponding": False,
+            # CVE ids gained through the new changelog entries alone: all that
+            # the "changelog CVE" evidence label may claim.
+            "changelog_cves": [],
+            # errata that only matched the OLD build: fixes the user already has.
+            # Kept separate so they can never inflate the verdict for this update.
+            "already_had": [], "not_pushed": [],
+            # security errata of builds the update passes over (old < build <=
+            # new): in neither image, yet their fixes arrive with the new build
+            "passed_over": [],
+            "changelog_scan": {"new_total": 0, "new_scanned": 0,
+                               "dropped_total": 0, "dropped_scanned": 0,
+                               "retained_total": 0, "retained_scanned": 0}}
+
+    def add_cves(text, into=None):
+        for c in find_cves(text):
+            (into if into is not None else info["cves"]).add(c)
+
+    # (a) changelog entries that are new in this build: Fedora writes CVE ids there.
+    # The per-package caps only guard against a pathological changelog (no real
+    # one comes near them); should they ever bite, that fact is recorded (and
+    # do_diff turns it into a report note) - an undisclosed cap is how "no CVE
+    # found" quietly becomes "no CVE read".
+    old_log = (old or {}).get("changelog", [])
+    new_log = new.get("changelog", [])
+    # Multiset difference, not a timestamp set: two entries can share a second
+    # (Fedora's changelog times have one-second resolution, and a bulk rebuild
+    # writes many entries at once), and keying on the timestamp alone made every
+    # same-second entry look like one the old build already had - so its CVE was
+    # never read.
+    new_entries = _missing_entries(new_log, old_log)
+    for c in new_entries[:NEW_LOG_CAP]:
+        add_cves(c["text"])
+        if SEC_WORDS_RE.search(c["text"] or ""):
+            first = (c["text"] or "").strip().splitlines()
+            info["why"].append("changelog/更新日志: "
+                               + (clip_text(first[0], 90, lang="both") if first else ""))
+    # fixes that the new image *loses* (downgrade / rebuild without the patch)
+    dropped_entries = _missing_entries(old_log, new_log)
+    for c in dropped_entries[:OLD_LOG_CAP]:
+        add_cves(c["text"], info["cves_dropped"])
+    # An id named on both sides is neither gained nor lost: its entry was only
+    # reworded or regenerated. Fedora rewrites the whole kernel changelog on a
+    # rebase (7.2.15 -> 7.3.3: 66 entries "new", 76 "dropped"), which reported
+    # CVE-2023-6240 as a fix gained by that update and, in the same headline, as
+    # an id the new changelog no longer mentions.
+    # A repeated mention may only be new/dropped in ONE entry while an
+    # unchanged entry still names it. Include that shared part of the multiset,
+    # not just the intersection of the new and dropped entry scans.
+    retained_entries = _missing_entries(old_log, dropped_entries)
+    retained_cves = {cve for c in retained_entries[:RETAINED_LOG_CAP]
+                     for cve in find_cves(c.get("text"))}
+    both = (info["cves"] & info["cves_dropped"]) | retained_cves
+    info["cves"] -= both
+    info["cves_dropped"] -= both
+    info["changelog_scan"] = {
+        "new_total": len(new_entries), "new_scanned": min(len(new_entries), NEW_LOG_CAP),
+        "dropped_total": len(dropped_entries),
+        "dropped_scanned": min(len(dropped_entries), OLD_LOG_CAP),
+        "retained_total": len(retained_entries),
+        "retained_scanned": min(len(retained_entries), RETAINED_LOG_CAP),
+    }
+    chlog_cves = sorted(info["cves"])
+    info["changelog_cves"] = chlog_cves
+    if chlog_cves:
+        info["security"] = True
+        info["why"].insert(0, "changelog CVEs/更新日志中的 CVE: "
+                           + clip_list(chlog_cves, 8, lang="both"))
+
+    # (b) the Fedora erratum that shipped the new build
+    exact_new, norm_new = nvr_candidates_split(new)
+    exact_new, norm_new = set(exact_new), set(norm_new)
+    if old:
+        old_exact, old_norm = nvr_candidates_split(old)
+        old_all = set(old_exact) | set(old_norm)
+    else:
+        old_all = set()
+    if bodhi is not None:
+        for u in bodhi.updates_for_src(new["src"], rel):
+            nvrs = set(u["nvrs"])
+            # exact EVR match = the advisory is attached to this build (this is
+            # what rpm-ostree will show under .advisories); a normalised match is
+            # information about the upstream build only.
+            hit_attached = exact_new & nvrs
+            hit_corresponding = norm_new & nvrs
+            hit_old = old_all & nvrs
+            status = (u.get("status") or "").lower()
+            if not (hit_attached or hit_corresponding or hit_old):
+                # In neither image, so its erratum matches neither side - but an
+                # update that passes over this build (curl 8.9.0 -> 8.9.3, past
+                # the security erratum of 8.9.1) gains its fix all the same, and
+                # only a CVE id in the rpm changelog could say so before.
+                passed = _passed_build(old, new, u["nvrs"]) if old else None
+                if passed and u.get("type") == "security" and status in PUSHED_STATUSES:
+                    info["passed_over"].append(
+                        {"alias": u["alias"], "severity": u.get("severity"),
+                         "nvr": passed})
+                    info["security"] = True
+                    info["cves"].update(u.get("cves") or ())
+                    info["severities"].append((u.get("severity") or "").lower())
+                    info["why"].append(
+                        f"erratum/勘误 {u['alias']}: type=security "
+                        f"severity={u.get('severity')} status={status} (for {passed}, "
+                        f"a build this update passes over / 本次更新越过的构建)")
+                continue
+            # An erratum that already matched the OLD build (including when both
+            # builds are .secureblue.N rebuilds of the same Fedora NVR, or only
+            # the epoch changed) is a fix the user already has. Recording its
+            # severity here is what produced a bogus "HIGH/CRITICAL - UPDATE NOW"
+            # for a plain bugfix bump or local rebuild.
+            if hit_old:
+                info["already_had"].append(
+                    {"alias": u["alias"], "type": u.get("type"),
+                     "severity": u.get("severity"), "status": status,
+                     "nvr": sorted(hit_old)[0]})
+                continue
+            attached = bool(hit_attached)
+            pushed = status in PUSHED_STATUSES
+            if not pushed:
+                # type=security but unpushed/testing/obsolete: report, don't escalate
+                info["not_pushed"].append(
+                    {"alias": u["alias"], "type": u.get("type"),
+                     "severity": u.get("severity"), "status": status})
+                info["why"].append(
+                    f"erratum/勘误 {u['alias']}: type={u.get('type')} status={status} "
+                    f"(not in a Fedora repo yet / 尚未进入 Fedora 仓库 - not counted)")
+                continue
+            info["aliases"].append(u["alias"])
+            info["cves"].update(u.get("cves") or ())
+            add_cves(u.get("notes") or "")
+            add_cves(u.get("title") or "")
+            for bg in u.get("bugs") or []:
+                add_cves(bg.get("title"))
+            info["severities"].append((u.get("severity") or "").lower())
+            info["bodhi_type"] = u["type"]
+            info["erratum"] = {"alias": u["alias"], "type": u["type"],
+                               "severity": u.get("severity"), "status": status,
+                               "approved": u.get("date_approved"),
+                               "attached": attached,
+                               "matched_nvr": sorted(hit_attached or hit_corresponding)[0],
+                               # kept whole: this is parsed for CVE ids elsewhere
+                               "notes": u.get("notes") or ""}
+            if u["type"] == "security":
+                info["security"] = True
+                # Recorded separately from `security`: secureblue's rule keys off
+                # the *advisory kind* (DnfAdvisoryKind SECURITY == 1), not off
+                # changelog CVE mentions, and its urgency comes from the advisory
+                # severity run through rpm-ostree's str2severity().  Stored in the
+                # updateinfo <severity> spelling (bodhi_severity_as_updateinfo),
+                # because that - not the Bodhi API word - is the string libsolv
+                # hands to rpm-ostree.
+                if attached:
+                    info["has_security_erratum"] = True
+                    cand = bodhi_severity_as_updateinfo(u.get("severity"))
+                    if _sev_rank_for_upstream(cand) > _sev_rank_for_upstream(info["erratum_severity"]):
+                        info["erratum_severity"] = cand
+                    info["why"].append(
+                        f"erratum/勘误 {u['alias']}: type=security "
+                        f"severity={u.get('severity')} status={status}")
+                else:
+                    # e.g. secureblue's kernel: the Fedora erratum describes the
+                    # very build this package was rebuilt from, but rpm-ostree
+                    # matches advisories with HY_EQ on the EVR, so this advisory
+                    # is NOT attached - the desktop will not see its severity.
+                    info["advisory_corresponding"] = True
+                    info["why"].append(
+                        f"erratum/勘误 {u['alias']}: type=security "
+                        f"severity={u.get('severity')} status={status} "
+                        f"(matched Fedora's {sorted(hit_corresponding)[0]} only after "
+                        f"stripping the local release marker from {new['release']} - "
+                        f"rpm-ostree does not attach it to this build)")
+    # A CVE carried by the new build's pushed erratum is not a dropped fix even if
+    # the RPM changelog entry that used to mention it was trimmed or reworded.
+    info["cves_dropped"] -= info["cves"]
+    if info["cves"]:
+        info["security"] = True
+    if info["cves_dropped"]:
+        info["why"].insert(1 if chlog_cves else 0,
+                           "no longer mentioned/不再提及: "
+                           + clip_list(sorted(info["cves_dropped"]), 8, lang="both"))
+    info["cves"] = sorted(info["cves"])
+    info["cves_dropped"] = sorted(info["cves_dropped"])
+    info["important_src"] = _src_matches_pool(new["src"], IMPORTANT_SRC)
+    # only severities belonging to a *pushed* erratum for the *new* build count
+    info["sev_rank"] = max([SEV_RANK.get(s, 0) for s in info["severities"]] or [0])
+    if info["sev_rank"] >= 3:
+        info["security"] = True
+    return info
+
+
+# --------------------------------------------------------------------------- #
+# analyses
+# --------------------------------------------------------------------------- #
+def layer_diff(a: dict, b: dict) -> dict:
+    da = {l["digest"] for l in a["layers"]}
+    db = {l["digest"]: l for l in b["layers"]}
+    changed = sorted((l for d, l in db.items() if d not in da), key=lambda l: -l["size"])
+    dl_bytes = sum(l["size"] for l in changed)
+    pkgs = sorted({c[4:] for l in changed for c in l["components"] if c.startswith("rpm/")})
+    total_b = sum(l["size"] for l in b["layers"])
+    return {
+        "chunks_a": len(da), "chunks_b": len(db), "chunks_changed": len(changed),
+        "chunks_reused": len(db) - len(changed), "total_size_b": total_b,
+        "download_bytes": dl_bytes, "download_pct": round(100 * dl_bytes / max(1, total_b)),
+        "changed_packages_from_chunks": pkgs,
+        "changed_chunks": [{"components": l["components"], "size": l["size"],
+                            "stability": l["stability"]} for l in changed],
+    }
+
+
+def _epoch(e: dict) -> str:
+    """The epoch as rpm reads it: a package without the tag and one that says
+    `Epoch: 0` are at the same epoch (evr_cmp() already compares them equal)."""
+    return str(e.get("epoch") or "0")
+
+
+def _evr_tuple(e: dict) -> tuple:
+    """(epoch, version, release) as strings - the full comparison identity.
+
+    Comparing `nvr` strings instead would make an epoch-only change invisible:
+    neither nvr nor evr carries the epoch, so a package going 0:1.2-3 -> 1:1.2-3
+    (rare, but it happens when Fedora introduces an epoch) silently dropped out
+    of the diff entirely.
+    """
+    return (_epoch(e), e.get("version", ""), e.get("release", ""))
+
+
+def pkg_diff(pa: dict, pb: dict) -> dict:
+    changed = []
+    keys_a, keys_b = set(pa), set(pb)
+    common = keys_a & keys_b
+    for n in sorted(common):
+        x, y = pa[n], pb[n]
+        if _evr_tuple(x) == _evr_tuple(y):
+            continue
+        d = evr_cmp(x, y)
+        # "rebuild" is now only reachable for equal-comparing but differently
+        # spelled EVRs (e.g. 1.0 vs 1.00); with the tuple check above, identical
+        # (epoch, version, release) never gets here at all.
+        changed.append({"name": n, "old": x, "new": y, "src": y["src"],
+                        "dir": "downgrade" if d > 0 else "upgrade" if d < 0 else "rebuild"})
+    return {
+        "added": sorted(keys_b - keys_a),
+        "removed": sorted(keys_a - keys_b),
+        "changed": changed,
+        "downgrades": [c for c in changed if c["dir"] == "downgrade"],
+        "count_a": len(pa), "count_b": len(pb),
+        "unchanged_count": len(common) - len(changed),
+    }
+
+
+def crosscheck_chunks(ldiff: dict, diff: dict, src_of: dict | None = None,
+                      versions_known: bool = True) -> dict:
+    """Chunks moved but the NEVRA did not change => silent rebuild (kernel hardening
+    bumps, rpm macros, file ordering...). Explains '700 MB and nothing changed'.
+
+    versions_known=False means manifest-only mode: the rpmdb was never fetched, so
+    there is no basis for claiming any package kept its version. In that case
+    silent_rebuilds stays empty - asserting "rebuilt with the same version" from
+    chunk digests alone is exactly the wrong conclusion (a kernel that went
+    7.2.4 -> 7.2.5 also sits in a changed single-package chunk).
+    """
+    src_of = src_of or {}
+    nonpkg = [{"components": ch["components"], "size": ch["size"]}
+              for ch in ldiff["changed_chunks"]
+              if all(not c.startswith("rpm/") for c in ch["components"])]
+    out = {"non_package_chunks": nonpkg,
+           "non_package_bytes": sum(x["size"] for x in nonpkg),
+           "versions_known": versions_known,
+           "silent_rebuilds": []}
+    if not versions_known:
+        return out
+    changed_versions = {c["name"] for c in diff["changed"]}
+    changed_src = {c["src"] for c in diff["changed"]}
+    # A package this update adds or removes moves its source's chunk as well. That
+    # is a package-set change, not a rebuild "with the same version" - a brand-new
+    # package sitting in a chunk of its own used to be listed as silently rebuilt.
+    for n in (diff.get("added") or []) + (diff.get("removed") or []):
+        changed_versions.add(n)
+        if src_of.get(n):
+            changed_src.add(src_of[n])
+    by_size: dict = {}
+    for ch in ldiff["changed_chunks"]:
+        pk = [c[4:] for c in ch["components"] if c.startswith("rpm/")]
+        if not pk:
+            continue
+        # only single-package chunks give an unambiguous verdict; in a bundled chunk a
+        # changed digest may be caused by any one of its members
+        if len(ch["components"]) != 1:
+            continue
+        n = pk[0]
+        if n in changed_versions or n in changed_src or src_of.get(n) in changed_src:
+            continue
+        by_size[n] = max(by_size.get(n, 0), ch["size"])
+    out["silent_rebuilds"] = sorted(by_size.items(), key=lambda kv: -kv[1])
+    return out
+
+
+def fedora_release(pkgs: dict, image_version: str = "") -> str:
+    """Bodhi release id ("F44") for this image.
+
+    Read from the packages themselves; the image version annotation
+    ("44.20260917.0") is only a fallback, so this stops silently going stale at
+    the next Fedora release instead of being pinned to one hard-coded value.
+    """
+    counts: dict = {}
+    for p in pkgs.values():
+        m = re.search(r"\.fc(\d+)", p["release"])
+        if m:
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+    if counts:
+        return "F" + max(counts, key=counts.get)
+    m = re.match(r"^(\d+)\.", image_version or "")
+    if m:
+        return "F" + m.group(1)
+    return ""
+
+
+# --------------------------------------------------------------------------- #
+# secureblue's own notification rule
+# --------------------------------------------------------------------------- #
+# Reproduced from files/system/desktop/usr/libexec/secureblue/security-update-
+# notification (secureblue/secureblue).  That script reads
+# `rpm-ostree status --json | jq '."cached-update"'` and decides:
+#
+#   MAJOR  ("A major security vulnerability has been patched", urgency=critical):
+#       'trivalent' in .rpm-diff.upgraded[][1]  OR  max_advisory_severity == critical
+#   NORMAL ("A security vulnerability has been patched", urgency=normal):
+#       'kernel'    in .rpm-diff.upgraded[][1]  OR  max_advisory_severity in
+#                                                   {important, unknown}
+#   else: no notification at all.
+#
+# .rpm-diff.upgraded is GVariant "a(us(ss)(ss))", i.e. JSON
+# [[type, NAME, [evr, arch], [evr, arch]], ...] - index 1 is the package NAME
+# (rpm-ostree's own sort_pkgvariant_by_name() reads child 1 as the name), and
+# the script matches it *literally* against `kernel` / `trivalent`.
+#
+# max_advisory_severity is `[.advisories[]? | select(.[1] == 1) | .[2]] | max`.
+# Field 1 is DnfAdvisoryKind, where SECURITY == 1 (libdnf dnf-advisory.h:
+# UNKNOWN=0, SECURITY=1, BUGFIX=2, ENHANCEMENT=3, NEWPACKAGE=4).  Field 2 is
+# RpmOstreeAdvisorySeverity, produced by str2severity() in rpm-ostree's
+# src/libpriv/rpmostree-rpm-util.cxx - which recognises ONLY the RHEL spellings
+# LOW / MODERATE / IMPORTANT / CRITICAL and returns NONE (0) for everything
+# else, including NULL.  secureblue's `case` has no arm for 0, so 0 falls into
+# `*)` and becomes 'unknown' - which the NORMAL branch acts on.
+#
+# The severity input is NOT the Bodhi API word (unspecified/low/medium/high/
+# urgent - none of which str2severity() recognises).  Bodhi already translates
+# it before publishing: metadata.py writes the updateinfo <severity> *child
+# element* via util.severity_updateinfo_str() ({unspecified: None, low: Low,
+# medium: Moderate, high: Important, urgent: Critical} - exactly str2severity()'s
+# vocabulary), and libsolv's updateinfo parser reads that child element
+# (ext/repo_updateinfoxml.c: { STATE_UPDATE, "severity", STATE_SEVERITY, 1 }).
+# The earlier "Fedora publishes no severity" conclusion came from counting
+# `severity=` *attributes* - attributes are indeed absent, but the value lives
+# in the child element, and the child element is what dnf_advisory_get_severity()
+# returns.  Measured on the live mirror 2026-09-24: all 2979 <update> entries in
+# the F44 updates repo carry a <severity> child (None=2326, Low=259,
+# Moderate=254, Important=125, Critical=15; among type=security: Important=112,
+# Moderate=165, Low=58, None=38, Critical=13, incl. chromium
+# FEDORA-2026-f910229c11 issued 2026-09-22) - and bodhi#2099 ("Include update
+# severity level in updateinfo.xml") has been closed since 2018-01-16.  So on
+# Fedora the effective table is:
+#   urgent      -> Critical(4)  -> MAJOR    (trivalent is NOT the only trigger)
+#   high        -> Important(3) -> 'important' -> NORMAL
+#   medium      -> Moderate(2)  -> 'moderate' -> no case arm -> SILENT
+#   low         -> Low(1)       -> 'low'      -> no case arm -> SILENT
+#   unspecified -> None(0)      -> 'unknown'  -> NORMAL
+RPMOSTREE_SEVERITY = {"low": 1, "moderate": 2, "important": 3, "critical": 4}
+
+# bodhi-server/bodhi/server/util.py: severity_updateinfo_str() - the translation
+# Bodhi applies when writing the updateinfo <severity> child element.  This is
+# the string libsolv, and therefore rpm-ostree, actually sees; the get(...,
+# "None") fallback matches Bodhi's own severity_map.get(value, "None").
+BODHI_TO_UPDATEINFO_SEVERITY = {"unspecified": "None", "low": "Low",
+                                "medium": "Moderate", "high": "Important",
+                                "urgent": "Critical"}
+
+
+def bodhi_severity_as_updateinfo(s) -> str:
+    """The updateinfo <severity> spelling for a Bodhi API severity word.
+
+    Feeding the raw Bodhi word into rpmostree_str2severity() instead would
+    mis-predict in both directions: 'urgent' (in reality Critical -> MAJOR)
+    would under-predict to 'unknown' -> NORMAL, and 'medium' (in reality
+    Moderate -> no case arm -> silent) would over-predict to 'unknown' ->
+    NORMAL.
+    """
+    return BODHI_TO_UPDATEINFO_SEVERITY.get(str(s or "").strip().lower(), "None")
+
+
+def rpmostree_str2severity(s) -> int:
+    """rpm-ostree str2severity(): RHEL spellings only, everything else -> 0.
+
+    Deliberately NOT SEV_RANK, and deliberately fed the *updateinfo* spelling
+    (bodhi_severity_as_updateinfo), never the raw Bodhi API word: 'urgent' /
+    'high' / ... mean nothing to rpm-ostree, but Bodhi never shows rpm-ostree
+    those words - it publishes the RHEL spellings, which DO rank.
+    """
+    if not s:
+        return 0
+    return RPMOSTREE_SEVERITY.get(str(s).strip().lower(), 0)
+
+
+def _sev_rank_for_upstream(s) -> int:
+    """str2severity() with a distinct floor for 'nothing recorded yet'.
+
+    A group starts at "" and 'None' ranks 0, so picking a max with 0 as the
+    empty-set value would let the untouched "" tie against the first recorded
+    'None' and later severities would never replace it.
+    """
+    return -1 if not s else rpmostree_str2severity(s)
+
+
+def secureblue_notification(diff: dict, groups: list | None = None) -> dict:
+    """Which notification (if any) secureblue will pop after this update.
+
+    Uses the *binary package names* that actually moved, exactly as rpm-ostree's
+    rpm-diff does.  The `ostree.linux` annotation is not usable for this: it is
+    written by the base compose and does not follow secureblue's own kernel
+    rebuilds - on 44.20260922.0 -> 44.20260923.0 both images report
+    `ostree.linux = 7.2.6-200.fc44.x86_64` while the kernel package really went
+    7.2.6-200.secureblue.3.fc44 -> 7.2.7-200.secureblue.1.fc44.
+    """
+    changed = diff.get("changed") or []
+    if groups is None:
+        # group_by_src() needs full NEVRA fixtures; the erratum signal only
+        # exists once classify_change() has run, so derive groups lazily.
+        groups = group_by_src(changed) if any(c.get("cls") for c in changed) else []
+    # rpm-ostree's .rpm-diff.upgraded holds upgrades only; downgrades and rebuilds
+    # are not in upgraded (upgraded packages only).
+    upgraded = {c["name"] for c in (diff.get("changed") or [])
+                if c.get("dir") == "upgrade" or (c.get("dir") is None and c.get("name"))}
+    kernel_updated = "kernel" in upgraded
+    trivalent_updated = "trivalent" in upgraded
+
+    # Only errata that (a) shipped a build in THIS image, (b) are type=security and
+    # (c) matched this package's release string *exactly* reach .advisories, so
+    # only those count.  `cls` enforces all three (PUSHED_STATUSES + hit_attached);
+    # `erratum_severity` is only ever set on such a match, so a Fedora erratum
+    # matched after stripping `.secureblue.N` cannot inflate the prediction.
+    sevs = [rpmostree_str2severity((g.get("erratum_severity") or "")) for g in groups
+            if g.get("has_security_erratum")]
+    # Only packages whose version moved are looked up: rpm_diff_add_db_diff() in
+    # rpmostreed-deployment-utils.cxx hands rpmostree_advisories_variant() the new
+    # side of the *modified* packages (upgraded and downgraded). One the update
+    # merely adds goes to .rpm-diff.added and is never asked about, so its
+    # erratum cannot pop a notification.
+    max_sev_int = max(sevs) if sevs else None
+    max_sev = ("none" if max_sev_int is None else
+               {1: "low", 2: "moderate", 3: "important", 4: "critical"}.get(
+                   max_sev_int, "unknown"))
+
+    if trivalent_updated or max_sev == "critical":
+        level, msg = "major", "A major security vulnerability has been patched"
+    elif kernel_updated or max_sev in ("important", "unknown"):
+        level, msg = "normal", "A security vulnerability has been patched"
+    else:
+        level, msg = "none", None
+    # .advisories only exists where rpm-ostree held rpm-md metadata for the update:
+    # rpmostreed_update_generate_variant() computes it under `if (sack && ...)`, and
+    # the upgrader keeps a sack only when the origin has packages
+    # (prep_local_assembly(): rpmostree_origin_has_any_packages). A stock system
+    # gets no list at all, the script reads its maximum as `none`, and only the
+    # kernel / trivalent arms can fire there.
+    stock = "major" if trivalent_updated else "normal" if kernel_updated else "none"
+    why = []
+    why_zh = []
+    if trivalent_updated:
+        why.append("trivalent upgraded (secureblue treats every Trivalent bump as major: "
+                   "Trivalent is rebuilt when upstream Chromium CVEs land)")
+        why_zh.append("trivalent 已升级（secureblue 将任何 Trivalent 更新视为重大：在上游 Chromium 修复 CVE 时重新编译）")
+    if kernel_updated:
+        why.append("kernel upgraded")
+        why_zh.append("内核已升级")
+    if max_sev in ("critical", "important", "unknown"):
+        why.append(f"security advisory with rpm-ostree severity '{max_sev}'")
+        why_zh.append(f"存在 rpm-ostree 严重等级为 '{max_sev}' 的安全勘误")
+    return {"level": level, "message": msg, "max_advisory_severity": max_sev,
+            "kernel_updated": kernel_updated, "trivalent_updated": trivalent_updated,
+            "security_advisory_count": len(sevs),
+            "level_without_advisories": stock, "advisory_driven": stock != level,
+            "severity_basis": ("rpm-ostree .advisories: released security errata whose "
+                               "EVR matches a package in the new image exactly; errata "
+                               "matched only after stripping .secureblue.N are excluded"),
+            "why": why, "why_zh": why_zh}
+
+
+def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
+               backlog: list | None = None, bodhi_state: dict | None = None,
+               groups: list | None = None) -> dict:
+    """Turn the raw diff into a recommendation. Grouped by *source* package so that a
+    21-subpackage linux-firmware bump is not counted as 21 separate events.
+    Bilingual: sets headline (English) and headline_zh (中文).
+
+    `groups` is group_by_src(diff["changed"]) when the caller already has it: the
+    report renders the very same groups, so do_diff() builds them once for both."""
+    xc = xc or {}
+    if groups is None:
+        groups = group_by_src(diff["changed"])
+    sec = [g for g in groups if g["security"] and not g["downgrade"]]
+    down = [g for g in groups if g["downgrade"]]
+    lost = [g for g in groups if g["dropped"]]
+    # Same partition as the report's "Bumps in security-sensitive packages"
+    # section: a downgraded group belongs to the downgrade warning below, and
+    # calling it a "version bump" in the same headline contradicted that warning.
+    imp = [g for g in groups if g["important"] and not g["security"] and not g["downgrade"]]
+    cves = sorted({c for g in sec for c in g["cves"]})
+    sev = max([g["sev_rank"] for g in sec] or [0])
+    # `kernel` as a *binary package that actually moved* - the same test
+    # secureblue runs against .rpm-diff.upgraded.  The ostree.linux annotation is
+    # kept only as corroboration: it records the kernel from the base compose and
+    # does not move when secureblue rebuilds the kernel with a .secureblue.N
+    # release, which is the common case (44.20260922.0 -> 44.20260923.0 carries an
+    # identical ostree.linux while kernel went 7.2.6 -> 7.2.7).
+    def _evidence(g: dict) -> str:
+        """What the security classification for this source package rests on."""
+        if g.get("has_security_erratum"):
+            return "security erratum 安全勘误"
+        if g.get("advisory_corresponding"):
+            return "corresponding Fedora erratum 对应 Fedora 勘误（归一化匹配）"
+        if g.get("passed_over"):
+            return "security erratum of a passed-over build 被越过构建的安全勘误"
+        # Anything else that set `security` is a released erratum of another
+        # type (bugfix, enhancement) listing CVE ids or ranking high/urgent,
+        # and calling that a changelog CVE named evidence the rpmdb never
+        # showed. `aliases` holds only such released errata, so a group
+        # without one can only have got its flag from the changelog.
+        if g.get("changelog_cves") or not g.get("aliases"):
+            return "changelog CVE 更新日志 CVE"
+        return ("non-security erratum (CVE ids or high severity) "
+                "非安全类勘误（含 CVE 或高严重度）")
+
+    moved_names = {c["name"] for c in diff["changed"] if c.get("dir") != "downgrade"}
+    kernel_in_diff = "kernel" in moved_names
+    kernel_annot_moved = bool(meta.get("kernel_a")) and \
+        meta.get("kernel_a") != meta.get("kernel_b")
+    # ostree.linux describes the Fedora base compose. When the rpmdb shows the
+    # `kernel` package itself at one EVR on both sides, a moved annotation is the
+    # base's kernel changing underneath an untouched secureblue kernel
+    # (45.20261110.0 -> 45.20261111.0: ostree.linux 7.2.15 -> 7.3.3 and
+    # kernel-tools with it, kernel 7.3.3-300.secureblue.2 in both) - and "the
+    # kernel moved" was reported for an update that did not touch it.
+    kernel_moved = kernel_in_diff or (kernel_annot_moved
+                                      and not meta.get("kernel_pkg_unchanged"))
+    sbn = secureblue_notification(diff, groups)
+    if diff.get("count_a") == "?" and not diff.get("same_rpmdb"):
+        # manifest-only mode (--exact 0): no rpmdb was read, so the package set
+        # is unknown and "no notification" would be an unfounded claim.
+        # Every input of the prediction is unknown as well: `False` / `none` for
+        # them read as "the kernel did not move, no advisory" - a claim.
+        sbn = dict(sbn, level="unknown", message=None, why=[], why_zh=[],
+                   kernel_updated=None, trivalent_updated=None,
+                   max_advisory_severity=None, security_advisory_count=None,
+                   level_without_advisories="unknown", advisory_driven=False,
+                   note="package versions were not read (--exact 0), so the "
+                        "notification cannot be predicted")
+    silent = xc.get("silent_rebuilds") or []
+    # The whole list, not the first 60 entries: silent_rebuilds is sorted by chunk
+    # size, and the packages that matter here (kernel, glibc, ...) are exactly the
+    # ones a truncation drops.
+    # _src_matches_pool, not a bare `in`: a chunk is named after its source
+    # package, so the interpreter arrives here as python3.14, not python3.
+    silent_key = [n for n, _ in silent
+                  if n.startswith("kernel") or _src_matches_pool(n, IMPORTANT_SRC)]
+    n_bin = len(diff["changed"])
+    v = {"level": "skip", "headline": "", "headline_zh": "", "changed_src_count": len(groups),
+         "changed_pkg_count": n_bin, "security_src": [g["src"] for g in sec],
+         "security_pkgs": sorted({p["name"] for g in sec for p in g["pkgs"]}),
+         "important_pkgs": sorted({p["name"] for g in imp for p in g["pkgs"]}),
+         "cves": cves, "cves_dropped": sorted({c for g in lost for c in g["dropped"]}),
+         "downgrades": [g["src"] for g in down], "severity_rank": sev,
+         "kernel_changed": kernel_moved, "kernel_in_diff": kernel_in_diff,
+         "kernel_annotation_changed": kernel_annot_moved,
+         "secureblue_notification": sbn, "silent_rebuilds": [n for n, _ in silent],
+         "silent_important": silent_key, "non_package_bytes": xc.get("non_package_bytes", 0),
+         "download_human": human(ldiff["download_bytes"]),
+         "backlog_count": len(backlog or [])}
+    same_input = bool(meta.get("inputhash_a")) and meta["inputhash_a"] == meta.get("inputhash_b")
+    same_commit = bool(meta.get("commit_a")) and meta["commit_a"] == meta.get("commit_b")
+    v["same_inputhash"] = same_input
+    v["same_commit"] = same_commit
+    v["already_had"] = sorted({x["alias"] for g in groups for x in g.get("already_had", [])})
+    # what each security finding rests on: an advisory rpm-ostree would show, a
+    # Fedora erratum that only matched after stripping .secureblue.N, or just a
+    # changelog CVE mention. The distinction used to be invisible outside the
+    # prose in `why`.
+    v["security_basis"] = {g["src"]: _evidence(g) for g in sec}
+    # `no-change` may only be claimed when nothing in the package set moved.
+    # inputhash is not sufficient evidence on its own: 44.20260922.0 and
+    # 44.20260923.0 carry the SAME rpmostree.inputhash (4fde5b5a8c4f...) while
+    # kernel, kernel-core, kernel-modules{,-core,-extra}, hardened_malloc and
+    # trivalent all moved - secureblue pops a MAJOR notification for that pair,
+    # yet the old guard (same_input and not sec/down/lost) answered "updating
+    # would re-download X for no new content" whenever the kernel carried no
+    # matching erratum.
+    pkg_set_moved = bool(diff["changed"] or diff["added"] or diff["removed"])
+    v["same_inputhash_but_packages_moved"] = same_input and pkg_set_moved
+    # `no-change` additionally requires that package versions were actually read.
+    # In manifest-only mode (--exact 0) `changed` is empty by construction, not
+    # because nothing moved - without this guard the verdict asserted "no package
+    # changed in the rpmdb" for a 40-chunk / 900 MiB delta that had never been
+    # inspected. `count_a == "?"` is the marker do_diff() sets for that mode.
+    versions_known = diff.get("count_a") != "?" or bool(diff.get("same_rpmdb"))
+    v["package_versions_known"] = versions_known
+    # `no-change` is a branch, not an early return: everything that follows (the
+    # secureblue-notification annotation, the downgrade warning, the Bodhi coverage
+    # CAUTION, the backlog note) applies to every level, and returning here used to
+    # skip all of it.
+    no_change = versions_known and not pkg_set_moved and not sec and not down and not lost
+    if no_change:
+        v["level"] = "no-change"
+        # every chunk that moved, not just the single-package ones that
+        # crosscheck_chunks() could name as silent rebuilds
+        nchunks = len(ldiff.get("changed_chunks") or [])
+        cnt_info = f"{diff.get('count_b')} packages compared" if diff.get("count_b") != "?" else "identical rpmdb chunk digest"
+        cnt_info_zh = f"共比对 {diff.get('count_b')} 个包" if diff.get("count_b") != "?" else "rpmdb chunk 摘要完全一致"
+        ev = (f"no package changed in the rpmdb "
+              f"({cnt_info}); the {nchunks} moved "
+              f"chunk(s) carry no new package content")
+        ev_zh = (f"rpmdb 中没有任何软件包发生变化（{cnt_info_zh}）；"
+                 f"{nchunks} 个变化的 chunk 不含新的软件包内容")
+        v["headline"] = (f"{ev}. Updating would re-download {v['download_human']} "
+                         f"for no new package content")
+        v["headline_zh"] = (f"{ev_zh}。更新需重新下载 {v['download_human']}，"
+                            f"不会带来新的软件包内容")
+        # "Rebuild only" was a guess. Files no package owns travel in
+        # `chunkah/unclaimed`, secureblue's own configuration among them, and nothing
+        # here looks inside that chunk: 45.20261114.0 was rebuilt for an edit to
+        # hardening.conf and its report was badged "REBUILD ONLY - SKIP".
+        loose = sum(ch["size"] for ch in ldiff.get("changed_chunks") or []
+                    if "chunkah/unclaimed" in (ch.get("components") or []))
+        if loose:
+            v["headline"] += (f". Not inspected: {human(loose)} of files that no package "
+                              f"owns (chunkah/unclaimed, secureblue's own configuration "
+                              f"among them) changed as well")
+            v["headline_zh"] += (f"。未检查：另有 {human(loose)} 不属于任何软件包的文件"
+                                 f"（chunkah/unclaimed，secureblue 自己的配置就在其中）发生了变化")
+    elif sec:
+        v["level"] = "update-now"
+        # Two separate renderings: the trivia (", " vs "，", the count wording)
+        # differ per language, and a shared string could only ever be right for one.
+        top_en = clip_list(
+            sec, HEADLINE_GROUP_CAP,
+            render=lambda g: f"{g['src']} "
+                             f"({clip_list(g['cves'], HEADLINE_CVE_CAP) or _evidence(g)})")
+        top_zh = clip_list(
+            sec, HEADLINE_GROUP_CAP, joiner="，", lang="zh",
+            render=lambda g: f"{g['src']} "
+                             f"（{clip_list(g['cves'], HEADLINE_CVE_CAP, lang='zh') or _evidence(g)}）")
+        v["headline"] = (f"{plural(len(sec), 'source package')} "
+                         f"{'gains' if len(sec) == 1 else 'gain'} security fixes: {top_en}"
+                         + (f" — {len(cves)} CVE(s) total" if cves else "")
+                         + (". Kernel version also changed" if kernel_moved else ""))
+        v["headline_zh"] = (f"{len(sec)} 个源码包获得安全修复：{top_zh}"
+                            + (f" —— 共 {len(cves)} 个 CVE" if cves else "")
+                            + ("；内核版本也已变化" if kernel_moved else ""))
+        if sev >= 3:
+            v["headline"] = "HIGH/CRITICAL severity fix present. " + v["headline"]
+            v["headline_zh"] = "存在 HIGH/CRITICAL（高/严重）级别修复。" + v["headline_zh"]
+    elif kernel_moved or imp or silent_key:
+        v["level"] = "consider"
+        bits, bits_zh = [], []
+        if kernel_moved:
+            # Prefer the real package EVR; the ostree.linux annotation can be
+            # absent or stale (see kernel_in_diff above).
+            kg = next((g for g in groups if g["src"] == "kernel"), None)
+            if kg:
+                ktxt, ktxt_zh = f"kernel {kg['old_evr']} → {kg['new_evr']}", \
+                                f"内核 kernel {kg['old_evr']} → {kg['new_evr']}"
+            else:
+                ka, kb = meta.get("kernel_a") or "?", meta.get("kernel_b") or "?"
+                ktxt = f"kernel {ka} → {kb}"
+                ktxt_zh = f"内核 kernel {ka} → {kb}"
+            bits.append(ktxt)
+            bits_zh.append(ktxt_zh)
+        if imp:
+            imp_names = [g["src"] for g in imp]
+            bits.append("version bump in security-sensitive packages: "
+                        + clip_list(imp_names, 5))
+            bits_zh.append("安全敏感软件包版本升级："
+                           + clip_list(imp_names, 5, lang="zh", joiner="，"))
+        if silent_key:
+            bits.append("rebuilt (identical version): " + clip_list(silent_key, 5))
+            bits_zh.append("重建（版本相同）："
+                           + clip_list(silent_key, 5, lang="zh", joiner="，"))
+        v["headline"] = ("no CVE/erratum found for this delta, but " + "; ".join(bits)
+                         + ". Reasonable to skip if the download matters to you")
+        v["headline_zh"] = ("此差异未发现 CVE/勘误，但涉及：" + "；".join(bits_zh)
+                            + "。如果下载量对你很重要，可以合理地跳过")
+    else:
+        tail = tail_zh = ""
+        if v["non_package_bytes"]:
+            tail = (f"; {human(v['non_package_bytes'])} of the download is non-package churn "
+                    f"(initramfs / ostree metadata)")
+            tail_zh = (f"；下载中有 {human(v['non_package_bytes'])} 属于非软件包内容"
+                       f"（initramfs / ostree 元数据）")
+        v["level"] = "skip"
+        v["headline"] = (f"routine churn: {plural(len(groups), 'source package')} "
+                         f"({n_bin} binary) bumped, {len(diff['added'])} added / "
+                         f"{len(diff['removed'])} removed, no CVE and no security erratum"
+                         + (f", {len(silent)} chunk(s) rebuilt with identical versions" if silent else "")
+                         + tail)
+        v["headline_zh"] = (f"常规更新：{len(groups)} 个源码包（{n_bin} 个二进制包）升级，"
+                            f"新增 {len(diff['added'])} 个 / 移除 {len(diff['removed'])} 个，"
+                            "无 CVE、无安全勘误"
+                            + (f"，{len(silent)} 个 chunk 以相同版本重建" if silent else "")
+                            + tail_zh)
+    # --- what secureblue's desktop will actually do ------------------------- #
+    # This is orthogonal to the levels above: `update-now`/`consider`/`skip` is
+    # sbwatch's own advice, while `secureblue_notification` is a prediction of
+    # the popup the user will see.  A MAJOR popup (urgency=critical, Reboot
+    # action) means the vendor considers this update urgent, so it must not sit
+    # in `consider` or below - notably, every Trivalent bump lands here even when
+    # it carries no CVE and no Fedora erratum at all (Trivalent has no Fedora
+    # counterpart, so no Bodhi match is possible by construction).
+    if sbn["level"] == "major" and v["level"] not in ("update-now", "no-change"):
+        was = v["level"]
+        v["level"] = "update-now"
+        v["escalated_by_secureblue_rule"] = was
+        if was == "skip":
+            # "routine churn ... no CVE and no security erratum" would directly
+            # contradict the escalated level and the popup prediction below.
+            v["headline"] = ("secureblue escalates this to major despite no CVE and no "
+                             "Fedora erratum being attributable to it. Was: " + v["headline"])
+            v["headline_zh"] = ("尽管无法归因到任何 CVE 或 Fedora 勘误，secureblue 仍将其判定为"
+                                "重大更新。原判：" + v["headline_zh"])
+        elif was == "consider":
+            # Strip "Reasonable to skip" recommendation since it contradicts update-now
+            for phrase in [". Reasonable to skip if the download matters to you", "Reasonable to skip if the download matters to you"]:
+                v["headline"] = v["headline"].replace(phrase, "")
+            for phrase in ["。如果下载量对你很重要，可以合理地跳过", "如果下载量对你很重要，可以合理地跳过"]:
+                v["headline_zh"] = v["headline_zh"].replace(phrase, "")
+            v["headline"] = ("secureblue escalates this to major: " + v["headline"].strip())
+            v["headline_zh"] = ("secureblue 将此更新上调为重大更新：" + v["headline_zh"].strip())
+    if sbn["message"]:
+        tag = "MAJOR" if sbn["level"] == "major" else "normal"
+        v["headline"] += (f" | secureblue will show a {tag} notification: "
+                          f"\"{sbn['message']}\" "
+                          f"(because: {'; '.join(sbn['why'])})")
+        tag_zh = "「重大 / major」" if sbn["level"] == "major" else "「普通 / normal」"
+        reasons_zh = sbn.get("why_zh") or sbn.get("why") or []
+        v["headline_zh"] += (f" ｜ secureblue 将弹出{tag_zh}通知："
+                             f"「{sbn['message']}」"
+                             f"（触发原因：{'；'.join(reasons_zh)}）")
+        if sbn.get("advisory_driven"):
+            # the advisory arm needs rpm-md metadata: see secureblue_notification()
+            kernel_only = sbn.get("level_without_advisories") == "normal"
+            v["headline"] += (" - only where rpm-ostree computes advisories, i.e. with "
+                              "layered packages; a stock system gets "
+                              + ("the normal notification for the kernel alone"
+                                 if kernel_only else "no notification"))
+            v["headline_zh"] += ("——仅限 rpm-ostree 会计算勘误的系统，即叠加了软件包的系统；默认安装"
+                                 + ("只因内核升级弹出普通通知" if kernel_only else "不弹通知"))
+    if v["same_inputhash_but_packages_moved"]:
+        n_moved = n_bin + len(diff["added"]) + len(diff["removed"])
+        v["headline"] += (" | NOTE: rpmostree.inputhash is identical on both images yet "
+                          f"{n_moved} package(s) moved - do not treat inputhash as evidence "
+                          "of a no-op")
+        v["headline_zh"] += (f" ｜ 注意：两个镜像的 rpmostree.inputhash 相同，却有 {n_moved} 个"
+                             "软件包发生了变化——不要拿 inputhash 当作「无变化」的证据")
+    if down:
+        def _dl(g):
+            return f"{g['src']} ({g['old_evr']} → {g['new_evr']})"
+
+        dl_txt = clip_list(down, 3, render=_dl)
+        dl_txt_zh = clip_list(down, 3, render=_dl, lang="zh", joiner="，")
+        v["headline"] += (" | WARNING: this update downgrades " + dl_txt)
+        v["headline_zh"] += (" ｜ 警告：此次更新会降级 " + dl_txt_zh)
+        # A version that went backwards is evidence (the rpmdb says so). The
+        # changelog-based `cves_dropped` below is not, which is why only this one
+        # is allowed to raise the level.
+        if v["level"] == "skip":
+            v["level"] = "consider"
+    coverage_gap = False
+    if bodhi_state:
+        bad, miss = bodhi_state.get("failed", 0), bodhi_state.get("skipped", 0)
+        trunc = len(bodhi_state.get("truncated") or [])
+        off = bodhi_state.get("disabled", 0)
+        unavailable = bodhi_state.get("unavailable", 0)
+        if bad or miss or trunc or off or unavailable:
+            coverage_gap = True
+            why, why_zh = [], []
+            if off:
+                why.append("Bodhi lookups were disabled (--no-bodhi)")
+                why_zh.append("Bodhi 查询已被禁用 (--no-bodhi)")
+            if unavailable:
+                # distinct from --no-bodhi: the user did not ask for this, the
+                # release could not be derived from the package list
+                why.append("no Fedora release could be derived from the package list, so "
+                           "no Fedora erratum could be queried at all")
+                why_zh.append("无法从软件包列表推断 Fedora 版本，因此根本无法查询任何 Fedora 勘误")
+            if bad:
+                why.append(f"{bad} Bodhi query(ies) failed")
+                why_zh.append(f"{bad} 次 Bodhi 查询失败")
+            if miss:
+                why.append(f"{miss} package(s) were not queried (--max-bodhi)")
+                why_zh.append(f"{miss} 个软件包未被查询 (--max-bodhi)")
+            if trunc:
+                why.append(f"errata list truncated for {trunc} package(s)")
+                why_zh.append(f"{trunc} 个软件包的勘误列表被截断")
+            v["headline"] += " | CAUTION: errata coverage incomplete - " + "; ".join(why) \
+                             + ", so 'no security fixes' is not proven"
+            v["headline_zh"] += " ｜ 注意：勘误覆盖不完整 —— " + "；".join(why_zh) \
+                                + "，因此“无安全修复”并未被证实"
+            if v["level"] == "skip":
+                v["level"] = "consider"
+    if v["cves_dropped"]:
+        drop_txt = clip_list(v["cves_dropped"], 6)
+        drop_txt_zh = clip_list(v["cves_dropped"], 6, lang="zh", joiner="，")
+        # CVE ids that were in the old changelog and are not in the new one usually
+        # mean the maintainer (or Fedora's changelog trimming) removed the entry -
+        # the version still moved forward. Reporting it is useful; treating it as
+        # "this update removes fixes" and escalating on it is not.
+        v["headline"] += (" | note: these CVE ids are no longer mentioned by the new "
+                          "changelogs: " + drop_txt + " (usually a changelog edit rather "
+                          "than a lost fix - a real revert shows up as a downgrade)")
+        v["headline_zh"] += (" ｜ 提示：以下 CVE 编号在新版更新日志中不再出现：" + drop_txt_zh
+                             + "（通常是更新日志被编辑，而非修复被移除——真正的回退会表现为降级）")
+    # The backlog can still raise the level, so settle it before level_basis
+    # below describes that level - computed afterwards, a backlog-raised
+    # `consider` kept the basis of the `skip` it replaced.
+    hi = []
+    if backlog:
+        hi = [r for r in backlog if (r.get("severity") or "").lower() in
+              ("critical", "important", "high", "urgent")]
+        if hi and v["level"] not in ("update-now", "no-change"):
+            v["level"] = "consider"
+        v["headline"] += (f" | note: the image still misses {len(backlog)} published stable "
+                          f"security update(s){' (' + str(len(hi)) + ' important+)' if hi else ''}")
+        v["headline_zh"] += (f" ｜ 提示：该镜像仍缺少 {len(backlog)} 个已发布的 stable 安全更新"
+                             f"{'（其中 ' + str(len(hi)) + ' 个为重要及以上级别）' if hi else ''}")
+    # One machine-readable sentence on why this level was chosen. The prose
+    # headline explains it too, but consumers of report.md.json / GITHUB_OUTPUT
+    # should not have to parse prose to find out what moved the verdict.
+    if not v.get("level_basis"):
+        bits = []
+        if v["level"] == "update-now":
+            if sec:
+                bits.append(f"{len(sec)} source package(s) carry security evidence")
+            if v["severity_rank"] >= 3:
+                bits.append(f"a released security erratum ranks {v['severity_rank']}/4 "
+                            f"under Fedora's scale")
+            if sbn.get("level") == "major":
+                bits.append("secureblue's own notification rule classifies this as major")
+            if kernel_moved:
+                bits.append("the kernel moved")
+        elif v["level"] == "consider":
+            if kernel_moved:
+                bits.append("the kernel moved")
+            if imp:
+                bits.append(f"{len(imp)} security-sensitive package(s) were bumped")
+            if v["silent_important"]:
+                bits.append("security-relevant packages were rebuilt at the same version")
+            if v["downgrades"]:
+                bits.append(f"{len(v['downgrades'])} package(s) were downgraded")
+            if coverage_gap:
+                bits.append("errata coverage is incomplete, so 'no security fixes' is "
+                            "not proven")
+            if hi:
+                bits.append(f"the image still misses {len(hi)} important+ published "
+                            f"stable security update(s)")
+        elif v["level"] == "no-change":
+            bits.append("no package in the rpmdb changed")
+        elif v["level"] == "skip":
+            bits.append("packages changed, but no CVE, erratum or sensitive package moved")
+        v["level_basis"] = "; ".join(bits)
+    return v
+
+
+# --------------------------------------------------------------------------- #
+# report
+# --------------------------------------------------------------------------- #
+# Per-language badges only. There used to be a third, merged `ICON` dict here as a
+# fallback; ICON_ZH/ICON_EN cover every key, so it was unreachable - and this file
+# has a test group (D) whose whole point is that unreachable code must not linger.
+ICON_ZH = {"update-now": "[!] 立即更新",
+           "consider": "[~] 可选更新",
+           "skip": "[ok] 可跳过",
+           "no-change": "[ok] 软件包无变化",
+           "no-update": "[ok] 无新构建",
+           "unknown": "[?] 未知"}
+
+ICON_EN = {"update-now": "[!] UPDATE NOW",
+           "consider": "[~] OPTIONAL",
+           "skip": "[ok] SKIP OK",
+           "no-change": "[ok] NO PACKAGE CHANGE",
+           "no-update": "[ok] NO NEW BUILD",
+           "unknown": "[?] UNKNOWN"}
+
+
+def _build_evr(p: dict) -> str:
+    """version-release of the source build a binary package came from.
+
+    A group is labelled with its source package, so it has to show that build's
+    version, not whatever the alphabetically first subpackage calls itself. Some
+    subpackages carry a Version of their own: nspr 4.39.0 is built from nss
+    3.131.0 and sorts first, so an nss update was reported under nspr's numbers
+    (likewise device-mapper for lvm2, brlapi for brltty and libdhash for
+    ding-libs on the live F45 image). `srpm` is "<src>-<version>-<release>";
+    package_list() strips `.src.rpm`, but not the `.nosrc.rpm` of a NoSource build.
+    """
+    src, srpm = p.get("src") or "", p.get("srpm") or ""
+    if src and srpm.startswith(src + "-"):
+        return srpm[len(src) + 1:].removesuffix(".nosrc.rpm").removesuffix(".src.rpm")
+    return p.get("evr", "?")
+
+
+def group_by_src(changed: list) -> list:
+    """Collapse binary subpackages that come from the same source build."""
+    groups: dict = {}
+    for c in changed:
+        key = c.get("src") or c["name"]
+        g = groups.get(key)
+        if g is None:
+            # Built once per source package: as a setdefault() argument this
+            # literal (two sets, five lists) was allocated again for every binary
+            # subpackage, only to be thrown away.
+            g = groups[key] = {"src": key, "pkgs": [], "security": False,
+                               "cves": set(), "dropped": set(), "aliases": [],
+                               "why": [], "sev_rank": 0, "important": False,
+                               "downgrade": False, "has_security_erratum": False,
+                               "advisory_corresponding": False,
+                               "changelog_cves": set(),
+                               "erratum_severity": "",
+                               "already_had": [], "unreleased": [], "passed_over": []}
+        g["pkgs"].append(c)
+        cls = c.get("cls") or {}
+        g["security"] = g["security"] or bool(cls.get("security"))
+        g["important"] = g["important"] or bool(cls.get("important_src"))
+        g["cves"].update(cls.get("cves") or [])
+        g["dropped"].update(cls.get("cves_dropped") or [])
+        g["changelog_cves"].update(cls.get("changelog_cves") or [])
+        if cls.get("advisory_corresponding"):
+            g["advisory_corresponding"] = True
+        if cls.get("has_security_erratum"):
+            g["has_security_erratum"] = True
+            cand = cls.get("erratum_severity") or ""
+            # rpm-ostree takes the max severity across advisories, so keep the
+            # spelling that ranks highest under its own str2severity().  The
+            # sentinel matters: when a spelling Fedora/Bodhi cannot produce (or an
+            # empty one) is the only candidate, `_sev_rank_for_upstream` returns
+            # -1 for it, so a plain 0-initialised `>` would never store the first
+            # value and the group would report an empty severity.
+            cur = g.get("erratum_severity")
+            if cur is None or _sev_rank_for_upstream(cand) > _sev_rank_for_upstream(cur):
+                g["erratum_severity"] = cand
+        for a in cls.get("aliases") or []:
+            if a not in g["aliases"]:
+                g["aliases"].append(a)
+        for w in cls.get("why") or []:
+            if w not in g["why"]:
+                g["why"].append(w)
+        g["sev_rank"] = max(g["sev_rank"], cls.get("sev_rank") or 0)
+        for a in cls.get("already_had") or []:
+            if a not in g["already_had"]:
+                g["already_had"].append(a)
+        for a in cls.get("not_pushed") or []:
+            if a not in g["unreleased"]:
+                g["unreleased"].append(a)
+        for a in cls.get("passed_over") or []:
+            if a not in g["passed_over"]:
+                g["passed_over"].append(a)
+        # `.get`, like every other consumer of this structure: a change entry
+        # built without "dir" crashed here with a KeyError while
+        # secureblue_notification() happily accepted the same data.
+        if c.get("dir") == "downgrade":
+            g["downgrade"] = True
+    out = sorted(groups.values(), key=lambda g: (-g["sev_rank"], g["src"]))
+    for g in out:
+        g["cves"] = sorted(g["cves"])
+        g["dropped"] = sorted(g["dropped"])
+        g["changelog_cves"] = sorted(g["changelog_cves"])
+        o, n = g["pkgs"][0]["old"], g["pkgs"][0]["new"]
+        g["old_evr"], g["new_evr"] = _build_evr(o), _build_evr(n)
+        if _epoch(o) != _epoch(n):
+            # neither string carries the epoch: an epoch-only change read "1.2-3 → 1.2-3"
+            g["old_evr"] = f"{_epoch(o)}:{g['old_evr']}"
+            g["new_evr"] = f"{_epoch(n)}:{g['new_evr']}"
+    return out
+
+
+def plural(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def shortref(ref) -> str:
+    """sha256:<64 hex> is noisy in a table; the first 12 hex chars are unique enough."""
+    ref = str(ref or "")
+    if DIGEST_RE.match(ref):
+        return "sha256:" + ref.split(":")[1][:12] + "…"
+    return ref
+
+
+def fmt_pkgs(g: dict, lang: str = "en") -> str:
+    names = [p["name"] for p in g["pkgs"]]
+    if len(names) == 1:
+        return f"`{names[0]}`"
+    head = ", ".join(f"`{x}`" for x in names[:3])
+    suffix = f" +{len(names)-3} 个子包" if lang == "zh" else f" +{len(names)-3} subpackages"
+    return f"{head}{suffix}" if len(names) > 3 else head
+
+
+def split_bilingual(s: str) -> tuple[str, str]:
+    """Extract (en, zh) strings from BiText, or cleanly split a bilingual string.
+
+    Avoids naive s.split(" / ", 1) breaking when the English component itself
+    contains ' / ' (e.g. 'new / dropped entries').
+    """
+    if hasattr(s, "en") and hasattr(s, "zh"):
+        return str(s.en), str(s.zh)
+    if not isinstance(s, str) or " / " not in s:
+        return str(s), str(s)
+    parts = s.split(" / ")
+    for i in range(len(parts) - 1, 0, -1):
+        left = " / ".join(parts[:i])
+        right = " / ".join(parts[i:])
+        if not re.search(r"[\u4e00-\u9fff]", left) and re.search(r"[\u4e00-\u9fff]", right):
+            return left, right
+    left, right = s.split(" / ", 1)
+    return left, right
+
+
+def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
+                           xc=None, backlog=None, groups=None) -> str:
+    xc = xc or {}
+    L = []
+    W = L.append
+    is_zh = (lang == "zh")
+    sec_n = len(verdict["security_pkgs"])
+
+    W(f"# {subject}")
+    W("")
+    verdict_title = "## 结论" if is_zh else "## Verdict"
+    badge_icon = ((ICON_ZH if is_zh else ICON_EN).get(verdict['level'])
+                  or verdict['level'])
+    W(f"{verdict_title}: {badge_icon}")
+    W("")
+    if is_zh:
+        W(verdict.get("headline_zh") or verdict["headline"])
+    else:
+        W(verdict["headline"])
+    W("")
+    if verdict.get("level_basis"):
+        W(("- 判定依据: " if is_zh else "- level basis: ") + str(verdict["level_basis"]))
+        W("")
+    _basis = verdict.get("security_basis") or {}
+    if _basis:
+        items = "，".join(f"`{k}`: {v}" for k, v in sorted(_basis.items())) if is_zh \
+            else ", ".join(f"`{k}`: {v}" for k, v in sorted(_basis.items()))
+        W(("- 安全判定依据（逐包）: " + items) if is_zh else ("- security evidence per package: " + items))
+        W("")
+
+    _sbn = verdict.get("secureblue_notification") or {}
+    if _sbn:
+        _lvl = _sbn.get("level", "none")
+        if is_zh:
+            _badge = {"major": "**重大 (MAJOR)** (urgency=critical)",
+                      "normal": "普通 (normal) (urgency=normal)",
+                      "none": "无 (none)",
+                      "unknown": "未知（未读取软件包版本）"}.get(_lvl, _lvl)
+            W("## secureblue 桌面通知预测")
+            W("")
+            msg_str = (f" — \"{_sbn['message']}\"") if _sbn.get("message") else ""
+            W(f"- 预测弹窗: {_badge}{msg_str}")
+            if _sbn.get("advisory_driven") and _lvl != "unknown":
+                W("- 未叠加软件包的系统（默认安装）: "
+                  + ("普通 (normal)——仅因内核升级"
+                     if _sbn.get("level_without_advisories") == "normal" else "无 (none)"))
+            reasons = _sbn.get("why_zh") or _sbn.get("why") or []
+            W(f"- 触发条件: {'，'.join(reasons) or '—'}")
+            def _yn_zh(x):
+                return "未知" if x is None else ("是" if x else "否")
+            k_up = _yn_zh(_sbn.get("kernel_updated"))
+            t_up = _yn_zh(_sbn.get("trivalent_updated"))
+            max_sev = _sbn.get("max_advisory_severity") or "未读取"
+            W(f"- 内核已升级: {k_up} · trivalent 已升级: {t_up} · "
+              f"最高勘误等级 (rpm-ostree 体系): `{max_sev}`")
+            W("")
+            W("> 这里的 severity 只取 *精确* EVR 命中：rpm-ostree 用 "
+              "`dnf_package_get_advisories(pkg, HY_EQ)` 填充 `.advisories`，"
+              "libdnf 只在 `pool_evrcmp(勘误 EVR, 包 EVR) == 0` 时才算命中。"
+              "因此 secureblue 自建包（如 `7.2.8-200.secureblue.1.fc44`）"
+              "即使对应着 Fedora 的 `7.2.8-200.fc44` 勘误，桌面也不会因此弹窗——"
+              "报告里会把它列为「对应 Fedora 勘误（归一化匹配）」。")
+            W("")
+            W("> `.advisories` 只在 rpm-ostree 持有本次更新的 rpm-md 元数据时才存在，而它只为"
+              "叠加了软件包（`rpm-ostree install`）的系统加载这些元数据。默认安装没有这份列表，"
+              "脚本读到的最高勘误等级恒为 none：那里只有 `kernel` / `trivalent` 升级会触发通知。")
+            W("")
+            W("> 依据 secureblue 的 `security-update-notification` 脚本：`trivalent` 升级 → 重大通知；"
+              "`kernel` 升级或最高勘误等级为 important/unknown → 普通通知。勘误等级取自 updateinfo 的 "
+              "`<severity>` 子元素（Bodhi 已映射为 RHEL 拼写：urgent→Critical、high→Important、"
+              "medium→Moderate、low→Low、unspecified→None），因此 `urgent` 级安全勘误同样会触发重大通知，"
+              "而 `medium`/`low` 级单独出现时不弹通知。")
+            W("")
+        else:
+            _badge = {"major": "**MAJOR** (urgency=critical)",
+                      "normal": "normal (urgency=normal)",
+                      "none": "none",
+                      "unknown": "unknown (package versions not read)"}.get(_lvl, _lvl)
+            W("## secureblue Notification Prediction")
+            W("")
+            msg_str = (f" — \"{_sbn['message']}\"") if _sbn.get("message") else ""
+            W(f"- predicted popup: {_badge}{msg_str}")
+            if _sbn.get("advisory_driven") and _lvl != "unknown":
+                W("- on a system without layered packages (a stock install): "
+                  + ("normal - for the kernel upgrade alone"
+                     if _sbn.get("level_without_advisories") == "normal" else "none"))
+            reasons = _sbn.get("why") or []
+            W(f"- trigger: {', '.join(reasons) or '—'}")
+            def _yn_en(x):
+                return "unknown" if x is None else str(bool(x))
+            max_sev = _sbn.get("max_advisory_severity") or "not read"
+            W(f"- kernel upgraded: {_yn_en(_sbn.get('kernel_updated'))} · "
+              f"trivalent upgraded: {_yn_en(_sbn.get('trivalent_updated'))} · "
+              f"max advisory severity (rpm-ostree scale): `{max_sev}`")
+            W("")
+            W("> The severity used here only counts *exact* EVR hits: rpm-ostree fills "
+              "`.advisories` via `dnf_package_get_advisories(pkg, HY_EQ)`, and libdnf "
+              "accepts a hit only when `pool_evrcmp(advisory_evr, pkg_evr) == 0`. So a "
+              "secureblue-rebuilt package such as `7.2.8-200.secureblue.1.fc44` will not "
+              "pop a notification even though Fedora has an erratum for `7.2.8-200.fc44`; "
+              "the report lists those as \'corresponding Fedora erratum (normalised match)\'. ")
+            W("")
+            W("> `.advisories` only exists where rpm-ostree held rpm-md metadata for the update, "
+              "and it loads that only on a system with layered packages (`rpm-ostree install`). "
+              "A stock install has no such list and the script reads the maximum severity as "
+              "none: only a `kernel` / `trivalent` upgrade raises a notification there.")
+            W("")
+            W("> Based on secureblue's `security-update-notification` script: `trivalent` upgraded → major notification; "
+              "`kernel` upgraded or max advisory severity important/unknown → normal notification. The severity comes "
+              "from the updateinfo `<severity>` child element (Bodhi maps its own words to RHEL spellings before "
+              "publishing: urgent→Critical, high→Important, medium→Moderate, low→Low, unspecified→None), so an "
+              "`urgent` security advisory triggers a MAJOR notification too, while `medium`/`low` alone stay silent.")
+            W("")
+
+    if is_zh:
+        W(f"**如果现在更新，需要下载 {human(ldiff['download_bytes'])}** —— "
+          f"{ldiff['chunks_b']} 个 chunk 中有 {ldiff['chunks_changed']} 个发生变化，"
+          f"{ldiff['chunks_reused']} 个已在本地、会被复用。"
+          f"（完整镜像为 {human(ldiff['total_size_b'])}，本次更新约占 {ldiff['download_pct']}%）")
+        W("> **上面的下载量是上限**：它统计所有 digest 变化的 chunk，而 chunkah 会在组件之间重新切分内容，"
+          "因此其中一部分可能是你已经拥有的字节（只是换了名字）。")
+    else:
+        W(f"**If you update, you download {human(ldiff['download_bytes'])}** — "
+          f"{ldiff['chunks_changed']} of {ldiff['chunks_b']} chunks changed, "
+          f"{ldiff['chunks_reused']} are already on disk and get reused. "
+          f"(full image: {human(ldiff['total_size_b'])}, so this update = {ldiff['download_pct']}%)")
+        W("> **This download figure is an upper bound**: it counts every chunk whose digest "
+          "changed, but chunkah re-shards content between components, so part of it can be "
+          "bytes you already have under another name.")
+    W("")
+
+    # The row that used to be labelled just "kernel" is the ostree.linux
+    # annotation: it names the Fedora base's kernel, which is not the installed
+    # one once secureblue ships its own build (7.3.3-300.fc45 in the annotation
+    # next to kernel-7.3.3-300.secureblue.2.fc45 in the rpmdb).
+    kernel_evr = diff.get("kernel_evr") or (None, None)
+    if is_zh:
+        W("| | 上一版 | 新版 |")
+        W("|---|---|---|")
+        W(f"| 对比引用 | `{shortref(a['ref'])}` | `{shortref(b['ref'])}` |")
+        W(f"| 镜像版本 | {a['annotations'].get('org.opencontainers.image.version', '?')} | {b['annotations'].get('org.opencontainers.image.version', '?')} |")
+        W(f"| 构建时间 (UTC) | {a.get('created') or '?'} | {b.get('created') or '?'} |")
+        W(f"| 内核（`ostree.linux` 注解，来自 Fedora 基础镜像） | {a['annotations'].get('ostree.linux', '?')} | {b['annotations'].get('ostree.linux', '?')} |")
+        if any(kernel_evr):
+            W(f"| `kernel` 软件包（rpmdb，实际安装的内核） | {kernel_evr[0] or '—'} | {kernel_evr[1] or '—'} |")
+        W(f"| rpm-ostree 输入哈希 | `{clip_hash(a['annotations'].get('rpmostree.inputhash'), 12)}` | `{clip_hash(b['annotations'].get('rpmostree.inputhash'), 12)}` |")
+        W(f"| ostree 提交 | `{clip_hash(a['annotations'].get('ostree.commit') or '—', 12)}` | `{clip_hash(b['annotations'].get('ostree.commit') or '—', 12)}` |")
+        W(f"| 镜像摘要 (manifest) | `{a['digest'][:19]}…` | `{b['digest'][:19]}…` |")
+        W(f"| 镜像内软件包数 | {diff.get('count_a', '?')} | {diff.get('count_b', '?')} |")
+    else:
+        W("| | previous | new |")
+        W("|---|---|---|")
+        W(f"| compared refs | `{shortref(a['ref'])}` | `{shortref(b['ref'])}` |")
+        W(f"| image version | {a['annotations'].get('org.opencontainers.image.version', '?')} | {b['annotations'].get('org.opencontainers.image.version', '?')} |")
+        W(f"| built (UTC) | {a.get('created') or '?'} | {b.get('created') or '?'} |")
+        W(f"| kernel (`ostree.linux` annotation, from the Fedora base) | {a['annotations'].get('ostree.linux', '?')} | {b['annotations'].get('ostree.linux', '?')} |")
+        if any(kernel_evr):
+            W(f"| `kernel` package (rpmdb, the kernel actually installed) | {kernel_evr[0] or '—'} | {kernel_evr[1] or '—'} |")
+        W(f"| rpm-ostree inputhash | `{clip_hash(a['annotations'].get('rpmostree.inputhash'), 12)}` | `{clip_hash(b['annotations'].get('rpmostree.inputhash'), 12)}` |")
+        W(f"| ostree.commit | `{clip_hash(a['annotations'].get('ostree.commit') or '—', 12)}` | `{clip_hash(b['annotations'].get('ostree.commit') or '—', 12)}` |")
+        W(f"| manifest digest | `{a['digest'][:19]}…` | `{b['digest'][:19]}…` |")
+        W(f"| packages in image | {diff.get('count_a', '?')} | {diff.get('count_b', '?')} |")
+    W("")
+
+    if (a["annotations"].get("rpmostree.inputhash") and
+            a["annotations"].get("rpmostree.inputhash") == b["annotations"].get("rpmostree.inputhash")):
+        if is_zh:
+            W("> **两个镜像的 `rpmostree.inputhash` 相同，但这不代表两者等价。**该值由 "
+              "`rpm-ostree compose tree` 产生、并原样继承自 Fedora 基础镜像；blue-build 从不运行 "
+              "`compose tree`（唯一的 compose 调用是重分块器 `build-chunked-oci`），因此它描述的是 "
+              "Fedora 的 compose，看不到 secureblue 自己重建的任何东西。实测：两个共享该哈希的不同 "
+              "镜像有 128 层中的 20 层不同，且 `homebrew 7.0.2-26091605 -> 7.0.6-26092310`。"
+              "`ostree.commit`、`ostree.linux` 同理继承。请以下方的软件包表为准。")
+        else:
+            W("> **`rpmostree.inputhash` is identical on both images - this does NOT mean the "
+              "images are equivalent.** That value is produced by `rpm-ostree compose tree` "
+              "and inherited verbatim from the Fedora base image; blue-build never runs "
+              "`compose tree` (its only compose call is `build-chunked-oci`, a rechunker), so "
+              "it describes Fedora's compose and is blind to everything secureblue rebuilds. "
+              "Measured: two distinct images sharing this hash differed in 20 of 128 layers "
+              "and in `homebrew 7.0.2-26091605 -> 7.0.6-26092310`. `ostree.commit` and "
+              "`ostree.linux` are inherited the same way. Judge the package table below.")
+        W("")
+
+    # One list item per note: consecutive "> " lines are a single, lazily
+    # continued paragraph in Markdown, so the notes used to run together.
+    dedup_notes = list(dict.fromkeys(notes))
+    for n in dedup_notes:
+        en_note, zh_note = split_bilingual(n)
+        W(f"> - {zh_note if is_zh else en_note}")
+    if dedup_notes:
+        W("")
+
+    changed = diff["changed"]
+    if groups is None:
+        groups = group_by_src(changed)
+    g_down = [g for g in groups if g["downgrade"]]
+    g_lost = [g for g in groups if g["dropped"]]
+    g_sec = [g for g in groups if g["security"] and not g["downgrade"]]
+    g_imp = [g for g in groups if g["important"] and not g["security"] and not g["downgrade"]]
+    # identity, not equality: two source groups can compare == and silently drop out.
+    # g_lost is deliberately absent: its section names the dropped CVE ids only, so
+    # a group that is nothing but "lost" had no old -> new line anywhere.
+    _tagged = {id(g) for g in g_sec + g_imp + g_down}
+    g_other = [g for g in groups if id(g) not in _tagged]
+
+    if g_down:
+        if is_zh:
+            W(f"## 本次更新中的降级（{len(g_down)}）——请先阅读")
+        else:
+            W(f"## Downgrades in this update ({len(g_down)}) — read first")
+        W("")
+        for g in g_down:
+            pkgs_label = f"{len(g['pkgs'])} 个包" if is_zh else f"{len(g['pkgs'])} package(s)"
+            # What a downgrade reverts is the erratum of the build it moves AWAY
+            # from, i.e. one that matched the old build (`already_had`). `aliases`
+            # are the errata of the older build it moves back to, and naming
+            # those here blamed the revert on the wrong erratum.
+            reverted = list(dict.fromkeys(
+                x["alias"] for x in g.get("already_had") or []
+                if x.get("alias") and x.get("type") == "security"
+                and (x.get("status") or "").lower() in PUSHED_STATUSES))
+            if reverted:
+                rev = (f" — 这会*回退*已发布的勘误: "
+                       f"{clip_list(reverted, 2, lang='zh', joiner='，')}" if is_zh
+                       else f" — this *reverts* a published erratum: "
+                            f"{clip_list(reverted, 2)}")
+            else:
+                rev = ""
+            W(f"- **{g['src']}**: {g['old_evr']} → {g['new_evr']} ({pkgs_label}){rev}")
+        W("")
+
+    if g_lost:
+        if is_zh:
+            # Not "fixes this update removes": only the changelog says so, and
+            # Fedora trims and rewrites changelogs (one rebase dropped 24 of curl's
+            # ids at once). The verdict has long worded it as a changelog edit.
+            W(f"## 新版更新日志不再提及的 CVE 编号（{len(g_lost)} 个源码包）")
+            W("")
+            W("通常是更新日志被编辑或裁剪，而不是修复被移除——真正的回退会表现为降级。"
+              "列出仅供核对。")
+            W("")
+            for g in g_lost:
+                W(f"- `{g['src']}`: 不再提及 "
+                  f"{clip_list(g['dropped'], 8, lang='zh', joiner='，')}")
+        else:
+            W(f"## CVE ids the new changelogs no longer mention "
+              f"({len(g_lost)} source package(s))")
+            W("")
+            W("Usually a changelog that was edited or trimmed, not a fix that was removed - "
+              "a real revert shows up as a downgrade. Listed so that you can check.")
+            W("")
+            for g in g_lost:
+                W(f"- `{g['src']}`: no longer mentions {clip_list(g['dropped'], 8)}")
+        W("")
+
+    if g_sec:
+        if is_zh:
+            W(f"## 安全相关变更（{len(g_sec)} 个源码包，{sec_n} 个二进制包）")
+            W("")
+            W("| 源码包 | 旧 → 新 | CVE 编号 | 勘误 / 依据 |")
+            W("|---|---|---|---|")
+        else:
+            W(f"## Security-relevant changes ({len(g_sec)} source package(s), {sec_n} binary package(s))")
+            W("")
+            W("| source package | old → new | CVEs | errata / evidence |")
+            W("|---|---|---|---|")
+        for g in g_sec:
+            ev = (clip_text("; ".join(g["why"]), EV_CELL_CAP, lang=lang)
+                  or ", ".join(g["aliases"]) or "—")
+            # the first line of a changelog entry lands here verbatim, and a bare
+            # `|` in it ends the cell early and shifts every column after it
+            ev = ev.replace("|", "\\|")
+            cve_str = clip_list(g["cves"], CVE_CELL_CAP, lang=lang) or "—"
+            pkg_col = fmt_pkgs(g, "zh" if is_zh else "en")
+            W(f"| {pkg_col} ({g['src']}) | {g['old_evr']} → **{g['new_evr']}** | {cve_str} | {ev} |")
+        W("")
+        # A security report is the one place where an elided id is unacceptable:
+        # the table cell cannot hold 113 of them, so the rest get a section of
+        # their own rather than a "…".
+        elided = [g for g in g_sec if len(g["cves"]) > CVE_CELL_CAP]
+        if elided:
+            if is_zh:
+                W(f"## 上表未列全的 CVE：完整清单（{len(elided)} 个源码包）")
+                W("")
+                W(f"安全表的 CVE 列最多显示 {CVE_CELL_CAP} 个编号（单元格宽度），"
+                  f"以下是被省略的每一个编号，无一遗漏。")
+            else:
+                W(f"## CVEs the table above could not fit: the complete list "
+                  f"({len(elided)} source package(s))")
+                W("")
+                W(f"The security table's CVE column shows at most {CVE_CELL_CAP} ids "
+                  f"(cell width). Here is every id it left out - none are dropped.")
+            W("")
+            for g in elided:
+                W(f"- `{g['src']}` — {len(g['cves'])} CVE(s): " + ", ".join(g["cves"]))
+            W("")
+
+    if g_imp:
+        if is_zh:
+            W(f"## 安全敏感包版本升级、未提及 CVE（{len(g_imp)}）")
+            W("")
+            for g in g_imp:
+                extra = (f"（勘误: {clip_list(g['aliases'], 2, lang='zh', joiner='，')}）"
+                         if g["aliases"] else "")
+                why_desc = clip_text("; ".join(g["why"]), WHY_CAP, lang="zh") \
+                    or "无安全相关更新日志"
+                W(f"- `{g['src']}` {g['old_evr']} → {g['new_evr']} — {fmt_pkgs(g, 'zh')}{extra}; {why_desc}")
+        else:
+            W(f"## Bumps in security-sensitive packages, no CVE mentioned ({len(g_imp)})")
+            W("")
+            for g in g_imp:
+                extra = f" (errata: {clip_list(g['aliases'], 2)})" if g["aliases"] else ""
+                why_desc = clip_text("; ".join(g["why"]), WHY_CAP) \
+                    or "no security changelog entry"
+                # the binaries by name, not a bare count: "`kernel` ... 3 pkg(s)"
+                # read as a kernel update when only kernel-tools had moved
+                W(f"- `{g['src']}` {g['old_evr']} → {g['new_evr']} — {fmt_pkgs(g)}{extra}; {why_desc}")
+        W("")
+
+    if g_other:
+        tot_bin = sum(len(g['pkgs']) for g in g_other)
+        if is_zh:
+            W(f"## 常规版本升级（{len(g_other)} 个源码包，{tot_bin} 个二进制包）")
+            W("")
+            W("| 源码包 | 二进制包 | 旧 → 新 |")
+            W("|---|---|---|")
+        else:
+            W(f"## Routine bumps ({len(g_other)} source package(s), {tot_bin} binary)")
+            W("")
+            W("| source package | binary packages | old → new |")
+            W("|---|---|---|")
+        for g in g_other:
+            W(f"| {g['src']} | {fmt_pkgs(g, 'zh' if is_zh else 'en')} | {g['old_evr']} → {g['new_evr']} |")
+        W("")
+
+    g_had = [g for g in groups if g.get("already_had")]
+    if g_had:
+        if is_zh:
+            W(f"## 本次更新之前你就已经拥有的勘误（{len(g_had)}）")
+            W("")
+            W("这些勘误对应的是你**原本就在运行**的版本，因此它们不构成升级理由，"
+              "其严重度也**没有**被计入上面的结论。")
+            W("")
+            for g in g_had:
+                al = clip_list((x["alias"] for x in g["already_had"]), 4,
+                               lang="zh", joiner="，")
+                W(f"- `{g['src']}`（针对你原有的 {g['old_evr']}）: {al}")
+        else:
+            W(f"## Errata you already had before this update ({len(g_had)})")
+            W("")
+            W("These match the package version you were **already running**, so they are not a "
+              "reason to update and their severity is deliberately **not** counted in the verdict "
+              "above.")
+            W("")
+            for g in g_had:
+                al = clip_list((x["alias"] for x in g["already_had"]), 4)
+                # "staying at": the package is in this list because it moves
+                # away from that build, so the old label said the opposite
+                W(f"- `{g['src']}` (for {g['old_evr']}, the build you already had): {al}")
+        W("")
+
+    g_un = [g for g in groups if g.get("unreleased")]
+    if g_un:
+        if is_zh:
+            W(f"## 已存在但尚未推送的勘误（{len(g_un)}）")
+            W("")
+            W("Bodhi 中有这些记录，但其 `status` 不是 `stable`，因此在此不计权重——"
+              "与 `security_backlog` 只统计已推送勘误的口径一致。")
+            W("")
+            for g in g_un:
+                W(f"- `{g['src']}`: "
+                  f"{clip_list(g['unreleased'], 4, lang='zh', joiner='，', render=lambda x: x['alias'] + ' (' + str(x['status']) + ')')}")
+        else:
+            W(f"## Errata that exist but are not pushed yet ({len(g_un)})")
+            W("")
+            W("Bodhi knows about these, but their `status` is not `stable`, so they carry no "
+              "weight here - matching `security_backlog`, which only counts pushed errata.")
+            W("")
+            for g in g_un:
+                W(f"- `{g['src']}`: "
+                  f"{clip_list(g['unreleased'], 4, render=lambda x: x['alias'] + ' (' + str(x['status']) + ')')}")
+        W("")
+
+    # "every package has the same NEVRA" also needs an unchanged package *set*:
+    # an update that only added or removed packages used to be told it was
+    # entirely rebuilt content.
+    if (not changed and not diff["added"] and not diff["removed"]
+            and (isinstance(diff.get("count_a"), int) or diff.get("same_rpmdb"))):
+        if is_zh:
+            W("## 没有任何软件包版本发生变化")
+            W("")
+            W("两个镜像中所有软件包的 NEVRA 完全一致——差异全部来自重建内容 / 元数据变动。")
+        else:
+            W("## No package version changed at all")
+            W("")
+            W("Every package in both images has the same NEVRA — the delta is entirely "
+              "rebuilt content / metadata churn.")
+        W("")
+
+    if diff["added"] or diff["removed"]:
+        if is_zh:
+            W("## 软件包集合变更")
+            W("")
+            if diff["added"]:
+                W(f"- 新增 ({len(diff['added'])}): "
+                  + clip_list(diff["added"], PKG_LIST_CAP, lang="zh", joiner="，",
+                              render=lambda x: f"`{x}`"))
+            if diff["removed"]:
+                W(f"- 移除 ({len(diff['removed'])}): "
+                  + clip_list(diff["removed"], PKG_LIST_CAP, lang="zh", joiner="，",
+                              render=lambda x: f"`{x}`"))
+        else:
+            W("## Package set changes")
+            W("")
+            if diff["added"]:
+                W(f"- added ({len(diff['added'])}): "
+                  + clip_list(diff["added"], PKG_LIST_CAP, render=lambda x: f"`{x}`"))
+            if diff["removed"]:
+                W(f"- removed ({len(diff['removed'])}): "
+                  + clip_list(diff["removed"], PKG_LIST_CAP, render=lambda x: f"`{x}`"))
+        W("")
+
+    silent = xc.get("silent_rebuilds") or []
+    if xc.get("versions_known") is False and ldiff.get("changed_chunks"):
+        ncpk = len(ldiff.get("changed_packages_from_chunks") or [])
+        ch_cnt = len(ldiff['changed_chunks'])
+        if is_zh:
+            W(f"## 发生变化的 chunk，版本未知（{ch_cnt}）")
+            W("")
+            W(f"此模式下未拉取 `rpmdb.sqlite`，因此工具无法判断哪些软件包版本未变、"
+              f"哪些变了——所以它不做这种断言。下方 chunk 中约含 {ncpk} 个软件包。"
+              f"去掉 `--exact 0` 重新运行即可获得真实版本。")
+        else:
+            W(f"## Chunks that moved, versions unknown ({ch_cnt})")
+            W("")
+            W(f"In this mode no `rpmdb.sqlite` was fetched, so the tool cannot say which packages "
+              f"kept their version and which did not — it therefore makes no such claim. About "
+              f"{ncpk} packages sit in the chunks below. Re-run without `--exact 0` to get real "
+              f"versions.")
+        W("")
+
+    if silent:
+        if is_zh:
+            W(f"## 版本相同但被重建（{len(silent)}）")
+            W("")
+            W("这些 chunk 的字节变了，但软件包版本没变。通常是一次 secureblue 重建、工具链/macro 变化"
+              "或文件重排——会消耗下载量，却没有对应的上游更新日志。")
+            W("")
+            for n, s in silent[:20]:
+                W(f"- `{n}` — {human(s)}")
+            if len(silent) > 20:
+                W(f"- ……另有 {len(silent)-20} 个")
+        else:
+            W(f"## Rebuilt with the *same* version ({len(silent)})")
+            W("")
+            W("These chunks changed byte-for-byte while the package version did not. That is "
+              "usually a secureblue rebuild, a toolchain/macro change, or file re-ordering — "
+              "it costs download bytes but carries no upstream changelog entry.")
+            W("")
+            for n, s in silent[:20]:
+                W(f"- `{n}` — {human(s)}")
+            if len(silent) > 20:
+                W(f"- … and {len(silent)-20} more")
+        W("")
+
+    if xc.get("non_package_chunks"):
+        title = "## 非软件包的变更" if is_zh else "## Changes that are not packages"
+        W(title)
+        W("")
+        for ch in xc["non_package_chunks"]:
+            W(f"- {human(ch['size'])} — "
+              f"{clip_text(', '.join(c.replace('bigfiles/', '') for c in ch['components']), 120, lang=lang)}")
+        W("")
+
+    if backlog:
+        if is_zh:
+            W(f"## 你的（当前或新）镜像仍缺少的更新（{len(backlog)}）")
+            W("")
+            W("已发布的 **stable** Fedora 安全更新，其构建比镜像内的更新——"
+              "即无论是否跳过本次更新都存在的暴露面，但你应当知情。")
+            W("")
+            W("| 软件包 | 镜像内版本 | 新 stable 构建 | 严重度 | 勘误 |")
+            W("|---|---|---|---|---|")
+        else:
+            W(f"## What your (current or new) image is still missing ({len(backlog)})")
+            W("")
+            W("Published **stable** Fedora security updates whose build is newer than the one in "
+              "the image — i.e. exposure that skipping this update does not change, but that you "
+              "may want to know about.")
+            W("")
+            W("| package | in image | newer stable build | severity | erratum |")
+            W("|---|---|---|---|---|")
+        for r in backlog[:25]:
+            W(f"| `{r['name']}` | {r['have']} | **{r['want']}** | {r['severity'] or '?'} | {r['alias']} |")
+        if len(backlog) > 25:
+            # A fixed display cap: --backlog-candidates changes how many rows exist,
+            # never how many fit here, so point at the complete JSON instead.
+            if is_zh:
+                W(f"- ……另有 {len(backlog)-25} 行未显示（JSON 输出中始终包含全部 {len(backlog)} 行）")
+            else:
+                W(f"- … and {len(backlog)-25} more row(s) not shown (the JSON output always "
+                  f"carries all {len(backlog)})")
+        W("")
+
+    if ldiff["changed_chunks"]:
+        ch_cnt = len(ldiff['changed_chunks'])
+        if is_zh:
+            W(f"## 需要重新下载的 chunk（{ch_cnt}）")
+            W("")
+            for ch in ldiff["changed_chunks"][:15]:
+                comps = [c.replace("rpm/", "").replace("bigfiles/", "≈") for c in ch["components"][:5]]
+                more = len(ch["components"]) - len(comps)
+                more_label = f" +{more} 个包" if more > 0 else ""
+                W(f"- {human(ch['size'])} — {', '.join(comps)}{more_label}")
+            if ch_cnt > 15:
+                W(f"- ……另有 {ch_cnt-15} 个更小的 chunk")
+        else:
+            W(f"## Chunks you would re-download ({ch_cnt})")
+            W("")
+            for ch in ldiff["changed_chunks"][:15]:
+                comps = [c.replace("rpm/", "").replace("bigfiles/", "≈") for c in ch["components"][:5]]
+                more = len(ch["components"]) - len(comps)
+                more_label = f" +{more} pkgs" if more > 0 else ""
+                W(f"- {human(ch['size'])} — {', '.join(comps)}{more_label}")
+            if ch_cnt > 15:
+                W(f"- … {ch_cnt-15} smaller chunks")
+        W("")
+
+    if is_zh:
+        W("由 `sbwatch` 生成：仅使用了 registry manifest 与镜像的 `rpmdb.sqlite` chunk。未拉取完整镜像，也未使用任何凭据。")
+    else:
+        W("Generated by `sbwatch`: registry manifests + the image's `rpmdb.sqlite` chunk only. Nothing was pulled, and no credentials were used.")
+
+    return "\n".join(L)
+
+
+def render_markdown(subject, a, b, diff, ldiff, verdict, notes, xc=None, backlog=None,
+                    groups=None) -> str:
+    """Render markdown report: pure Chinese section first, followed by '---' separator, then pure English section."""
+    # Both halves list the same source-package groups: build them once instead of
+    # re-aggregating every changed package for each language - or not at all when
+    # the caller hands over the groups verdict_of() was already given.
+    if groups is None:
+        groups = group_by_src(diff["changed"])
+    zh_part = _render_markdown_lang("zh", subject, a, b, diff, ldiff, verdict, notes, xc, backlog,
+                                    groups)
+    en_part = _render_markdown_lang("en", subject, a, b, diff, ldiff, verdict, notes, xc, backlog,
+                                    groups)
+    return f"{zh_part.strip()}\n\n---\n\n{en_part.strip()}\n"
+
+
+
+# --------------------------------------------------------------------------- #
+# "am I exposed even if I skip?" — published stable security updates that the
+# image does not contain yet (Fedora Bodhi, capped number of queries)
+# --------------------------------------------------------------------------- #
+# Audited against the live image 2026-09-18. Entries must be Fedora *source*
+# package names (matching happens on p["src"]): the previous list mixed in three
+# binary subpackage names (`veritysetup` = binary of cryptsetup,
+# `amd-gpu-firmware` = binary of linux-firmware, `flatpak-selinux` = binary of
+# flatpak - all already covered by their sources), two GitHub
+# repo names that are not package names at all (`trivalent-native`,
+# `trivalent-binary-packaging`), one outright typo (`wireless-regdog` for
+# `wireless-regdb`, which silently excluded a package that IS in the image),
+# one non-existent name (`giolang-github`), and one stale name (`polkit-qt`).
+# Two binary names stood in for sources as well: `polkit-qt6-1` is built by
+# `polkit-qt-1`, and the Plasma shell's source is `plasma-desktop` (there is no
+# `kde-plasma-desktop` in Fedora dist-git) - neither ever matched an image. `xorg-x11-server` was replaced by
+# `xorg-x11-server-Xwayland`: Xwayland has been its own source package since 2021
+# and is the only X server in the image. `python3` is matched version-tolerantly
+# via _src_matches_pool (the real source on F44 is `python3.14`).
+BACKLOG_POOL = {
+    "kernel", "glibc", "openssl", "nss", "systemd", "sudo", "polkit", "rpm-ostree",
+    "ostree", "selinux-policy", "container-selinux", "pam", "shadow-utils", "openssh",
+    "curl", "rpm", "grub2", "shim", "mutter", "gnome-shell", "webkitgtk", "firefox",
+    "thunderbird", "trivalent",
+    "flatpak", "xdg-desktop-portal", "pipewire",
+    "xorg-x11-server-Xwayland",
+    "usbguard", "bubblewrap", "fwupd", "bluez", "cups", "avahi", "libarchive", "gnutls",
+    "expat", "libcap", "audit", "krb5", "bind", "dnsmasq", "unbound", "nginx",
+    "polkit-qt-1", "plasma-desktop", "qt6-qtbase", "golang",
+    "python3", "python-pip", "git", "git-lfs", "wireguard-tools", "openvpn",
+    "wireless-regdb", "linux-firmware", "runc", "crun", "cri-o",
+    "podman", "skopeo", "composefs", "cryptsetup", "keyutils",
+}
+# Default for --backlog-candidates: every pool source the image has. The former 45
+# was fewer than the live image's 55 candidates, so the same ten (keyutils, krb5,
+# openvpn, podman, python-pip, qt6-qtbase, skopeo, unbound, wireguard-tools,
+# wireless-regdb) were cut off on every run and never audited at all.
+BACKLOG_CANDIDATES = len(BACKLOG_POOL)
+
+
+def _is_behind(p: dict, cand_version: str, cand_release: str,
+               use_build_evr: bool = False) -> bool:
+    """Is the image's package older than an erratum's build?
+
+    Deliberately ignores the epoch: Bodhi's NVR strings never carry one, so
+    comparing the rpmdb epoch against a missing one made every epoch>0 package
+    (23 security-relevant binaries in the live image: cups, container-selinux,
+    bind, grub2, ...) permanently "newer" than any published update - they could
+    never appear in the backlog. Also strips secureblue's local release marker
+    first, so the comparison happens in Fedora's namespace: the image's
+    `7.2.5-200.secureblue.1.fc44` is secureblue's rebuild OF Fedora's
+    `7.2.5-200.fc44` (equal, not behind), while a genuinely newer Fedora build
+    (`7.2.6-…`, `7.2.5-201…`) still compares newer. Left unstripped, the alpha
+    `secureblue` segment rpm-compares above `fc`, i.e. the local rebuild would
+    claim to be newer than its own Fedora original.
+    """
+    ver, rel = p.get("version", ""), p.get("release", "")
+    if use_build_evr:
+        bevr = _build_evr(p)
+        if bevr and bevr != "?" and "-" in bevr:
+            ver, rel = bevr.rsplit("-", 1)
+    dv = rpmvercmp(ver, cand_version)
+    if dv:
+        return dv < 0
+    rel = re.sub(r"\.secureblue\.\d+", "", rel)
+    return rpmvercmp(rel, cand_release) < 0
+
+
+def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
+                     limit: int = BACKLOG_CANDIDATES) -> tuple:
+    """Stable Fedora security errata whose build is newer than what the image ships.
+
+    Returns (rows, coverage). The coverage numbers matter: `limit` truncates the
+    candidate list, and without reporting that, "nothing outstanding" is silently
+    "nothing outstanding among the first N source packages I asked about" - which
+    is how a real exposure goes unnoticed. `pool_missing` also names the
+    BACKLOG_POOL entries that are not in this image at all, so a stale pool is
+    visible instead of quietly shrinking the audit.
+    """
+    want = {}
+    for n, p in pkgs.items():
+        if _src_matches_pool(p["src"], BACKLOG_POOL):
+            want.setdefault(p["src"], []).append((n, p))
+    # Security-sensitive sources first, as in classify_order(): `limit` and
+    # --max-bodhi both cut this list from its end, and in plain name order the
+    # live image's 55 candidates lost systemd, webkitgtk and xdg-desktop-portal
+    # to the default limit of 45 on every single run.
+    candidates = sorted(want, key=lambda s: (not _src_matches_pool(s, IMPORTANT_SRC), s))
+    chosen = candidates[:limit]
+    # a pool entry counts as covered when some in-image source maps onto it
+    # (directly, or via the versioned-name rule: python3.14 -> python3)
+    covered = set()
+    for s in want:
+        if s in BACKLOG_POOL:
+            covered.add(s)
+        base = re.sub(r"\.\d+$", "", s)
+        if base != s and base in BACKLOG_POOL:
+            covered.add(base)
+    cov = {"candidates": len(candidates), "checked": len(chosen),
+           "skipped": len(candidates) - len(chosen),
+           "skipped_names": candidates[limit:],
+           "pool_size": len(BACKLOG_POOL),
+           "pool_missing": sorted(BACKLOG_POOL - covered)}
+    # Both spellings of the middle rank: Bodhi's API answers with its own words
+    # (unspecified/low/medium/high/urgent) while the updateinfo mapping uses the
+    # RHEL ones (Low/Moderate/Important/Critical). Listing only "moderate" made a
+    # `medium` erratum rank 0 - i.e. sort *below* a `low` one.
+    order = {"critical": 4, "urgent": 4, "important": 3, "high": 3,
+             "moderate": 2, "medium": 2, "low": 1}
+    rows = []
+    for src in chosen:
+        ups = bodhi.updates_for_src(src, rel)
+        pkgs_for_src = sorted(want[src], key=lambda np: (np[0] != src, np[0]))
+        row = None
+        for u in ups:
+            if u.get("type") != "security" or u.get("status") != "stable":
+                continue
+            for n, p in pkgs_for_src:
+                best = None
+                for b in u.get("nvrs") or []:
+                    if not b:      # Bodhi attaches builds without an nvr sometimes
+                        continue
+                    parts = b.rsplit("-", 2)
+                    if len(parts) != 3:
+                        continue
+                    bn, bv, br = parts
+                    # Bodhi lists the *source* build NVR; accept it when it names
+                    # either this binary package or its source (exact names, not
+                    # prefixes). Source matching is what makes shim/webkitgtk/
+                    # krb5/grub2/bind/... visible at all - their binaries never
+                    # share the source name (246 of 1107 live sources).
+                    if bn != n and bn != p["src"]:
+                        continue
+                    cand = {"name": n, "version": bv, "release": br}
+                    if _is_behind(p, bv, br, use_build_evr=(bn != n)) and (
+                            best is None or evr_cmp(best, cand) < 0):
+                        best = cand
+                if best is None:
+                    continue
+                # full lists: the CLI preview and the report both clip *with a
+                # stated count*, and the JSON export must stay complete
+                if row is None:
+                    row = {"name": n, "src": src,
+                           "have": _build_evr(p) if n != src else p["evr"],
+                           "want": f"{best['version']}-{best['release']}",
+                           "_best": best,
+                           "alias": u["alias"], "severity": u.get("severity"),
+                           "cves": set(u.get("cves") or ()),
+                           "notes": u.get("notes") or ""}
+                else:
+                    row["cves"].update(u.get("cves") or ())
+                    if evr_cmp(row["_best"], best) < 0:
+                        row["_best"] = best
+                        row["want"] = f"{best['version']}-{best['release']}"
+                        row["alias"] = u["alias"]
+                        if u.get("notes"):
+                            row["notes"] = u.get("notes") or ""
+                    if order.get((u.get("severity") or "").lower(), 0) > \
+                            order.get((row["severity"] or "").lower(), 0):
+                        row["severity"] = u.get("severity")
+                        if not row["notes"] and u.get("notes"):
+                            row["notes"] = u.get("notes") or ""
+                break
+        if row is not None:
+            row.pop("_best", None)
+            row["cves"] = sorted(row["cves"])
+            rows.append(row)
+    rows.sort(key=lambda r: -order.get((r["severity"] or "").lower(), 0))
+    cov["failed"] = bodhi.failed
+    cov["skipped_queries"] = bodhi.skipped
+    return rows, cov
+
+
+def coverage_line(cov: dict) -> str:
+    """One honest sentence about how much of the backlog audit actually ran."""
+    en = (f"backlog audit coverage: {cov['checked']} of {cov['candidates']} candidate source "
+          f"packages in the image were queried"
+          + (f", {cov['skipped']} were cut off by --backlog-candidates "
+             f"({clip_list(cov.get('skipped_names', []), 6)})"
+             if cov.get("skipped") else "")
+          + (f"; {len(cov['pool_missing'])} BACKLOG_POOL entries are not "
+             f"in this image" if cov.get("pool_missing") else ""))
+    zh = (f"backlog 审计覆盖率：镜像内 {cov['candidates']} 个候选源码包中查询了 {cov['checked']} 个"
+          + (f"，{cov['skipped']} 个因 --backlog-candidates 上限被截断"
+             f"（{clip_list(cov.get('skipped_names', []), 6, lang='zh', joiner='，')}）"
+             if cov.get("skipped") else "")
+          + (f"；BACKLOG_POOL 中有 {len(cov['pool_missing'])} 个条目不在此镜像内"
+             if cov.get("pool_missing") else ""))
+    return T(en, zh)
+
+
+def cmd_backlog(args):
+    reg = _registry(args)
+    reg._token()
+    img = resolve(reg, args.ref)
+    maybe_verify_resolved(reg, img, args)
+    cache_dir = args.cache_dir or os.path.expanduser("~/.cache/sbwatch")
+    notes: list = []
+    pkgs = load_pkglist(reg, img, args.ref, cache_dir, notes)
+    rel = fedora_release(pkgs, img["annotations"].get("org.opencontainers.image.version", ""))
+    if not rel:
+        raise SystemExit(T("could not determine the Fedora release from this image's package "
+                           "list, so no errata can be queried",
+                           "无法从此镜像的软件包列表判断 Fedora 版本，因此无法查询勘误"))
+    bodhi = Bodhi(cache_dir=cache_dir, max_calls=args.max_bodhi)
+    # --backlog-candidates caps how many source packages get audited, as it does
+    # for `check --audit`; --max-bodhi only caps the API calls spent on them.
+    rows, cov = security_backlog(pkgs, rel, bodhi,
+                                 limit=max(1, args.backlog_candidates))
+    ver = img["annotations"].get("org.opencontainers.image.version", "?")
+    print(f"{args.image}:{args.ref}  version 版本 {ver}  ({rel})")
+    print(T(f"{len(rows)} package(s) in this image are behind a published STABLE security update",
+            f"此镜像中有 {len(rows)} 个软件包落后于已发布的 STABLE 安全更新") + "\n")
+    for r in rows:
+        print(f"  {r['name']:28} {r['have']:>26}  ->  {r['want']:<26} "
+              f"{(r['severity'] or '?'):9} {r['alias']}")
+        if r["notes"]:
+            _lines = r["notes"].splitlines() or [""]
+            _rest = f" (+{len(_lines)-1} more line(s) / 另有 {len(_lines)-1} 行)" \
+                if len(_lines) > 1 else ""
+            print(f"  {'':28}{'':26}     {clip_text(_lines[0], 110)}{_rest}")
+    if not rows:
+        # state the scope explicitly: this is only ever as good as `checked`
+        print(f"  none among the {cov['checked']} source package(s) queried — not a claim "
+              f"about the whole image / 在所查询的 {cov['checked']} 个源码包中无——"
+              f"这不代表整个镜像都已最新")
+    print("\n  " + coverage_line(cov))
+    if cov.get("failed"):
+        print(T(f"  ! {cov['failed']} Bodhi query(ies) failed - those packages were NOT checked",
+                f"  ！{cov['failed']} 次 Bodhi 查询失败——这些软件包未被检查"))
+    if cov.get("skipped_queries"):
+        print(T(f"  ! {cov['skipped_queries']} source package(s) were not queried because "
+                "--max-bodhi ran out - those packages were NOT checked",
+                f"  ！{cov['skipped_queries']} 个源码包因 --max-bodhi 用尽而未被查询——"
+                "这些软件包未被检查"))
+    if args.json_out:
+        _atomic_write_json(args.json_out, {"ref": args.ref, "digest": img["digest"],
+                                           "version": ver, "behind": rows, "coverage": cov},
+                           indent=1)
+    # Exit status reflects *execution*, not the verdict: a successful run is 0
+    # even when packages are behind. Machines read the verdict from --json-out
+    # (`behind`) or stdout; only real errors exit non-zero. (The one deliberate
+    # exception in this tool is `check --fail-on security` -> exit 10, which is
+    # an explicit opt-in CI signal.)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# build history
+#
+# secureblue rebuilds on every push to `live`, so one day can contain several
+# images that share the same version string (e.g. three builds on 2026-09-08,
+# all `44.20260908.0`).  All *named* tags are mutable pointers: `20260908`,
+# `44`, `<shortsha>-44` and `latest` all get repointed by the next push, so you
+# cannot find "the build before this one" by looking at tags.
+#
+# What is immutable is (a) the digest and (b) ghcr's cosign attachment tags:
+# every push adds `sha256-<image digest>.sig` / `.att`.  Those give a complete
+# per-build list from the registry alone - no GitHub token, no log access.
+# --------------------------------------------------------------------------- #
+DATED_RE = re.compile(r"^(\d{8})(-\d+)?$")   # 20260917 / 20260917-44 are one day
+SIGTAG_RE = re.compile(r"^sha256-([0-9a-f]{64})\.sig$")
+
+
+def list_tags(reg: Registry, max_pages: int = TAG_LIST_MAX_PAGES) -> list:
+    """All tags of the repo. ghcr returns them in push order; pages via Link header."""
+    out, url = [], f"https://{reg.host}/v2/{reg.repo}/tags/list?n=1000"
+    pages_done = 0
+    for _ in range(max_pages):
+        page = hdrs = None
+        for attempt in range(TAG_LIST_RETRIES):     # ghcr intermittently 301/404s ?last=
+            try:
+                req = urllib.request.Request(url, headers={"Accept": "application/json"})
+                tok = reg._token()
+                if tok:
+                    req.add_header("Authorization", "Bearer " + tok)
+                with _OPENER.open(req, timeout=reg.timeout) as r:
+                    body, hdrs = reg._read_all(r, "tag list"), r.headers
+                # Parsed inside the retry: a non-JSON or cut-short body (a proxy
+                # error page, a truncated 200) is as transient as a 5xx, and
+                # raising past the loop aborted the whole history scan instead.
+                # So is a read that dies mid-transfer: _read_all() reports it as a
+                # RegistryError, which is retried below. Any other SystemExit (the
+                # size cap) is no Exception and still ends the run.
+                candidate = json.loads(body)
+                if not isinstance(candidate, dict) or "tags" not in candidate:
+                    raise ValueError("tag list is not a JSON object with tags")
+                tags = candidate["tags"]
+                if tags is not None and (not isinstance(tags, list) or
+                                         any(not isinstance(t, str) for t in tags)):
+                    raise ValueError("tags must be a list of strings or null")
+                # Assign only after validation: an invalid non-None page must not
+                # survive exhausted retries and enter the history scan.
+                page = candidate
+                break
+            except (Exception, RegistryError) as e:
+                if attempt == TAG_LIST_RETRIES - 1:
+                    # silent truncation here would quietly shorten the build history
+                    # and can make `check` pick a wrong baseline, so say so loudly
+                    log(T(f"  ! tag list stopped after {attempt + 1} tries at page "
+                          f"{pages_done + 1} ({e}) - history may be incomplete",
+                          f"  ！tag 列表在第 {pages_done + 1} 页重试 {attempt + 1} 次后中止（{e}）"
+                          f"——历史记录可能不完整"))
+                else:
+                    time.sleep(1.5 * (attempt + 1))
+        if page is None:
+            break
+        pages_done += 1
+        out += page.get("tags", []) or []
+        nxt = re.search(r"<([^>]+)>;\s*rel=\"next\"", hdrs.get("Link") or "")
+        if not nxt:
+            break
+        try:
+            next_url = urllib.parse.urljoin(url, nxt.group(1))
+            target = urllib.parse.urlsplit(next_url)
+            # Each page gets a fresh bearer token header, so redirect stripping
+            # alone cannot protect an attacker-controlled Link target.
+            if (target.scheme, target.netloc) != ("https", reg.host):
+                raise ValueError("pagination left the registry origin")
+        except ValueError:
+            log(T("  ! unsafe tag pagination link refused - history may be incomplete",
+                  "  ！已拒绝不安全的 tag 分页链接——历史记录可能不完整"))
+            break
+        url = next_url
+    else:
+        # Every allowed page was read and the registry still offered another one.
+        # ghcr lists tags in push order, so a capped walk loses the NEWEST builds.
+        log(T(f"  ! tag list capped at {max_pages} pages ({len(out)} tags) - the newest "
+              f"tags may be missing, history may be incomplete",
+              f"  ！tag 列表在第 {max_pages} 页（共 {len(out)} 个 tag）处被截断——"
+              f"可能缺少最新的 tag，历史记录可能不完整"))
+    return out
+
+
+def build_history(reg: Registry, scan: int = 12, days: int = 7,
+                  to: str = "latest", warn: list | None = None,
+                  cur: dict | None = None) -> list:
+    """Newest-first list of the images that were actually pushed to this repo.
+
+    Discovery goes through ghcr's cosign attachment tags (`sha256-<digest>.sig`,
+    one per push): they are the only per-build record that never gets repointed.
+    Entries that resolve to a platform manifest instead of a multi-arch index are
+    skipped, so each build appears exactly once, for the architecture asked for.
+
+    record = {digest, created, version, inputhash, kernel, image, tags[],
+              from_prev, same_input_as_prev}
+
+    `cur` is `to` already resolved by the caller. `check` has just resolved (and
+    signature-checked) it; resolving it again cost three more registry round
+    trips and, if the tag moved in between, anchored the history on another build.
+    """
+    tags = list_tags(reg)
+    if cur is None:
+        cur = resolve(reg, to)
+    # does the watched image carry the chunkah layout this tool diffs by?
+    chunked = rpmdb_chunk({"layers": cur.get("layers") or []}) is not None
+    # Lookups that failed for a reason other than "there is no such build". They
+    # must not be silent: every one of them is a row that could have been in the
+    # list, and `check` picks its baseline out of this list.
+    probe_failures: list = []
+    sigs = [m.group(1) for m in (SIGTAG_RE.match(t) for t in tags) if m]
+    recs: dict = {cur["index_digest"]: {
+        "digest": cur["index_digest"], "platform_digest": cur.get("digest"),
+        "created": cur.get("created"),
+        "version": cur["annotations"].get("org.opencontainers.image.version"),
+        "inputhash": cur["annotations"].get("rpmostree.inputhash"),
+        "kernel": cur["annotations"].get("ostree.linux"), "image": cur, "tags": [to]}}
+    for hexdig in reversed(sigs[-(scan * 8):]):
+        if len(recs) >= scan:
+            break
+        d = "sha256:" + hexdig
+        if d in recs:
+            continue
+        try:
+            img = resolve(reg, d, light=True)
+        except NoArchManifest:
+            # a push without this architecture (e.g. before arm64 was built) is
+            # no build of it; as a bare SystemExit it killed the whole scan
+            continue
+        except MalformedManifest:
+            probe_failures.append((d[:19] + "…", "malformed manifest"))
+            continue
+        except RegistryError as e:
+            if e.http_code != 404:   # a dangling .sig tag (404) is normal
+                probe_failures.append((d[:19] + "…", e.http_code or "network error"))
+            continue
+        except Exception as e:       # malformed manifest, JSON error, ...
+            probe_failures.append((d[:19] + "…", type(e).__name__))
+            continue
+        if not img.get("is_index"):
+            # secureblue also publishes single-arch UKI images into this same repo
+            # (latest-uki, 20260917-uki, ...); they are not builds of this image
+            continue
+        if chunked and rpmdb_chunk(img) is None:
+            # ...and its integration-test images (`integrationtest-<sha>` tags):
+            # signed multi-arch indexes built FROM `latest` plus one layer, with
+            # no chunk annotation on any layer (3 of the 12 newest on
+            # 2026-11-11). They cannot be diffed, yet a `check` without usable
+            # state took the newest one as its baseline and died on "no
+            # standalone rpmdb chunk" - on every later run too, as no state was
+            # ever saved.
+            continue
+        recs[img["index_digest"]] = {
+            # index digest names the push; platform digest names what a client of
+            # --arch actually pulls. Callers must not compare one against the other.
+            "digest": img["index_digest"],
+            "platform_digest": img.get("digest"),
+            "created": img.get("created"),
+            "version": img["annotations"].get("org.opencontainers.image.version"),
+            "inputhash": img["annotations"].get("rpmostree.inputhash"),
+            "kernel": img["annotations"].get("ostree.linux"), "image": img, "tags": []}
+    if days:                      # label: which dated tag currently points at a row
+        # `20260917` and `20260917-44` both match and both point at the same build,
+        # so bucket by calendar day first - otherwise --days 7 only labels ~4 days.
+        by_day: dict = {}
+        for t in tags:
+            m = DATED_RE.match(t)
+            if m:
+                by_day.setdefault(m.group(1), []).append(t)
+        for day in sorted(by_day)[-days:]:
+            for t in sorted(by_day[day]):
+                try:
+                    dig = reg.index_digest(t)
+                except RegistryError as e:
+                    if e.http_code != 404:
+                        probe_failures.append((t, e.http_code or "network error"))
+                    continue
+                except Exception as e:
+                    probe_failures.append((t, type(e).__name__))
+                    continue
+                r = recs.get(dig)
+                if r is not None and t not in r["tags"]:
+                    r["tags"].append(t)
+    if probe_failures and warn is not None:
+        shown = ", ".join(f"{w} ({c})" for w, c in probe_failures[:4])
+        more = f" +{len(probe_failures) - 4}" if len(probe_failures) > 4 else ""
+        warn.append(T(
+            f"{len(probe_failures)} build reference(s) could not be resolved while walking "
+            f"the history: {shown}{more} - this list may be incomplete (a dangling .sig tag "
+            f"is normal and is not counted here)",
+            f"遍历历史时有 {len(probe_failures)} 个构建引用无法解析：{shown}{more}"
+            f"——此列表可能不完整（悬空的 .sig 标签是正常的，未计入）"))
+    out = sorted(recs.values(), key=lambda r: r.get("created") or "", reverse=True)
+    for i, r in enumerate(out):
+        if i + 1 < len(out):
+            prev = out[i + 1]
+            r["from_prev"] = layer_diff(prev["image"], r["image"])
+            r["same_input_as_prev"] = bool(r["inputhash"]) and r["inputhash"] == prev["inputhash"]
+        else:
+            r["from_prev"] = None
+            r["same_input_as_prev"] = False
+    return out
+
+
+def cmd_history(args):
+    reg = _registry(args)
+    reg._token()
+    hist_warnings: list = []
+    rows = build_history(reg, scan=args.scan, days=args.days, to=args.to,
+                         warn=hist_warnings)
+    # The shared signature options apply to history too, not just to diff/check.
+    if getattr(args, "cosign_pub", None) or getattr(args, "require_cosign", False):
+        for row in rows:
+            maybe_verify_resolved(reg, row["image"], args)
+    print(T(f"{args.image} ({args.arch}) — {len(rows)} most recent builds, oldest first.",
+            f"{args.image} ({args.arch}) —— 最近 {len(rows)} 次构建，从旧到新显示。"))
+    print("(named tags are mutable: several builds/day share one version string and the")
+    print(" dated tag only points at the newest one, so compare by digest)")
+    print("（命名标签是可变的：一天内多次构建共用同一个版本字符串，")
+    print(" 日期标签只指向最新一次构建，因此请用 digest 来对比）")
+    print("cost = bytes a client on the row above would download to reach this row / "
+          "cost 下载量 = 上一行镜像的客户端升级到本行需下载的字节数\n")
+    print(f"  {'created (UTC)':19} {'image version':15} {'input':11} "
+          f"{'chunks':8} {'cost':>9}  {'kernel':22} refs")
+    # A CJK character fills two terminal cells, so each width is the English one
+    # minus the number of CJK characters in the label.
+    print(f"  {'创建时间 (UTC)':15} {'镜像版本':11} {'输入哈希':7} "
+          f"{'chunk':8} {'下载量':>6}  {'内核':20} 引用")
+    print("  " + "-" * 110)
+    dup = 0
+    for r in reversed(rows):
+        ld = r.get("from_prev") or {}
+        cost = human(ld.get("download_bytes", 0)) if ld else "—"
+        ch = f"{ld.get('chunks_changed', '?')}/{ld.get('chunks_b', '?')}" if ld else "—"
+        refs = ",".join(r["tags"][:2]) + (f"+{len(r['tags'])-2}" if len(r["tags"]) > 2 else "")
+        refs = refs or clip_hash("sha256:" + r["digest"].split(":")[1], 19)
+        mark = ""
+        if r.get("same_input_as_prev"):
+            dup += 1
+            # Not "rebuild only": inputhash is inherited from the Fedora base and
+            # cannot see secureblue's own rebuilds (see render_markdown's note).
+            mark = ("   <= same inputhash as previous build (inherited from the Fedora "
+                    "base - NOT proof that nothing changed) / 与上次构建 inputhash 相同"
+                    "（继承自 Fedora 基础镜像——不能证明没有变化）")
+        cur = " *CURRENT/当前" if r["tags"] and args.to in r["tags"] else ""
+        print(f"  {ts_short(r.get('created') or '?'):19} {clip_col(r['version'], 15):15} "
+              f"{clip_col(r['inputhash'], 10):11} {clip_col(ch, 8):8} {cost:>9}  "
+              f"{clip_col(r['kernel'], 22):22} {clip_col(refs, 40)}{cur}{mark}")
+    for w in hist_warnings:
+        print("\n  ! " + str(w))
+    if dup:
+        print(f"\n  {dup} of these builds share their predecessor's rpm-ostree inputhash. "
+              f"That value comes from the Fedora base compose and is blind to secureblue's "
+              f"own rebuilds, so it does NOT establish that the package set is unchanged - "
+              f"use `diff` on the digests to find out. / "
+              f"其中 {dup} 次构建与前一构建共享同一个 rpm-ostree inputhash。"
+              f"该值来自 Fedora 基础镜像的 compose，看不到 secureblue 自己的重建，"
+              f"因此并不能证明软件包集合没有变化——请用 `diff` 对比 digest 来确认。")
+    oldest = rows[-1]
+    print("\n  every image is addressable by its (immutable) digest, e.g. / "
+          "每个镜像都可以用其（不可变的）digest 定位，例如：")
+    print(f"    sbwatch.py diff sha256:{oldest['digest'].split(':')[1]} {args.to}")
+    print(T("  (named tags are mutable - prefer digests when you want a specific build)",
+            "  （命名标签可变——想指定某次构建时请优先使用 digest）"))
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# commands
+# --------------------------------------------------------------------------- #
+DIGEST_RE = re.compile(r"^[A-Za-z0-9]+:[a-fA-F0-9]{32,}$")
+
+
+def resolve(reg: Registry, ref: str, light: bool = False) -> dict:
+    """Resolve one ref against an existing Registry.
+
+    This used to build a fresh Registry (and therefore a fresh temp directory) for
+    every single call - a history scan alone leaked ~100 empty /tmp/sbwatch-*
+    directories. Reusing `reg` also means one anonymous pull token for the run.
+    """
+    out = reg.resolve(ref, light=light)
+    out["ref"] = ref
+    return out
+
+
+def tag_exists(reg: Registry, tag: str, warn: list | None = None) -> str | None:
+    """Digest a dated tag points at, or None when there is provably no such tag.
+
+    A missing day is normal, not an error (secureblue simply did not publish on
+    2026-09-13, for example) - so a 404 returns None quietly. Everything else
+    (5xx, 401/403, DNS failure, timeout) also returns None, because the callers
+    only have two states to work with, but it is reported through `warn`: the
+    difference between "that day had no build" and "the registry was unreachable"
+    is exactly what decides whether the build history is trustworthy.
+    """
+    try:
+        with reg._open(f"manifests/{tag}", MANIFEST_ACCEPT) as r:
+            dig = r.headers.get("Docker-Content-Digest")
+            if dig:
+                return dig
+            # Same fallback as index_digest()/resolve(): a registry that omits
+            # the header still answered 200, and reporting None here made every
+            # dated tag of such a registry read as "no build that day".
+            try:
+                body = reg._read_all(r, f"manifest {tag}")
+            except RegistryError:
+                raise
+            except SystemExit as e:
+                # _read_all() reports a failed read as a bare SystemExit, which
+                # would kill the run here; the contract of this function is that
+                # anything other than a 404 is "unknown" and goes through `warn`.
+                raise RegistryError(str(e.code)) from None
+            return "sha256:" + hashlib.sha256(body).hexdigest()
+    except RegistryError as e:
+        if e.http_code == 404:
+            return None
+        code = e.http_code or "network error"
+        msg = T(f"could not probe tag {tag} ({code}) - whether it exists is unknown, "
+                f"so the tag list below may be incomplete",
+                f"无法探测 tag {tag}（{code}）——是否存在未知，"
+                f"下方标签列表可能不完整")
+        log("  ! " + msg)
+        if warn is not None:
+            warn.append(msg)
+        return None
+
+
+def cmd_tags(args):
+    reg = _registry(args)
+    reg._token()
+    cur = resolve(reg, args.to)
+    maybe_verify_resolved(reg, cur, args)
+    # The index digest, like the dated tags below: with the platform digest here
+    # the listing read `latest -> sha256:9492...` above `20261114  sha256:2eb4...
+    # == latest`, one image under two digests and no word on which is which.
+    print(f"{args.to} -> {cur.get('index_digest') or cur['digest']}")
+    if cur.get("index_digest") and cur["index_digest"] != cur["digest"]:
+        print(f"  platform manifest 平台 manifest: {cur['digest']}")
+    print(f"  version 版本: {cur['annotations'].get('org.opencontainers.image.version')}")
+    print(f"  created 构建时间: {cur.get('created')}   kernel 内核: {cur['annotations'].get('ostree.linux')}")
+    print(f"  chunks 分块: {len(cur['layers'])}  total 总量: {human(sum(l['size'] for l in cur['layers']))}")
+    print(f"\ndated tags, newest first (probing the last {args.days} days; a missing day "
+          f"means no build was published then): / 日期标签，从新到旧（探测最近 {args.days} 天；"
+          f"缺失的日期表示当天没有发布构建）：")
+    now = time.time()
+    probe_warnings: list = []
+    for i in range(args.days):        # day 0 is today (UTC): the tag most likely to be new
+        d = time.strftime("%Y%m%d", time.gmtime(now - i * 86400))
+        dig = tag_exists(reg, d, warn=probe_warnings)
+        if not dig:
+            continue
+        same = "  == " + args.to if dig == cur.get("index_digest") else ""
+        print(f"  {d}  {dig}{same}")
+    for w in probe_warnings:
+        print("  ! " + str(w))
+    return 0
+
+
+def cmd_layers(args):
+    reg = _registry(args)
+    reg._token()
+    a, b = resolve(reg, args.a), resolve(reg, args.b)
+    a, b, swapped = orient(a, b, args.keep_order)
+    if swapped:
+        log(T(f"  swapped: `layers A B` means A is the older build - now comparing "
+              f"{shortref(a['ref'])} (older) -> {shortref(b['ref'])} (newer); "
+              f"--keep-order overrides",
+              f"  已交换：`layers A B` 表示 A 是较旧的构建——现在比较 "
+              f"{shortref(a['ref'])}（较旧）-> {shortref(b['ref'])}（较新）；"
+              f"--keep-order 可覆盖"))
+    maybe_verify_resolved(reg, a, args)
+    maybe_verify_resolved(reg, b, args)
+    ld = layer_diff(a, b)
+    if args.json:
+        _atomic_write_json(args.json, ld, indent=1)
+    # print the *compared* direction (post-swap), not the raw argv order - printing
+    # "latest -> 20260916" right below a note saying the pair was swapped to
+    # "20260916 -> latest" contradicted itself.
+    print(f"{args.image}: {a['ref']} -> {b['ref']}"
+          + ("   (auto-swapped to older -> newer / 已自动交换为 旧 -> 新)" if swapped else ""))
+    print(f"  version 版本: {a['annotations'].get('org.opencontainers.image.version')}"
+          f" -> {b['annotations'].get('org.opencontainers.image.version')}")
+    print(f"  kernel 内核:  {a['annotations'].get('ostree.linux')} -> {b['annotations'].get('ostree.linux')}")
+    print(f"  chunks 分块:  {ld['chunks_a']} -> {ld['chunks_b']} | "
+          f"{ld['chunks_changed']} changed 变化, {ld['chunks_reused']} reused 复用")
+    print(f"  download 下载: {human(ld['download_bytes'])} ({ld['download_pct']}% of "
+          f"{human(ld['total_size_b'])})")
+    pk = ld["changed_packages_from_chunks"]
+    print(f"  packages whose chunk changed / 所在 chunk 发生变化的软件包: {len(pk)}")
+    for p in pk:
+        print("     -", p)
+    print(T("  biggest chunks to re-download:", "需要重新下载的最大 chunk："))
+    for ch in ld["changed_chunks"][:12]:
+        print(f"     {human(ch['size']):>9}  {clip_text(' '.join(ch['components']), 100)}")
+    if len(ld["changed_chunks"]) > 12:
+        print(T(f"     … and {len(ld['changed_chunks'])-12} more chunk(s) not shown "
+                f"(the download total above includes them all)",
+                f"     ……另有 {len(ld['changed_chunks'])-12} 个 chunk 未显示"
+                f"（上面的下载总量已包含它们）"))
+    return 0
+
+
+def cmd_pkgs(args):
+    reg = _registry(args)
+    reg._token()
+    r = resolve(reg, args.ref)
+    maybe_verify_resolved(reg, r, args)
+    # Through the cache `diff` and `check` share (keyed by the image digest):
+    # `pkgs` accepted --cache-dir, ignored it, and downloaded and parsed the
+    # ~33 MB rpmdb chunk again on every call.
+    pkgs = load_pkglist(reg, r, args.ref,
+                        args.cache_dir or os.path.expanduser("~/.cache/sbwatch"), [])
+    if args.json:
+        slim = {k: {a: b for a, b in v.items() if a != "changelog"} for k, v in pkgs.items()}
+        _atomic_write_json(args.json, {"ref": args.ref, "digest": r["digest"],
+                                       "annotations": r["annotations"], "packages": slim},
+                           indent=1)
+        log(T(f"wrote {args.json}: {len(pkgs)} packages",
+              f"已写入 {args.json}：{len(pkgs)} 个软件包"))
+        return 0
+    for n in sorted(pkgs):
+        print(f"{n}\t{pkgs[n]['evr']}\t{pkgs[n]['arch']}\t{pkgs[n]['src']}")
+    return 0
+
+
+def _swap_target(path: str):
+    """Where an atomic write may swap its temp file in, or None for "write in place".
+
+    A device or a pipe (`--json-out /dev/stdout`) cannot be replaced: the temp file
+    would be made next to it, in a directory that is rarely writable, and the final
+    rename would try to replace the device node itself. A symlink to a regular file
+    is followed, so the rename updates the file it points at and keeps the link.
+    """
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return None
+    except OSError:
+        pass                  # does not exist yet (or a dangling link): a normal write
+    return os.path.realpath(path) if os.path.islink(path) else path
+
+
+def _atomic_write_text(path: str, text: str) -> None:
+    """Same crash-safety as _atomic_write_json, for the markdown report.
+
+    A half-written report.md is what the artifact upload and the sticky-issue
+    comment would otherwise pick up if the process died mid-write.
+    """
+    target = _swap_target(path)
+    if target is None:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return
+    path = target
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + f".tmp.{os.getpid()}"
+    try:
+        # explicit: the report is bilingual (CJK), and open() would otherwise
+        # follow the locale - a non-UTF-8 one could not write it at all
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _atomic_write_json(path: str, data, indent=None) -> None:
+    """ atomic write to avoid cache corruption on concurrent runs."""
+    target = _swap_target(path)
+    if target is None:
+        with open(path, "w") as f:
+            f.write(json.dumps(data, indent=indent))
+        return
+    path = target
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = path + f".tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w") as f:
+            # dumps(), not dump(): dump() always walks the document with the
+            # pure-Python encoder - three times as long for an 11 MB package
+            # list (0.21 s against 0.07 s for the live image's)
+            f.write(json.dumps(data, indent=indent))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _cache_write(path: str, data, what: str) -> None:
+    """Best-effort _atomic_write_json() for a cache file.
+
+    A read-only HOME or a full disk costs a refetch on the next run. It must not
+    cost the analysis whose input was just downloaded: the traceback came after the
+    33 MB rpmdb chunk (or the Bodhi answers) had been fetched and parsed.
+    """
+    try:
+        _atomic_write_json(path, data)
+    except OSError as e:
+        log(T(f"  ! cannot write the {what} cache {os.path.basename(path)}: {e} - "
+              f"continuing without it",
+              f"  ！无法写入{what}缓存 {os.path.basename(path)}：{e}——不使用它继续"))
+
+
+def load_pkglist(reg, img, ref, cache_dir, notes):
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+    except OSError as e:
+        log(T(f"  ! cannot use the cache directory {cache_dir}: {e} - continuing without a cache",
+              f"  ！无法使用缓存目录 {cache_dir}：{e}——不使用缓存继续"))
+    cf = os.path.join(cache_dir, f"pkglist-{img['digest'].replace(':', '')}.json")
+    if os.path.exists(cf) and os.path.getsize(cf) > 10_000:
+        try:
+            with open(cf) as fh:
+                data = json.load(fh)
+            if isinstance(data, dict) and "packages" in data:
+                pk = PackageTable(data["packages"])
+                pk.collisions = list(data.get("collisions") or [])
+                pk.headers_rejected = int(data.get("headers_rejected") or 0)
+                pk.fields_skipped = int(data.get("fields_skipped") or 0)
+            else:
+                # pre-2026-09 cache: a flat {name: entry} map, no bookkeeping
+                pk = PackageTable(data)
+            notes.append(T(f"package list of `{ref}` served from `{cf}` (no download)",
+                           f"`{ref}` 的软件包列表来自缓存 `{cf}`（未下载）"))
+            return pk
+        except Exception:
+            log(T(f"  ! cache {cf} corrupted, refetching",
+                  f"  ！缓存 {cf} 已损坏，重新获取"))
+    log(T(f"  fetching rpmdb chunk of {ref} ({img['digest'][:19]}…)",
+          f"  正在获取 {ref} 的 rpmdb chunk（{img['digest'][:19]}…）"))
+    pk = package_list(reg, img)
+    # The table's own bookkeeping rides along in the cache: writing the flat map
+    # (and reading it back as one) would make "parse problems" and "shadowed
+    # multilib packages" vanish on every cache hit.
+    _cache_write(cf, {"packages": pk, "collisions": pk.collisions,
+                      "headers_rejected": pk.headers_rejected,
+                      "fields_skipped": pk.fields_skipped}, "package list")
+    # This image's own numbers: the fixed "~33 MB fetched, ~3.7 GiB avoided" was
+    # only ever true for one variant on one architecture.
+    layers = img.get("layers") or []
+    fetched = (rpmdb_chunk({"layers": layers}) or {}).get("size", 0)
+    avoided = sum(l["size"] for l in layers) - fetched
+    notes.append(T(f"package list of `{ref}` came from that image's `rpmdb.sqlite` chunk "
+                   f"({human(fetched)} fetched, {human(avoided)} avoided)",
+                   f"`{ref}` 的软件包列表来自该镜像的 `rpmdb.sqlite` chunk"
+                   f"（仅下载 {human(fetched)}，避免 {human(avoided)}）"))
+    return pk
+
+
+def prune_cache(cache_dir: str, keep_digests, max_age_days: float) -> int:
+    """Delete cached package lists / Bodhi answers nothing will read again.
+
+    Every analysed build leaves an ~11 MB `pkglist-<digest>.json` behind and
+    nothing ever removed one, while CI restores and saves the whole directory on
+    every run: at three builds a day that is about a gigabyte a month. `check`
+    only reads a list again as the next baseline, so `keep_digests` are spared
+    and everything else goes once it is older than `max_age_days`. A Bodhi answer
+    goes as soon as it is past BODHI_TTL: updates_for_src() refetches it from
+    then on, and keeping it made every cache save carry dead answers for the
+    whole retention window. A temp file a killed run left behind goes after
+    TMP_FILE_GRACE. Returns the number of files removed.
+    """
+    if max_age_days <= 0 or not os.path.isdir(cache_dir):
+        return 0
+    keep = {f"pkglist-{d.replace(':', '')}.json" for d in keep_digests if d}
+    now = time.time()
+    cutoff = now - max_age_days * 86400
+    bodhi_cutoff = max(cutoff, now - BODHI_TTL)
+    removed = 0
+    for name in os.listdir(cache_dir):
+        if name in keep or not name.startswith(("pkglist-", "bodhi-")):
+            continue
+        # `<file>.json.tmp.<pid>` is what a run killed mid-write leaves behind
+        # (the workflow's time limit, a cancelled job). Nothing reads or replaces
+        # it - the next run has another pid - and as it does not end in `.json`
+        # it was never pruned either: CI saved it with the cache from then on.
+        orphan = bool(TMP_FILE_RE.search(name))
+        if not orphan and not name.endswith(".json"):
+            continue
+        path = os.path.join(cache_dir, name)
+        try:
+            if orphan:
+                limit = now - TMP_FILE_GRACE
+            else:
+                limit = bodhi_cutoff if name.startswith("bodhi-") else cutoff
+            if os.path.getmtime(path) < limit:
+                os.unlink(path)
+                removed += 1
+        except OSError:
+            continue        # raced with another run, or not ours to delete
+    return removed
+
+
+def orient(a: dict, b: dict, keep_order: bool = False) -> tuple:
+    """Return (older, newer) of two resolved images.
+
+    `diff A B` / `layers A B` mean "what does moving from A to B cost", so A has to
+    be the older build. That used to be an unstated assumption, and getting it
+    backwards silently inverts *every* conclusion: the security classification keys
+    off changelog entries that are new in B and errata that contain B's NVR, so a
+    reversed pair reports "no CVE/erratum found" for an update that carries two
+    dozen CVEs, and lists the fixes it *adds* as fixes it *removes*.
+    """
+    ca, cb = (a.get("created") or ""), (b.get("created") or "")
+    if keep_order or not ca or not cb or ca <= cb:
+        return a, b, False
+    return b, a, True
+
+
+def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
+            reg: Registry | None = None) -> dict:
+    # `reg` lets cmd_check hand over the Registry it already resolved and
+    # signature-verified with, instead of building a second one - which used to
+    # create a second scratch directory under /tmp and fetch a second pull token
+    # in the same run.
+    if reg is None:
+        reg = _registry(args)
+    reg._token()
+    if images is not None:
+        # cmd_check already resolved and signature-verified these; re-resolving the
+        # same tag would both re-run cosign and open a window in which the tag moves
+        # between the two lookups (state would then name a digest we never analysed)
+        a, b = images
+    else:
+        a, b = resolve(reg, ref_a), resolve(reg, ref_b)
+    a, b, swapped = orient(a, b, args.keep_order)
+    ref_a, ref_b = a["ref"], b["ref"]
+    notes: list = []
+    if swapped:
+        notes.append(T(
+            f"arguments were given newest-first and have been swapped: comparing "
+            f"`{ref_a}` (older) -> `{ref_b}` (newer). `A B` always means old -> new; "
+            f"pass --keep-order to override",
+            f"参数顺序是新在前，已自动交换：对比 `{ref_a}`（较旧）-> `{ref_b}`（较新）。"
+            f"`A B` 始终表示 旧 -> 新；如需强制保持原顺序请加 --keep-order"))
+    ld = layer_diff(a, b)
+    an_a, an_b = a["annotations"], b["annotations"]
+    meta = {"kernel_a": an_a.get("ostree.linux"), "kernel_b": an_b.get("ostree.linux"),
+            "inputhash_a": an_a.get("rpmostree.inputhash"),
+            "inputhash_b": an_b.get("rpmostree.inputhash"),
+            "commit_a": an_a.get("ostree.commit"), "commit_b": an_b.get("ostree.commit")}
+    maybe_verify_resolved(reg, a, args, notes)
+    maybe_verify_resolved(reg, b, args, notes)
+
+    ra, rb = rpmdb_chunk(a), rpmdb_chunk(b)
+    same_rpmdb = bool(ra and rb and ra.get("digest") and ra["digest"] == rb.get("digest"))
+    # an identical rpmdb cannot hold a different kernel, whatever ostree.linux says
+    meta["kernel_pkg_unchanged"] = same_rpmdb
+
+    if not args.exact:
+        diff = {"added": [], "removed": [], "downgrades": [], "changed": [],
+                "count_a": "?", "count_b": "?", "same_rpmdb": same_rpmdb}
+        # versions are unknown here unless same_rpmdb is true
+        xc = crosscheck_chunks(ld, diff, versions_known=same_rpmdb)
+        v = verdict_of(diff, ld, meta, xc)
+        if same_rpmdb:
+            notes.append(T(
+                "rpmdb chunk digest identical: package database is byte-identical, "
+                "so rpmdb fetch was safely skipped",
+                "rpmdb chunk 摘要完全一致：软件包数据库逐字节相同，安全跳过 rpmdb 拉取"))
+        else:
+            v = degrade_manifest_only_verdict(v, ld)
+            notes.append(T("manifest-only mode (--exact 0): no real versions, no CVE matching, "
+                           "no claim about which packages kept their version, and the verdict "
+                           "level is `unknown` rather than a recommendation",
+                           "仅 manifest 模式 (--exact 0)：无精确版本、不做 CVE 匹配，"
+                           "也不断言哪些软件包版本未变，verdict 级别为 `unknown` 而非建议"))
+        return {"a": a, "b": b, "diff": diff, "layers": ld, "xc": xc, "verdict": v,
+                "notes": notes}
+
+    cache_dir = args.cache_dir or os.path.expanduser("~/.cache/sbwatch")
+    pa = load_pkglist(reg, a, ref_a, cache_dir, notes)
+    if same_rpmdb:
+        # one blob, one package list: fetching and parsing the ~92 MiB database a
+        # second time could only reproduce the table we already hold
+        pb = pa
+        notes.append(T("rpmdb chunk digest identical: the package list of the older image "
+                       "was reused for the newer one (no second download or parse)",
+                       "rpmdb chunk 摘要完全一致：新镜像直接复用旧镜像的软件包列表"
+                       "（不再重复下载或解析）"))
+    else:
+        pb = load_pkglist(reg, b, ref_b, cache_dir, notes)
+    diff = pkg_diff(pa, pb)
+    diff["same_rpmdb"] = same_rpmdb
+    _ka, _kb = pa.get("kernel"), pb.get("kernel")
+    meta["kernel_pkg_unchanged"] = same_rpmdb or bool(
+        _ka and _kb and _evr_tuple(_ka) == _evr_tuple(_kb))
+    # for the report's header table: the kernel that is really installed
+    diff["kernel_evr"] = [(_ka or {}).get("evr"), (_kb or {}).get("evr")]
+    rel = fedora_release(pb, an_b.get("org.opencontainers.image.version", ""))
+    if not rel:
+        notes.append(T("WARNING: could not determine the Fedora release from the package "
+                       "list, so no Bodhi errata were consulted",
+                       "警告：无法从软件包列表判断 Fedora 版本，因此未查询任何 Bodhi 勘误"))
+    bodhi = None if (args.no_bodhi or not rel) else Bodhi(cache_dir=cache_dir,
+                                                         max_calls=args.max_bodhi)
+    for c in classify_order(diff["changed"]):       # report order stays by name
+        c["cls"] = classify_change(c["old"], c["new"], rel, bodhi)
+    # parse-quality notes: both of these used to fail silently, and both make the
+    # diff look calmer than the data warrants
+    tables = (pb,) if pa is pb else (pa, pb)
+    hdr_rej = sum(getattr(t, "headers_rejected", 0) for t in tables)
+    fld_skip = sum(getattr(t, "fields_skipped", 0) for t in tables)
+    if hdr_rej or fld_skip:
+        notes.append(T(
+            f"rpmdb parsing: {hdr_rej} package header(s) were "
+            f"rejected (size fields inconsistent) and {fld_skip} "
+            f"field(s) could not be decoded - missing fields silently weaken the diff "
+            f"(epoch, changelog/CVE scan)",
+            f"rpmdb 解析：{hdr_rej} 个包头部被拒（尺寸字段不自洽）、"
+            f"{fld_skip} 个字段无法解码——字段缺失会静默削弱 diff 的"
+            f"准确性（epoch、更新日志/CVE 扫描）"))
+    if getattr(pb, "collisions", None):
+        _c = pb.collisions
+
+        def _shadowed(x):
+            return f"{x['name']}.{x['shadowed_arch']} ({x['shadowed_evr']})"
+
+        notes.append(T(
+            f"{len(_c)} package name(s) exist in more than one architecture in this image "
+            f"(multilib); the table is name-keyed, so the lower EVR is not diffed: "
+            f"{clip_list(_c, 4, render=_shadowed)}",
+            f"此镜像中有 {len(_c)} 个包名存在多个架构（multilib）；本表以包名为键，"
+            f"因此较低 EVR 的那一个不参与 diff："
+            f"{clip_list(_c, 4, lang='zh', joiner='，', render=_shadowed)}"))
+    # disclose changelog-scan truncation: a cap nobody reports is how "no CVE
+    # found" silently becomes "no CVE read"
+    trunc = []
+    for c in diff["changed"]:
+        s = (c.get("cls") or {}).get("changelog_scan") or {}
+        if any(s.get(f"{kind}_total", 0) > s.get(f"{kind}_scanned", 0)
+               for kind in ("new", "dropped", "retained")):
+            trunc.append(c["name"])
+    if trunc:
+        notes.append(T(
+            f"changelog scan capped at {NEW_LOG_CAP} new / {OLD_LOG_CAP} dropped / "
+            f"{RETAINED_LOG_CAP} retained entries "
+            f"per package; {len(trunc)} package(s) had more and were only partially read "
+            f"({clip_list(sorted(trunc), 6)}) - CVE mentions "
+            f"beyond the cap were NOT read for them",
+            f"更新日志扫描上限为每包 {NEW_LOG_CAP} 条新增 / {OLD_LOG_CAP} 条丢失 / "
+            f"{RETAINED_LOG_CAP} 条保留条目；"
+            f"{len(trunc)} 个软件包超出上限、只被部分读取"
+            f"（{clip_list(sorted(trunc), 6, lang='zh', joiner='，')}）——"
+            f"超出部分的 CVE 提及未被读取"))
+    # names from both images: a *removed* package has a source only in the old one
+    src_of = {n: p["src"] for n, p in pb.items()}
+    if pa is not pb:
+        for n in diff["removed"]:
+            if n in pa:
+                src_of[n] = pa[n]["src"]
+    xc = crosscheck_chunks(ld, diff, src_of)
+    backlog, coverage = [], {"candidates": 0, "checked": 0, "skipped": 0, "failed": 0,
+                             "skipped_names": [], "pool_missing": [], "pool_size": 0}
+    if getattr(args, "audit", False) and bodhi is not None:
+        # Same Bodhi object as the diff classification above: one shared
+        # --max-bodhi budget (an earlier revision quietly spent a *second*,
+        # larger one - `--max-bodhi 10 --audit` still made up to 45 calls) and one
+        # shared answer cache, so a source package already looked up for the diff
+        # costs nothing here.
+        n_cand = max(1, int(getattr(args, "backlog_candidates", BACKLOG_CANDIDATES)))
+        backlog, coverage = security_backlog(pb, rel, bodhi, limit=n_cand)
+    if bodhi is not None:
+        bstate = {"failed": bodhi.failed, "skipped": bodhi.skipped,
+                  "truncated": sorted(bodhi.truncated_src)}
+    elif args.no_bodhi:
+        bstate = {"disabled": 1}
+    else:
+        # Not the same thing as --no-bodhi: the Fedora release could not be
+        # derived from the package list, so no erratum could be queried at all.
+        bstate = {"unavailable": 1}
+    # One aggregation per run: the verdict and both halves of the report all read
+    # the same source-package groups.
+    groups = group_by_src(diff["changed"])
+    v = verdict_of(diff, ld, meta, xc, backlog, bstate, groups)
+    # `backlog` is always a list, so test what decides whether the audit ran:
+    # without Bodhi (--no-bodhi, unknown release) there is no coverage to report,
+    # and "0 of 0 candidate source packages were queried" read as nothing to do.
+    if getattr(args, "audit", False) and bodhi is not None:
+        notes.append(coverage_line(coverage))
+    if bstate.get("failed"):
+        notes.append(T(f"WARNING: {bstate['failed']} Bodhi errata query(ies) failed; those "
+                       f"packages were judged from changelog CVEs only",
+                       f"警告：{bstate['failed']} 次 Bodhi 勘误查询失败；"
+                       f"这些软件包仅依据更新日志中的 CVE 判断"))
+    if bstate.get("truncated"):
+        tr_en = clip_list(bstate["truncated"], 8)
+        tr_zh = clip_list(bstate["truncated"], 8, lang="zh", joiner="，")
+        notes.append(T(
+            f"WARNING: could not read every erratum for: {tr_en} - their verdict is based only "
+            f"on the errata that were read (at most {MAX_BODHI_PAGES * BODHI_PAGE_SIZE} per "
+            f"package, fewer if --max-bodhi ran out), so 'no security fix' for them is NOT "
+            f"established",
+            f"警告：以下软件包的勘误未能全部读取：{tr_zh}——它们的结论仅基于已读取的勘误"
+            f"（每包最多 {MAX_BODHI_PAGES * BODHI_PAGE_SIZE} 条；若 --max-bodhi 用尽则更少），"
+            f"因此对它们而言「没有安全修复」并未被证实"))
+    return {"a": a, "b": b, "diff": diff, "layers": ld, "xc": xc, "verdict": v,
+            "notes": notes, "release": rel, "backlog": backlog, "backlog_coverage": coverage,
+            "groups": groups}
+
+
+def degrade_manifest_only_verdict(v: dict, ld: dict) -> dict:
+    """Manifest-only runs may describe chunks, never recommend an action.
+
+    `--exact 0` deliberately skips the rpmdb, so `changed` is empty *by
+    construction*. The headline said so, but `level` did not: it stayed `skip`
+    (or `consider`), and `level` is what the report badge, GITHUB_OUTPUT, the
+    Telegram push and `check --fail-on` all read. A run that never read a single
+    package version must not look like a recommendation.
+    """
+    npk = len(ld.get("changed_packages_from_chunks") or [])
+    v["level"] = "unknown"
+    v["level_basis"] = ("manifest-only (--exact 0): package versions were never read, "
+                        "so no package-level verdict exists")
+    v["headline"] = (f"chunk-level mode: {ld['chunks_changed']} chunk(s) changed, "
+                     f"{npk} package(s) sit in changed chunks, "
+                     f"{human(ld['download_bytes'])} to download - package versions "
+                     f"were NOT read, so no CVE/erratum verdict is possible. Drop "
+                     f"--exact 0 for exact versions and CVE matching.")
+    v["headline_zh"] = (f"chunk 级模式：{ld['chunks_changed']} 个 chunk 发生变化，"
+                        f"{npk} 个软件包位于发生变化的 chunk 中，需下载 "
+                        f"{human(ld['download_bytes'])}——未读取任何软件包版本，"
+                        f"因此无法给出 CVE/勘误结论。去掉 --exact 0 可获得精确版本与 CVE 匹配。")
+    return v
+
+
+def cmd_diff(args):
+    res = do_diff(args, args.a, args.b)
+    md = render_markdown(f"{args.image}: {shortref(res['a']['ref'])} → {shortref(res['b']['ref'])}",
+                         res["a"], res["b"],
+                         res["diff"], res["layers"], res["verdict"], res["notes"],
+                         res.get("xc"), res.get("backlog"), res.get("groups"))
+    if args.markdown:
+        _atomic_write_text(args.markdown, md)
+        log(T(f"wrote {args.markdown}", f"已写入 {args.markdown}"))
+    else:
+        print(md)
+    if args.json_out:
+        xc = res.get("xc") or {}
+        # in manifest-only mode nothing ever gets a "cls", so never index it
+        payload = {"verdict": res["verdict"],
+                   "download_bytes": res["layers"]["download_bytes"],
+                   "download_bytes_is_upper_bound": True,
+                   "versions_known": xc.get("versions_known", True),
+                   "changed": [{"name": c["name"], "old": c["old"]["evr"],
+                                "new": c["new"]["evr"], "src": c["src"],
+                                "dir": c["dir"],
+                                "security": bool((c.get("cls") or {}).get("security")),
+                                "cves": (c.get("cls") or {}).get("cves", []),
+                                "aliases": (c.get("cls") or {}).get("aliases", []),
+                                "already_had": (c.get("cls") or {}).get("already_had", []),
+                                "not_pushed": (c.get("cls") or {}).get("not_pushed", []),
+                                "passed_over": (c.get("cls") or {}).get("passed_over", []),
+                                "why": (c.get("cls") or {}).get("why", [])}
+                               for c in res["diff"]["changed"]],
+                   "silent_rebuilds": xc.get("silent_rebuilds", []),
+                   "behind_stable_security": res.get("backlog", []),
+                   "backlog_coverage": res.get("backlog_coverage"),
+                   "added": res["diff"]["added"], "removed": res["diff"]["removed"]}
+        _atomic_write_json(args.json_out, payload, indent=1)
+    # Exit status reflects *execution*, not the verdict. This used to return
+    # 1 for "consider" and 2 for "update-now", which turned an informational
+    # recommendation into what every shell reads as an error (and broke any
+    # `set -e` caller). Machines read res["verdict"]["level"] from --json-out.
+    return 0
+
+
+def gh_outputs(pairs):
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    # utf-8 by name, as for the report: `summary` is bilingual, and open() would
+    # otherwise follow the locale - an ASCII one could not write it at all
+    with open(path, "a", encoding="utf-8") as f:
+        for k, v in pairs.items():
+            v = str(v)
+            if "\n" in v or "\r" in v:
+                # Image metadata is untrusted. A fixed delimiter let its own
+                # line terminate the value and inject/overwrite step outputs.
+                lines = set(v.splitlines())
+                delimiter = "EOF_SBWATCH_" + secrets.token_hex(16)
+                while delimiter in lines:
+                    delimiter = "EOF_SBWATCH_" + secrets.token_hex(16)
+                f.write(f"{k}<<{delimiter}\n{v}\n{delimiter}\n")
+            else:
+                f.write(f"{k}={v}\n")
+
+
+def _state_label(state: dict) -> str:
+    """How a report names the image the state file points at.
+
+    Version *and* build time, like the label of a baseline picked from the build
+    history: several builds a day share one version string, and with the version
+    alone the title read `45.20261111.0 -> latest (45.20261111.0)`.
+    """
+    ver = state.get("version")
+    bits = [str(x) for x in (None if ver == "?" else ver, ts_short(state.get("created")))
+            if x]
+    return clip_text(" @ ".join(bits) or state.get("digest"), BASELINE_LABEL_CAP,
+                     lang="both")
+
+
+def cmd_check(args):
+    """Daily entry point: only do real work when the watched tag moved.
+
+    The state file stores the *digest* we last analysed, so the next run diffs the
+    new image against exactly the image you are (or were) running - and since the
+    package list of that digest is already in the cache, a steady-state run only
+    downloads one 33 MB chunk.
+    """
+    state_path = args.state or os.path.expanduser("~/.cache/sbwatch/state.json")
+    os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+    state = {}
+    if os.path.exists(state_path):
+        try:
+            with open(state_path) as fh:
+                state = json.load(fh)
+        except Exception:
+            state = {}
+    if not isinstance(state, dict):
+        # valid JSON that is no state (`null`, a list): every `state.get` below
+        # crashed on it, on each run, until someone deleted the file by hand
+        state = {}
+    reg = _registry(args)
+    reg._token()
+    # The default state path is shared by every image and architecture, and a
+    # state saved for another one is no baseline: `check --arch arm64` after an
+    # amd64 run diffed the amd64 build against the arm64 one (same repo, so the
+    # digest resolves) and reported nearly every chunk as changed.
+    ident = {"image": f"{reg.host}/{reg.repo}", "arch": reg.arch}
+    state_foreign = None
+    if any(state.get(k) and state[k] != v for k, v in ident.items()):
+        theirs = f"{state.get('image') or ident['image']} ({state.get('arch') or ident['arch']})"
+        state_foreign = T(
+            f"the state file was written for {theirs}, not for {ident['image']} "
+            f"({ident['arch']}), so it was ignored - give every watched image/arch "
+            f"its own --state",
+            f"状态文件是为 {theirs} 写的，而不是 {ident['image']}（{ident['arch']}），"
+            f"已忽略——请为每个被监控的镜像/架构单独指定 --state")
+        log("  ! " + state_foreign)
+        state = {}
+    cur = resolve(reg, args.to)
+    maybe_verify_resolved(reg, cur, args)
+    ver = cur["annotations"].get("org.opencontainers.image.version", "?")
+
+    def save_state(extra=None):
+        # `digest` is the per-arch (platform) digest - that is what a client of
+        # --arch pulls and what every comparison in this file uses. `index_digest`
+        # names the push. They are different strings and are never interchangeable.
+        d = {**ident, "digest": cur["digest"], "index_digest": cur.get("index_digest"),
+             "tag": args.to, "version": ver, "created": cur.get("created"),
+             "inputhash": cur["annotations"].get("rpmostree.inputhash"),
+             "ostree_commit": cur["annotations"].get("ostree.commit"),
+             "checked": int(time.time())}
+        if extra:
+            d.update(extra)
+        _atomic_write_json(state_path, d)      # a crash mid-write must not corrupt state
+
+    # An explicit --a (the workflow's `from_tag`) asks for that comparison; "no
+    # new build since the last look" does not answer it, so it must not skip it.
+    if state.get("digest") == cur["digest"] and not args.force and not args.a:
+        msg = T(f"no new build for {args.image}:{args.to} - still {ver} "
+                f"({cur['digest'][:19]}...), nothing to download",
+                f"{args.image}:{args.to} 无新构建——仍为 {ver}"
+                f"（{cur['digest'][:19]}...），无需下载任何内容")
+        log(msg)
+        # silent exit: no report needed, but keep GITHUB_OUTPUT for the workflow
+        # to skip notify/upload. Under GITHUB_ACTIONS still write a placeholder, so
+        # the upload step (if-no-files-found: ignore) has something to point at and
+        # the run summary is not blank.
+        report = args.report or "report.md"
+        try:
+            # write a tiny placeholder if the workflow expects a file; otherwise skip
+            if os.environ.get("GITHUB_ACTIONS"):
+                _atomic_write_text(report, f"# No new build 无新构建\n\n{msg}\n")
+                _atomic_write_json(report + ".json", {
+                    "verdict": {"level": "no-update", "headline": msg}, "version": ver,
+                    "digest": cur["digest"], "download_bytes": 0})
+        except Exception:
+            pass
+        gh_outputs({"verdict": "no-update", "digest": cur["digest"], "summary": msg,
+                    "download_bytes": 0, "report": report, "version": ver,
+                    "inputhash": cur["annotations"].get("rpmostree.inputhash") or ""})
+        return 0
+
+    # what do we compare against? 1) explicit --a  2) last digest we analysed
+    # 3) the most recent dated tag that is not the current image
+    # recent builds, newest first: lets us (a) count the builds that landed since
+    # the last look and (b) pick the immediate predecessor even on a multi-build day
+    hist = []
+    hist_warnings: list = []
+    if state_foreign:
+        hist_warnings.append(state_foreign)
+    if args.scan:
+        try:
+            hist = build_history(reg, scan=args.scan, days=0, to=args.to,
+                                 warn=hist_warnings, cur=cur)
+        except (Exception, RegistryError) as e:
+            # RegistryError is a SystemExit, so a bare `except Exception` let it
+            # through: a registry hiccup in this optional scan ended the whole run
+            # instead of falling back the way the note below promises.
+            log(T(f"  ! history scan failed: {clip_text(e, 80)}",
+                  f"  ！历史扫描失败：{clip_text(e, 80, lang='zh')}"))
+            hist_warnings.append(T(
+                f"the build history could not be scanned ({clip_text(e, 60)}), so the baseline "
+                f"was chosen from the state file / dated tags only",
+                f"无法扫描构建历史（{clip_text(e, 60, lang='zh')}），"
+                f"因此基线只能取自状态文件 / 日期标签"))
+
+    ref_a, label_a = args.a, args.a
+    prev = None
+    state_lost = False
+    state_base_dig = None
+    state_base_lbl = None
+    if not ref_a and state.get("digest") and state["digest"] != cur["digest"]:
+        state_base_dig = state["digest"]
+        state_base_lbl = _state_label(state)
+    elif (not ref_a and state.get("digest") == cur["digest"]
+          and state.get("prev_digest") and state["prev_digest"] != cur["digest"]):
+        # `check --force` on an unchanged tag re-analyses the last transition:
+        # reuse the baseline recorded in `prev_digest` instead of losing it or
+        # reversing a rollback via the history scan.
+        state_base_dig = state["prev_digest"]
+        state_base_lbl = clip_text(state.get("prev_label") or state["prev_digest"],
+                                   BASELINE_LABEL_CAP, lang="both")
+    if state_base_dig:
+        # Resolved here, before the baseline is settled: the image analysed last
+        # time can be gone by now (registries prune old builds, and a schedule
+        # that was paused long enough comes back to exactly that). Its 404 used
+        # to end the run before the state was rewritten, so every later run died
+        # on the same digest until someone deleted the cache by hand.
+        try:
+            prev = resolve(reg, state_base_dig)
+        except RegistryError as e:
+            if e.http_code != 404:
+                raise
+            state_lost = True
+            msg = T(f"the image analysed last time ({shortref(state_base_dig)}) is no "
+                    f"longer in the registry, so the baseline was chosen from the build "
+                    f"history / dated tags instead",
+                    f"上次分析的镜像（{shortref(state_base_dig)}）已不在 registry 中，"
+                    f"因此基线改由构建历史 / 日期标签选出")
+            log("  ! " + msg)
+            hist_warnings.append(msg)
+        else:
+            ref_a = state_base_dig
+            label_a = state_base_lbl
+    if not ref_a and hist:
+        # build_history rows carry the *index* digest in "digest"; comparing that
+        # against cur["digest"] (the platform digest) never matched, so the current
+        # build was never skipped and the baseline silently became the image itself -
+        # a first run then reported "no-change" with a 0-byte download.
+        for r in hist:
+            pd = r.get("platform_digest") or r["digest"]
+            if pd != cur["digest"] and (r.get("created") or "9") <= (cur.get("created") or "9"):
+                ref_a = pd
+                # the state file's label rule: a light resolve reads annotations
+                # only, and a build without the version one was titled `None @ ...`
+                label_a = _state_label(dict(r, digest=pd))
+                break
+    if not ref_a:
+        now = time.time()
+        for i in range(1, 22):
+            d = time.strftime("%Y%m%d", time.gmtime(now - i * 86400))
+            dig = tag_exists(reg, d, warn=hist_warnings)
+            if not dig or dig == cur.get("index_digest"):
+                continue
+            # A watched tag that is not the repo's newest build (`44` once `latest`
+            # is on 45) has dated tags *after* it, and the first of them became the
+            # baseline: the report read `44 -> 20261114`, the watched image as the
+            # old side of an update it never received.
+            cand = resolve(reg, d)
+            if (cand.get("created") or "") > (cur.get("created") or "9"):
+                continue
+            ref_a, label_a, prev = d, d, cand
+            break
+    if not ref_a:
+        msg = T(f"new build ({ver}) but no earlier image available to diff against",
+                f"有新构建（{ver}），但没有可用于对比的更早镜像")
+        log(msg)
+        # first run / no baseline: don't fail the workflow, just report unknown
+        # and let the workflow decide whether to notify. This used to return 1
+        # which made the GitHub Action red.
+        report = args.report or "report.md"
+        try:
+            if os.environ.get("GITHUB_ACTIONS"):
+                _atomic_write_text(report, f"# {msg}\n\nNo baseline image found to diff "
+                                          f"against / 未找到可用于对比的基线镜像. "
+                                          f"Current 当前: {ver} {cur['digest'][:19]}...\n")
+                _atomic_write_json(report + ".json", {"verdict": {"level": "unknown"},
+                                                      "version": ver,
+                                                      "digest": cur["digest"]})
+        except Exception:
+            pass
+        gh_outputs({"verdict": "unknown", "digest": cur["digest"], "summary": msg,
+                    "download_bytes": 0, "report": report, "version": ver})
+        save_state()
+        return 0
+
+    # Resolve the baseline exactly once and hand it to do_diff. Resolving the same
+    # tag twice was a TOCTOU window (a new push in between would make us analyse a
+    # different image than the one we then record in state) and ran cosign twice.
+    if prev is None:
+        prev = resolve(reg, ref_a)
+    # Rebuild-only fast path.  The signal must be the rpmdb chunk's own digest:
+    # identical blob => identical rpmdb.sqlite => pkg_diff() is necessarily empty.
+    #
+    # This used to key off `rpmostree.inputhash`, on the reasoning that identical
+    # compose inputs mean no package can have changed.  That reasoning does not
+    # hold for secureblue.  inputhash is produced by `rpm-ostree compose tree`
+    # (src/app/rpmostree-compose-builtin-tree.cxx: rpmostree_context_get_state_digest
+    # = SHA256(treefile checksum + dnf goal repodata checksums)) and stored in the
+    # *ostree commit metadata*; rpm-ostree then copies it into the OCI config
+    # labels on export (rust/src/container.rs: "Default to copying the input hash
+    # to support cheap change detection").  blue-build never runs `compose tree` -
+    # its only rpm-ostree compose call is `compose build-chunked-oci`, a rechunker
+    # (process/drivers/traits.rs) - so secureblue inherits the value verbatim from
+    # quay.io/fedora-ostree-desktops/silverblue.  Measured: 98613c9b784b (05:40Z)
+    # and 82baf9855818 (20:22Z) are distinct images with 20 of 128 layers differing
+    # and homebrew 7.0.2-26091605 -> 7.0.6-26092310, yet share inputhash
+    # 4fde5b5a8c4f..., ostree.commit 4df81387..., ostree.linux and final-diffid.
+    # Both annotations describe Fedora's compose, not secureblue's build.
+    if args.fast and not args.force:
+        ra, rb = rpmdb_chunk(prev), rpmdb_chunk(cur)
+        if ra and rb and ra["digest"] == rb["digest"]:
+            log(T("  rpmdb chunk digest identical -> manifest-only comparison "
+                  "(no rpmdb fetch)",
+                  "  rpmdb chunk 摘要相同 -> 仅用 manifest 对比（不拉取 rpmdb）"))
+            args.exact = 0
+        else:
+            ih_a, ih_b = (prev["annotations"].get("rpmostree.inputhash"),
+                          cur["annotations"].get("rpmostree.inputhash"))
+            if ih_a and ih_a == ih_b:
+                log(T("  inputhash matches but the rpmdb chunk differs - inputhash is "
+                      "inherited from the Fedora base and is blind to secureblue's own "
+                      "rebuilds, so fetching the rpmdb anyway",
+                      "  inputhash 相同但 rpmdb chunk 不同 —— inputhash 继承自 Fedora 基础镜像，"
+                      "看不到 secureblue 自己的重建，因此仍然拉取 rpmdb"))
+
+    if not args.a and prev["digest"] in (state.get("digest"), state.get("prev_digest")):
+        # A stateful watch describes the actual movement of the tag, including a
+        # rollback. Auto-orienting by build time would report the reverse upgrade
+        # (and its CVE fixes) while saving the older target as the new state.
+        args.keep_order = True
+    res = do_diff(args, ref_a, args.to, images=(prev, cur), reg=reg)
+    # Warnings about an incomplete history belong in the report: they are the
+    # difference between "nothing else was pushed" and "I could not ask".
+    res["notes"].extend(hist_warnings)
+    v = res["verdict"]
+    # The note below calls the comparison "your last image -> current image", so
+    # it only holds when the baseline IS the image analysed last time: not for an
+    # explicit --a, a forced re-check of `prev_digest`, or a baseline that had to
+    # replace a pruned one - there it miscounted and misnamed what was compared.
+    seen = (state.get("created") or "") \
+        if not state_lost and prev["digest"] == state.get("digest") else ""
+    if seen:
+        uniq, minutes = [], set()
+        for r in sorted(hist, key=lambda x: x.get("created") or ""):
+            k = (r.get("created") or "")[:16]
+            pd = r.get("platform_digest") or r["digest"]
+            # same digest-space as above: index vs platform never compares equal,
+            # which used to count the current build as an extra new one
+            if (not pd or pd in (cur["digest"], state.get("digest"))
+                    or k in minutes or (r.get("created") or "") < seen):
+                continue
+            minutes.add(k)
+            uniq.append(r)
+        if uniq:
+            res["notes"].append(T(
+                f"this image is not the only new one: {len(uniq)} build(s) were pushed after "
+                f"the build you last looked at ({ts_short(seen)}) — "
+                + ", ".join(ts_short(r["created"]) for r in uniq)
+                + " (UTC). Tags like `20260910` or `<sha>-44` are mutable and only point at "
+                  "the newest build of a day, so the comparison below is by digest: your last "
+                  "image -> current image, i.e. the full delta of skipping them all.",
+                f"这不是唯一的新镜像：在你上次查看的构建（{ts_short(seen)}）"
+                f"之后还推送了 {len(uniq)} 次构建 —— "
+                + "，".join(ts_short(r["created"]) for r in uniq)
+                + " (UTC)。`20260910`、`<sha>-44` 之类的标签是可变的，只指向当天最新构建，"
+                  "因此下方对比按 digest 进行：你的上一版镜像 -> 当前镜像，"
+                  "即跳过它们全部时的完整差异。"))
+    swapped = res["a"]["digest"] != prev["digest"]
+    from_lbl = args.to if swapped else label_a
+    to_lbl = label_a if swapped else args.to
+    md = render_markdown(
+        f"secureblue update watch / secureblue 更新监控 - {args.image}  {shortref(from_lbl)} -> {shortref(to_lbl)} ({ver})",
+                         res["a"], res["b"], res["diff"], res["layers"], v, res["notes"],
+                         res.get("xc"), res.get("backlog"), res.get("groups"))
+    report = args.report or "report.md"
+    _atomic_write_text(report, md)
+    print(md)
+    summary = (f"[{v['level'].upper()}] {v['headline']}"
+               + (f" / {v['headline_zh']}" if v.get("headline_zh") else "")
+               + f" | download 下载 {human(res['layers']['download_bytes'])}")
+    print("\n" + "=" * 72, file=sys.stderr)
+    print(summary, file=sys.stderr)
+    _atomic_write_json(report + ".json", {"verdict": v, "from": from_lbl, "to": to_lbl,
+               "digest": cur["digest"],
+               "version": ver, "download_bytes": res["layers"]["download_bytes"],
+               "changed": [{"name": c["name"], "old": c["old"]["evr"], "new": c["new"]["evr"],
+                            "src": c["src"], "dir": c["dir"],
+                            "security": bool((c.get("cls") or {}).get("security")),
+                            "cves": (c.get("cls") or {}).get("cves", [])}
+                           for c in res["diff"]["changed"]],
+               # complete: the report's backlog table stops at 25 rows and refers
+               # to the JSON output for the rest - for `check`, that is this file
+               "behind_stable_security": res.get("backlog") or [],
+               "backlog_coverage": res.get("backlog_coverage")})
+    save_state({"prev_digest": prev["digest"], "prev_label": label_a,
+                "last_verdict": v["level"]})
+    prune_days = getattr(args, "prune_days", 0) or 0
+    if prune_days > 0:
+        pruned = prune_cache(getattr(args, "cache_dir", None)
+                             or os.path.expanduser("~/.cache/sbwatch"),
+                             (cur["digest"], prev["digest"]), prune_days)
+        if pruned:
+            log(T(f"  pruned {pruned} cache file(s) older than {prune_days} day(s)",
+                  f"  已清理 {pruned} 个超过 {prune_days} 天的缓存文件"))
+    # Why `--fail-on security` trips, in the CI outputs: `update-now` is also
+    # reached by a changelog CVE mention or by secureblue escalating an update it
+    # considers major, and a red run that says only "security" gives the reader no
+    # way to tell those apart.
+    sbn_lvl = (v.get("secureblue_notification") or {}).get("level")
+    if v["level"] == "update-now":
+        reasons = []
+        if v["cves"]:
+            reasons.append(f"CVEs ({len(v['cves'])}): "
+                           + clip_list(v["cves"], 10, joiner=","))
+        if v["security_pkgs"]:
+            reasons.append(f"security packages ({len(v['security_pkgs'])}): "
+                           + clip_list(v["security_pkgs"], 10, joiner=","))
+        if sbn_lvl == "major":
+            reasons.append("secureblue treats this update as major")
+        fail_reason = "; ".join(reasons) or "update-now with no CVE/erratum attributed"
+    else:
+        fail_reason = ""
+    gh_outputs({"verdict": v["level"], "digest": cur["digest"], "version": ver,
+                "download_bytes": res["layers"]["download_bytes"], "summary": summary,
+                "report": report,
+                # complete, not clipped: a workflow consumer must never see a
+                # silently shortened CVE list (the counts make the length explicit)
+                "cves": ",".join(v["cves"]),
+                "cves_count": len(v["cves"]),
+                "security_packages": ",".join(v["security_pkgs"]),
+                "security_packages_count": len(v["security_pkgs"]),
+                "changed_count": v["changed_pkg_count"], "fail_reason": fail_reason})
+    if args.fail_on == "security" and v["level"] == "update-now":
+        return 10
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+def _registry(args) -> Registry:
+    """Build the Registry for a command and guarantee its scratch directory is
+    removed when the process ends (an extracted rpmdb chunk lands there)."""
+    reg = Registry(args.image, arch=args.arch)
+    atexit.register(reg.close)
+    # `--image ns/name:44` used to parse the tag into default_ref and then
+    # ignore it: every command took `latest` from its own --to/ref default. The
+    # explicit option still wins; the image's own tag is only the fallback.
+    for attr in ("to", "ref"):
+        if hasattr(args, attr) and getattr(args, attr) is None:
+            setattr(args, attr, reg.default_ref)
+    raw_img = (args.image or "").strip().removeprefix("docker://").removeprefix("oci:")
+    args.image = f"{reg.host}/{reg.repo}" if raw_img.startswith(reg.host + "/") else reg.repo
+    return reg
+
+
+def add_common(p):
+    p.add_argument("--image", default=DEFAULT_IMAGE,
+                   help="registry repo (host/namespace/name) 镜像仓库（主机/命名空间/名称）, "
+                        "default: %(default)s")
+    p.add_argument("--arch", default="amd64", choices=["amd64", "arm64"])
+    p.add_argument("--exact", type=int, default=1, choices=[0, 1],
+                   help="1 = read the rpmdb chunk for real NEVRAs + CVEs (~33 MB per image, "
+                        "cached) / 读取 rpmdb chunk 获取精确 NEVRA 与 CVE（每镜像约 33 MB，带缓存）, "
+                        "0 = manifest-only 仅用 manifest")
+    p.add_argument("--keep-order", action="store_true",
+                   help="do NOT auto-swap A/B by build time; compare exactly in the order "
+                        "given (A is treated as the older side) / "
+                        "不按构建时间自动交换 A/B，严格按给定顺序对比（A 视为较旧一方）")
+    p.add_argument("--no-bodhi", action="store_true",
+                   help="do not query Fedora Bodhi (changelog-CVE matching only) / "
+                        "不查询 Fedora Bodhi（仅按更新日志匹配 CVE）")
+    p.add_argument("--max-bodhi", type=int, default=100,
+                   help="cap on Bodhi API calls / Bodhi API 调用上限")
+    p.add_argument("--backlog-candidates", type=int, default=BACKLOG_CANDIDATES,
+                   help="with --audit: how many candidate source packages the "
+                        "'still behind' check may look at (it shares the --max-bodhi "
+                        "call budget) / 配合 --audit：'仍落后' 检查最多查看多少个候选源码包"
+                        "（与 --max-bodhi 共用调用预算）")
+    p.add_argument("--audit", action="store_true",
+                   help="also report published stable Fedora security updates the image is "
+                        "missing (needs extra Bodhi calls) / 额外报告镜像缺少的已发布 stable "
+                        "Fedora 安全更新（需要更多 Bodhi 调用）")
+    p.add_argument("--cache-dir", default=None,
+                   help="where to cache parsed package lists / Bodhi answers "
+                        "(default ~/.cache/sbwatch) / 软件包列表与 Bodhi 应答的缓存目录"
+                        "（默认 ~/.cache/sbwatch）")
+    # optional cosign verification
+    p.add_argument("--cosign-pub", default=None,
+                   help="path to cosign public key to verify image signature "
+                        "(e.g. https://github.com/secureblue/secureblue/raw/live/cosign.pub) / "
+                        "用于校验镜像签名的 cosign 公钥路径")
+    p.add_argument("--require-cosign", action="store_true",
+                   help="fail if cosign verification fails or cosign binary missing / "
+                        "cosign 校验失败或缺少 cosign 时直接失败退出")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="sbwatch", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("tags", help="show current image + recent dated tags / 显示当前镜像与近期日期标签")
+    add_common(p)
+    p.add_argument("--to", default=None,
+                   help="tag to look at (default: the tag in --image, else latest) / "
+                        "要查看的标签（默认：--image 中的标签，否则 latest）")
+    p.add_argument("--days", type=int, default=21)
+    p.set_defaults(func=cmd_tags)
+
+    p = sub.add_parser("layers", help="chunk-level diff: what changed, what you'd download / "
+                                      "chunk 级差异：变化内容与预计下载量")
+    add_common(p)
+    p.add_argument("a")
+    p.add_argument("b")
+    p.add_argument("--json")
+    p.set_defaults(func=cmd_layers)
+
+    p = sub.add_parser("pkgs", help="exact package list (NEVRA) of one image / 单个镜像的精确软件包列表（NEVRA）")
+    add_common(p)
+    p.add_argument("ref", nargs="?", default=None,
+                   help="image ref (default: the tag in --image, else latest) / 镜像引用（默认：--image 中的标签，否则 latest）")
+    p.add_argument("--json", help="write machine-readable package list / 输出机器可读的软件包列表")
+    p.set_defaults(func=cmd_pkgs)
+
+    p = sub.add_parser("diff", help="exact package diff + security classification / 精确软件包差异 + 安全分类")
+    add_common(p)
+    p.add_argument("a")
+    p.add_argument("b")
+    p.add_argument("--markdown")
+    p.add_argument("--json-out")
+    p.set_defaults(func=cmd_diff)
+
+    p = sub.add_parser("backlog", help="what security updates THIS image is still missing / 此镜像仍缺少哪些安全更新")
+    add_common(p)
+    p.add_argument("ref", nargs="?", default=None,
+                   help="image ref (default: the tag in --image, else latest) / 镜像引用（默认：--image 中的标签，否则 latest）")
+    p.add_argument("--json-out")
+    p.set_defaults(func=cmd_backlog)
+
+    p = sub.add_parser("history", help="list recent builds (handles several per day) / 列出近期构建（支持一天多次）")
+    add_common(p)
+    p.add_argument("--to", default=None,
+                   help="tag to look at (default: the tag in --image, else latest) / "
+                        "要查看的标签（默认：--image 中的标签，否则 latest）")
+    p.add_argument("--scan", type=int, default=12, help="how many builds to list / 列出多少次构建")
+    p.add_argument("--days", type=int, default=7,
+                   help="also resolve this many dated tags to label rows (0 = off) / "
+                        "同时解析这么多天的日期标签来标注行（0 = 关闭）")
+    p.set_defaults(func=cmd_history)
+
+    p = sub.add_parser("check", help="stateful digest watch (for CI/cron) / 有状态 digest 监控（用于 CI/cron）")
+    add_common(p)
+    p.add_argument("--to", default=None,
+                   help="tag to watch (default: the tag in --image, else latest) / 要监控的标签（默认：--image 中的标签，否则 latest）")
+    p.add_argument("--a", default=None,
+                   help="compare against this tag (default: state/recent tag); an explicit "
+                        "--a always runs the comparison, even if the digest is unchanged / "
+                        "与该标签对比（默认：状态文件/近期标签）；显式指定 --a 时，"
+                        "即使 digest 未变也会执行对比")
+    p.add_argument("--state", default=None, help="state json path / 状态 json 路径")
+    p.add_argument("--report", default=None, help="markdown report path / Markdown 报告路径")
+    p.add_argument("--force", action="store_true",
+                   help="diff even if digest is unchanged / 即使 digest 未变也做对比")
+    p.add_argument("--scan", type=int, default=12,
+                   help="build refs to scan when searching for a baseline / newer builds "
+                        "(0 = skip) / 搜索基线或新构建时扫描的构建数（0 = 跳过）")
+    p.add_argument("--no-fast", dest="fast", action="store_false",
+                   help="always fetch and diff the rpmdb exactly, even when both images' "
+                        "rpmdb chunks are byte-identical / "
+                        "即使两个镜像的 rpmdb chunk 逐字节相同，也始终拉取并精确对比 rpmdb")
+    p.set_defaults(fast=True)
+    p.add_argument("--no-audit", dest="audit", action="store_false",
+                   help="skip the 'behind on stable security updates' check / "
+                        "跳过“落后于 stable 安全更新”的检查")
+    p.set_defaults(audit=True)
+    p.add_argument("--prune-days", type=int, default=CACHE_KEEP_DAYS,
+                   help="after an analysis, delete cached package lists / Bodhi answers "
+                        "older than this many days, except those of the two images just "
+                        "compared (0 = keep everything, default: %(default)s) / "
+                        "分析完成后删除超过这么多天的软件包列表与 Bodhi 缓存"
+                        "（刚对比的两个镜像除外；0 = 全部保留，默认 %(default)s）")
+    p.add_argument("--fail-on", choices=["nothing", "security"], default="nothing",
+                   help="exit 10 when the report contains security fixes / "
+                        "报告包含安全修复时以退出码 10 结束")
+    p.set_defaults(func=cmd_check)
+
+    args = ap.parse_args(argv)
+    if args.require_cosign and not args.cosign_pub:
+        ap.error(T("--require-cosign requires --cosign-pub",
+                   "--require-cosign 必须同时提供 --cosign-pub"))
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

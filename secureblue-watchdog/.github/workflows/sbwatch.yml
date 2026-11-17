@@ -1,0 +1,365 @@
+name: secureblue update watch
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '20 * * * *'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "ghcr repo (namespace/name)"
+        default: "secureblue/silverblue-main-hardened"
+        required: false
+      arch:
+        description: "architecture"
+        default: "amd64"
+        type: choice
+        options: [amd64, arm64]
+      from_tag:
+        description: "compare against this tag instead of the last seen image (e.g. 20260916)"
+        required: false
+        default: ""
+      force:
+        description: "re-analyse even if the digest did not change"
+        type: boolean
+        default: false
+
+# Least privilege at the workflow level; `test` needs nothing beyond a readable
+# checkout, and only the `watch` job needs issues:write (sticky issue) and
+# actions:write (cache pruning).
+permissions:
+  contents: read
+
+env:
+  SB_IMAGE: ${{ inputs.image || 'secureblue/silverblue-main-hardened' }}
+  SB_ARCH: ${{ inputs.arch || 'amd64' }}
+  SB_FROM: ${{ inputs.from_tag }}
+  SB_FORCE: ${{ inputs.force }}
+  # Both switches are repository *variables* (Settings -> Secrets and variables ->
+  # Actions -> Variables) so they can actually be turned on without editing this
+  # file. They used to be hard-coded "false" here, which made the Telegram step
+  # and the red-run step unreachable no matter what the README promised.
+  POST_SKIP_VERDICT: ${{ vars.POST_SKIP_VERDICT || 'false' }}
+  FAIL_ON_SECURITY: ${{ vars.FAIL_ON_SECURITY || 'false' }}
+  # Job-level, so that a step-level `if: env.X != ''` can see it. A step-level env
+  # entry is not in scope for that step's own `if:` - that is why the Telegram
+  # push never fired before.
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  # sha256 of the committed cosign.pub. The key is the only trust anchor this
+  # workflow has, so it is vendored in the repo and its hash is checked before it
+  # is handed to `cosign verify --key`. A rotated upstream key fails the run here
+  # instead of silently changing what "verified" means.
+  COSIGN_PUB_SHA256: "9cbd48de48d467f86e0f31f9454c6e0bb663f3d033ecd92143f62577eb1cb5eb"
+
+jobs:
+  test:
+    name: Tests
+    # Only a push changes the code under test. The watch job never waits for
+    # this one, so on every scheduled or dispatched run (twice an hour) it only
+    # re-ran the same suite on the same commit and reinstalled pyflakes for it.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      # Offline: no registry or Bodhi access (the build-history test stubs
+      # list_tags, so nothing here touches the network). NOTE: the watch job runs
+      # independently of this one - a regression in rpmvercmp / classify_change
+      # shows up here but does NOT block the hourly watch.
+      - name: Run the offline test suite
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Lint (dead imports / undefined names)
+        run: |
+          python3 -m pip install --quiet pyflakes
+          python3 -m pyflakes sbwatch.py tests/
+
+  watch:
+    name: Update watch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    # One watch per image/arch at a time. Scoped to this job: at workflow level
+    # a push's Tests job had to queue behind a running watch too, and a run that
+    # is still queued is cancelled as soon as a newer one joins the group.
+    concurrency:
+      group: sbwatch-${{ inputs.image || 'secureblue/silverblue-main-hardened' }}-${{ inputs.arch || 'amd64' }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write   # sticky issue comment
+      actions: write  # pruning old caches via the API
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+
+      - name: Install cosign
+        # Pinned by commit SHA, not by tag: the `# pin:` comment next to a mutable
+        # tag documents an intention it does not enforce.
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Verify the committed cosign.pub
+        run: |
+          set -euo pipefail
+          # No download here on purpose: a key fetched at run time from somewhere
+          # else would be a trust anchor nobody audits. The file is in the repo,
+          # and this is the hash that was reviewed.
+          test -f cosign.pub
+          actual=$(sha256sum cosign.pub | awk '{print $1}')
+          if [ "$actual" != "$COSIGN_PUB_SHA256" ]; then
+            echo "::error::cosign.pub hash mismatch (expected $COSIGN_PUB_SHA256, got $actual) - refusing to verify signatures against an unexpected key"
+            exit 1
+          fi
+          head -1 cosign.pub | grep -q 'BEGIN PUBLIC KEY'
+          echo "cosign.pub OK: $actual"
+
+      - name: Derive a cache namespace from the image name
+        id: ns
+        run: |
+          # cache keys allow only alphanumerics, '-' and '_', and SB_IMAGE has a '/'
+          ns=$(printf '%s' "$SB_IMAGE" | tr -c 'A-Za-z0-9' '-' | tr -s '-' | sed 's/^-*//;s/-*$//')
+          echo "ns=$ns" >> "$GITHUB_OUTPUT"
+
+      - name: Restore sbwatch cache (package lists per image, Bodhi answers, last digest)
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/sbwatch
+          # Scoped per image *and* arch: a shared prefix let an amd64 run evict the
+          # arm64 entry and vice versa, and evicting state.json is not harmless -
+          # without it `check` has no baseline and falls back to scanning history.
+          # run_attempt is part of the key so that RE-running a workflow run (same
+          # run_id) does not hit "Cache already exists" and fail the save step.
+          key: sbwatch-${{ steps.ns.outputs.ns }}-${{ env.SB_ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sbwatch-${{ steps.ns.outputs.ns }}-${{ env.SB_ARCH }}-
+
+      - name: Analyse the newest build
+        id: check
+        run: |
+          set -uo pipefail
+          args=(--image "$SB_IMAGE" --arch "$SB_ARCH" --max-bodhi 100 --report report.md)
+          [ -n "${SB_FROM:-}" ] && args+=(--a "$SB_FROM")
+          [ "${SB_FORCE:-}" = "true" ] && args+=(--force)
+          if [ -f cosign.pub ]; then
+            args+=(--cosign-pub cosign.pub --require-cosign)
+          fi
+          # Ask sbwatch to signal "security fixes waiting" as exit code 10. Without
+          # this flag the rc=10 branch below was dead code.
+          [ "$FAIL_ON_SECURITY" = "true" ] && args+=(--fail-on security)
+          rc=0
+          python3 sbwatch.py check "${args[@]}" || rc=$?
+          # 0 = ok, 10 = "fail-on security" tripped: neither is an error here
+          if [ "$rc" != 0 ] && [ "$rc" != 10 ]; then
+            echo "sbwatch exited $rc"
+            exit "$rc"
+          fi
+          echo 'sbwatch exit code: '"$rc"
+          echo "fail_on_security=$([ "$rc" = 10 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          # `if`, not `[ -f ] &&`: as the last command of the script the failed
+          # test became the step's exit status, so a missing report.md turned a
+          # successful analysis red.
+          if [ -f report.md ]; then cat report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Save sbwatch cache
+        # Not after a `no-update` run: that path writes nothing into the cache
+        # directory, so each of those runs (nearly all of them) uploaded an
+        # identical copy under a new key and left it for the prune step below.
+        # The restore above already counts as access, so the entry does not age out.
+        if: always() && steps.check.outputs.verdict != 'no-update'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/sbwatch
+          key: sbwatch-${{ steps.ns.outputs.ns }}-${{ env.SB_ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Prune old sbwatch caches
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          NS: ${{ steps.ns.outputs.ns }}
+        with:
+          script: |
+            // Must be the SAME prefix the cache keys actually start with:
+            // sbwatch-<ns>-<arch>-<run_id>-<run_attempt>. The previous
+            // `sbwatch-${SB_ARCH}` never matched any key (the image namespace
+            // sits between), so this step silently pruned nothing while still
+            // reporting success.
+            const prefix = `sbwatch-${process.env.NS}-${process.env.SB_ARCH}-`;
+            const keep = 7;                                  // newest entries to keep
+            // One page holds at most 100 caches; at ~24 runs/day x 7 kept, the
+            // interesting entries are always on the first page, but paging keeps
+            // this correct if the retention window is ever raised.
+            let page = 1;
+            const all = [];
+            while (true) {
+              const res = await github.rest.actions.getActionsCacheList({
+                owner: context.repo.owner, repo: context.repo.repo,
+                per_page: 100, page, key: prefix,
+                sort: 'last_accessed_at', direction: 'desc',
+              });
+              const batch = res.data.actions_caches || [];
+              all.push(...batch);
+              if (batch.length < 100) break;
+              page += 1;
+            }
+            const caches = all.slice(keep);
+            for (const c of caches) {
+              await github.rest.actions.deleteActionsCacheById({
+                owner: context.repo.owner, repo: context.repo.repo, cache_id: c.id,
+              });
+              core.info(`deleted cache ${c.id} (${c.key})`);
+            }
+            core.info(`pruned ${caches.length} old cache entr(ies) of ${all.length}, kept ${keep}`);
+
+      - name: Append build history (several pushes a day share one version string)
+        if: steps.check.outputs.verdict != 'no-update' && steps.check.outputs.verdict != 'no-change' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'unknown'
+        run: |
+          {
+            echo ""
+            echo "## Builds in this repo, newest last"
+            echo '```'
+            python3 sbwatch.py history --image "$SB_IMAGE" --arch "$SB_ARCH" \
+              --scan 10 --days 7 2>&1 || echo "(history scan failed)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # NOTE: deliberately NOT the same condition as the history step above:
+      # this one also runs for 'no-change' and 'unknown' - a no-change run produces
+      # a real report worth keeping as an artifact, and the final step turns an
+      # 'unknown' run red on the promise that its report was uploaded first.
+      - name: Upload report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && steps.check.outputs.verdict != 'no-update' && steps.check.outputs.verdict != ''
+        with:
+          name: update-watch-${{ github.run_number }}
+          path: |
+            report.md
+            report.md.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Should we notify?
+        id: notify
+        env:
+          VERDICT: ${{ steps.check.outputs.verdict }}
+        run: |
+          verdict="$VERDICT"
+          post=true
+          # silent when nothing changed: no-update, no-change, unknown, empty
+          if [ "$verdict" = "no-update" ] || [ "$verdict" = "no-change" ] || [ "$verdict" = "unknown" ] || [ -z "$verdict" ]; then post=false; fi
+          if [ "$verdict" = "skip" ] && [ "$POST_SKIP_VERDICT" != "true" ]; then post=false; fi
+          {
+            echo "post=$post"
+            echo "verdict=$verdict"
+          } >> "$GITHUB_OUTPUT"
+          echo "verdict=$verdict post=$post post_skip=$POST_SKIP_VERDICT fail_on_security=$FAIL_ON_SECURITY"
+
+      - name: Comment on (or open) a sticky issue
+        if: steps.notify.outputs.post == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERDICT: ${{ steps.notify.outputs.verdict }}
+          FAIL_REASON: ${{ steps.check.outputs.fail_reason }}
+        run: |
+          title="secureblue update watch"
+          {
+            printf '> 🤖 update-watch · %s · verdict: **%s**\n\n' "$(date -u +%F)" "$VERDICT"
+            # Why the verdict is update-now. It is set whether or not FAIL_ON_SECURITY
+            # is on, so "fail-on-security trigger" read like a run that had failed.
+            if [ -n "${FAIL_REASON:-}" ]; then printf '> why update-now: %s\n\n' "$FAIL_REASON"; fi
+            if [ -f report.md ]; then cat report.md; else echo "_no report_"; fi
+          } > body.md
+          # GitHub refuses an issue/comment body over 65536 characters, and a big
+          # update (a Fedora rebase moves ~1100 source packages, tabled in both
+          # languages) exceeds that on its own: the step failed and took the
+          # Telegram push after it down too.
+          python3 - <<'PY'
+          with open("body.md", encoding="utf-8") as fh:
+              s = fh.read()
+          if len(s) > 65000:
+              s = s[:64800] + (f"\n\n… (+{len(s) - 64800} chars not shown: GitHub caps a comment at "
+                               "65536 characters - the full report is in the run summary and artifact)\n")
+              with open("body.md", "w", encoding="utf-8") as fh:
+                  fh.write(s)
+          PY
+          # Compared for equality below: the search only matches words, so any
+          # open issue whose title merely contained them received the reports.
+          num=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+                  --search "in:title \"$title\"" --json number,title \
+                  --jq "map(select(.title == \"$title\")) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --repo "$GITHUB_REPOSITORY" --body-file body.md
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file body.md \
+              --label update-watch 2>/dev/null ||
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body-file body.md
+          fi
+
+      - name: Push to Telegram
+        # env.TELEGRAM_BOT_TOKEN is defined at *job* level, so it is visible here.
+        if: steps.notify.outputs.post == 'true' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        env:
+          SUMMARY: ${{ steps.check.outputs.summary }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, sys
+          try:
+              with open("report.md", encoding="utf-8") as fh:
+                  body = fh.read()
+          except FileNotFoundError:
+              body = "(no report)"
+          text = (os.environ.get("SUMMARY") or "secureblue update") + "\n\n" + body
+          # Telegram rejects (HTTP 400) any text over 4096 characters, and the
+          # summary alone can approach 800 on a busy update (the 113-CVE webkitgtk
+          # case measures ~790) - so a fixed 3500-char slice of the report plus the
+          # summary could cross the limit.
+          if len(text) > 4096:
+              text = text[:4000] + f"\n… (+{len(text) - 4000} chars - full report in the run summary)"
+          try:
+              req = urllib.request.Request(
+                  "https://api.telegram.org/bot{}/sendMessage".format(os.environ["TELEGRAM_BOT_TOKEN"]),
+                  data=json.dumps({"chat_id": os.environ["TELEGRAM_CHAT_ID"], "text": text,
+                                   "disable_web_page_preview": True}).encode(),
+                  headers={"Content-Type": "application/json"})
+              # a byte slice can end inside a multi-byte character (a CJK chat
+              # title or bot name), which made a delivered push log as failed
+              print(urllib.request.urlopen(req, timeout=30).read()[:150].decode("utf-8", "replace"))
+          except Exception as e:
+              print(f"Telegram push failed (non-fatal): {e}", file=sys.stderr)
+          PY
+
+      - name: Red run when security fixes are waiting
+        if: env.FAIL_ON_SECURITY == 'true' && steps.check.outputs.fail_on_security == 'true'
+        env:
+          FAIL_REASON: ${{ steps.check.outputs.fail_reason }}
+        run: |
+          # Through env, never inline: fail_reason carries package names read from
+          # the image's rpmdb, and an inline expression is pasted into the script
+          # text before the shell parses it.
+          echo "::error::new image has security fixes (${FAIL_REASON}) -> rpm-ostree upgrade && systemctl reboot"
+          exit 10
+
+      # `unknown` means the watch could not conclude anything: no baseline image
+      # to diff against, an unusable tag/digest, or a probe that could not reach
+      # the registry. It is deliberately NOT a notification trigger, but leaving
+      # it as a green run made a monitoring job that stopped monitoring look
+      # exactly like a quiet week. The report is already uploaded above, so
+      # failing here still leaves the evidence in place.
+      - name: Fail when the watch could not conclude anything
+        if: steps.check.outputs.verdict == 'unknown'
+        run: |
+          echo "::error::verdict 'unknown' - the watch did not establish anything (no baseline image, or the registry could not be probed). See the run log and the uploaded report."
+          exit 1

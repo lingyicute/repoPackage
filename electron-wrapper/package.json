@@ -1,0 +1,38 @@
+{
+  "name": "lyi-electron-wrapper",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.lyi.wrapper",
+    "productName": "App",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lingyicute/electron-wrapper.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "AGPL-3.0-only",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/lingyicute/electron-wrapper/issues"
+  },
+  "homepage": "https://github.com/lingyicute/electron-wrapper#readme",
+  "devDependencies": {
+    "electron": "^45.3.3",
+    "electron-builder": "^26.15.3"
+  }
+}

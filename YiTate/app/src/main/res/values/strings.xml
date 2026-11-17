@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">YiTate</string>
+    <string name="orientation_dynamic">Dynamic</string>
+    <string name="orientation_default">Default</string>
+    <string name="orientation_full_sensor">Full sensor</string>
+    <string name="orientation_landscape">Landscape</string>
+    <string name="orientation_reverse_landscape">Reverse landscape</string>
+    <string name="orientation_sensor_landscape">Sensor landscape</string>
+    <string name="orientation_portrait">Portrait</string>
+    <string name="orientation_reverse_portrait">Reverse portrait</string>
+    <string name="orientation_sensor_portrait">Sensor portrait</string>
+    <string name="running_notification_channel_name">Running Notification</string>
+    <string name="running_notification_title">YiTate is running</string>
+    <string name="running_notification_description">YiTate is running for keeping the orientation</string>
+    <string name="running_notification_mode">Locked: %1$s</string>
+    <string name="permission_required">Please grant draw over apps permission</string>
+    <string name="about">About</string>
+    <string name="orientation_failed">Unable to lock orientation. Please check the display-over-other-apps permission.</string>
+    <string name="notification_permission_title">Show running notification?</string>
+    <string name="notification_permission_message">Notifications make it easier to return to YiTate. Orientation locking still works without notification permission.</string>
+    <string name="notification_permission_denied">Notifications are disabled; orientation locking can still run.</string>
+    <string name="allow">Allow</string>
+</resources>

@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # 两个工具链各跑一遍测试：
+  #   - go.mod：声明的最低版本，保证兼容性承诺是真的（setup-go 会精确安装 go 指令里的
+  #     那个补丁版本，例如 1.26.0，而不是最新的 1.26.x）；
+  #   - stable：build job 实际用来编译发布产物的版本，测试必须也在它上面跑过。
+  # 注意 -race 需要 cgo，所以这里不能设置 CGO_ENABLED=0。
+  test:
+    name: Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [go.mod, stable]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go != 'go.mod' && matrix.go || '' }}
+          go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
+          check-latest: true
+
+      - run: go version
+
+      - name: go mod verify / tidy check
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "以下文件未经 gofmt 格式化："; echo "$out"; exit 1
+          fi
+
+      - name: go vet (all target OSes)
+        run: |
+          go vet ./...
+          GOOS=windows go vet ./...
+          GOOS=darwin go vet ./...
+
+      - name: go test
+        run: go test -race -count=1 ./...
+
+  # staticcheck / govulncheck 的最新版通常要求最新的 Go，而 setup-go 会设置
+  # GOTOOLCHAIN=local 禁止自动下载工具链——所以这两个工具单独用当前稳定版 Go 运行。
+  lint:
+    name: Lint (Go stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          version: latest
+          install-go: false
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux,   arch: amd64, ext: "" }
+          - { os: linux,   arch: arm64, ext: "" }
+          - { os: windows, arch: amd64, ext: ".exe" }
+          - { os: windows, arch: arm64, ext: ".exe" }
+          - { os: darwin,  arch: amd64, ext: "" }
+          - { os: darwin,  arch: arm64, ext: "" }
+    steps:
+      - uses: actions/checkout@v7
+
+      # 发布产物用最新稳定版工具链编译，而不是 go.mod 里的最低版本：
+      # 静态二进制把整个标准库一起打包进去了，net/os 等包的安全修复只能靠换工具链重新编译拿到。
+      # go.mod 里的 go 1.26.0 只是下限，govulncheck 在 1.26.0 的标准库上会直接报出可达的漏洞。
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Build (static)
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          go version
+          version="nightly-$(date -u +%Y%m%d)-${GITHUB_SHA::7}"
+          out="bin/tcp-proxy-${GOOS}-${GOARCH}${{ matrix.ext }}"
+          mkdir -p bin
+          go build -trimpath -ldflags="-s -w -X main.version=${version}" -o "$out" ./cmd/tcp-proxy
+          ls -la bin
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tcp-proxy-${{ matrix.os }}-${{ matrix.arch }}
+          path: bin/*
+          if-no-files-found: error
+
+  nightly:
+    name: Publish nightly release
+    # 只在默认分支的 push 上发布，PR / 其他分支只构建不发布
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: nightly-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: tcp-proxy-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: |
+          sha256sum tcp-proxy-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Delete old nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete nightly --yes --cleanup-tag || true
+
+      - name: Publish nightly release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create nightly dist/* \
+            --title "Nightly Build" \
+            --notes "auto build · ${GITHUB_SHA:0:7} · ${GITHUB_REF_NAME} · $(date -u +'%Y-%m-%d %H:%M UTC')" \
+            --prerelease \
+            --target "$GITHUB_SHA"

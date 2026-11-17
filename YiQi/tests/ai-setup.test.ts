@@ -1,0 +1,228 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AiPlayer } from '../src/ai/aiPlayer';
+import { prepareModels, revokeModelUrl } from '../src/ai/modelFiles';
+import { KataGoClient } from '../src/ai/client';
+
+vi.mock('../src/ai/modelFiles', () => ({
+  prepareModels: vi.fn(), revokeModelUrl: vi.fn(), preferredBackend: vi.fn(async () => 'wasm'),
+  modelsCached: vi.fn(), TOTAL_DOWNLOAD_BYTES: 10,
+}));
+vi.mock('../src/ai/client', () => ({
+  KataGoClient: vi.fn(function () {
+    return { init: vi.fn(async () => ({ backend: 'wasm' })), dispose: vi.fn(), cancel: vi.fn(), analyze: vi.fn() };
+  }),
+}));
+const result = () => ({ humanModelUrl: 'blob:human', mainModelUrl: 'blob:main', humanBlob: new Blob(['human']) });
+afterEach(() => vi.clearAllMocks());
+
+describe('AI setup lifecycle', () => {
+  it('concurrent callers wait for the same setup operation', async () => {
+    let release!: (r: ReturnType<typeof result>) => void;
+    vi.mocked(prepareModels).mockImplementation(() => new Promise(r => { release = r; }));
+    const ai = new AiPlayer();
+    const first = ai.setup(() => {});
+    const second = ai.setup(() => {});
+    expect(first).toBe(second);
+    await Promise.resolve();
+    expect(ai.ready).toBe(false);
+    release(result());
+    await Promise.all([first, second]);
+    expect(prepareModels).toHaveBeenCalledTimes(1);
+    expect(ai.ready).toBe(true);
+    ai.dispose();
+    expect(revokeModelUrl).toHaveBeenCalledWith('blob:human');
+    expect(revokeModelUrl).toHaveBeenCalledWith('blob:main');
+  });
+  it('late callers receive progress of the setup already running', async () => {
+    let release!: (r: ReturnType<typeof result>) => void;
+    let report!: (p: { receivedBytes: number; totalBytes: number; bytesPerSecond: number }) => void;
+    vi.mocked(prepareModels).mockImplementation((cb) => new Promise(r => { report = cb; release = r; }));
+    const ai = new AiPlayer();
+    const early = vi.fn();
+    const late = vi.fn();
+    const first = ai.setup(early);
+    await Promise.resolve();
+    await Promise.resolve();
+    report({ receivedBytes: 2, totalBytes: 10, bytesPerSecond: 1 });
+    const second = ai.setup(late);
+    expect(late).toHaveBeenCalledWith(2, 10, 1);
+    report({ receivedBytes: 5, totalBytes: 10, bytesPerSecond: 2 });
+    expect(early).toHaveBeenLastCalledWith(5, 10, 2);
+    expect(late).toHaveBeenLastCalledWith(5, 10, 2);
+    release(result());
+    await Promise.all([first, second]);
+    ai.dispose();
+  });
+  it('reports the initializing stage to every listener once the bytes are in', async () => {
+    let initDone!: (r: { backend: string }) => void;
+    vi.mocked(prepareModels).mockResolvedValue(result());
+    vi.mocked(KataGoClient).mockImplementationOnce(function () {
+      return { init: vi.fn(() => new Promise(r => { initDone = r as typeof initDone; })), dispose: vi.fn(), cancel: vi.fn(), analyze: vi.fn() };
+    } as never);
+    const ai = new AiPlayer();
+    const early = vi.fn();
+    const late = vi.fn();
+    const first = ai.setup(early);
+    await vi.waitFor(() => expect(ai.status).toBe('initializing'));
+    const second = ai.setup(late);
+    expect(early).toHaveBeenLastCalledWith(10, 10, 0);
+    expect(late).toHaveBeenCalledWith(10, 10, 0);
+    initDone({ backend: 'wasm' });
+    await Promise.all([first, second]);
+    ai.dispose();
+  });
+  it('dispose during download cannot resurrect a ready worker or leak URLs', async () => {
+    let release!: (r: ReturnType<typeof result>) => void;
+    vi.mocked(prepareModels).mockImplementation(() => new Promise(r => { release = r; }));
+    const ai = new AiPlayer();
+    const pending = ai.setup(() => {});
+    const rejected = expect(pending).rejects.toThrow('canceled');
+    await Promise.resolve();
+    ai.dispose();
+    release(result());
+    await rejected;
+    expect(ai.status).toBe('idle');
+    expect(KataGoClient).not.toHaveBeenCalled();
+    expect(revokeModelUrl).toHaveBeenCalledTimes(2);
+  });
+  it.each([true, false])('releases retry bytes only after successful human-policy loading: %s', async loaded => {
+    vi.mocked(prepareModels).mockResolvedValue(result());
+    const ai = new AiPlayer();
+    await ai.setup(() => {});
+    const client = vi.mocked(KataGoClient).mock.results[0]!.value;
+    client.analyze.mockResolvedValue({
+      humanPolicy: loaded ? new Float32Array(82) : undefined,
+      ownership: new Float32Array(81), rootScoreLead: 0,
+      moves: [{ order: 0, x: -1, y: -1 }],
+    });
+    await ai.chooseMove({ difficulty: 'easy', board: Array.from({ length: 9 }, () => Array(9).fill(null)), currentPlayer: 'black', moveHistory: [], rules: 'chinese-ogs', isLegal: () => true });
+    expect(revokeModelUrl).toHaveBeenCalledTimes(loaded ? 1 : 0);
+    ai.dispose();
+  });
+
+  it('a crashed worker is not ready and setup can replace it', async () => {
+    vi.mocked(prepareModels).mockResolvedValue(result());
+    const ai = new AiPlayer();
+    await ai.setup(() => {});
+    const client = vi.mocked(KataGoClient).mock.results[0]!.value;
+    client.backendCrash = new Error('crashed');
+    expect(ai.ready).toBe(false);
+    await ai.setup(() => {});
+    expect(client.dispose).toHaveBeenCalled();
+    expect(KataGoClient).toHaveBeenCalledTimes(2);
+    expect(ai.ready).toBe(true);
+    ai.dispose();
+  });
+
+  it('dispose during worker init rejects with canceled', async () => {
+    vi.mocked(prepareModels).mockResolvedValue(result());
+    let rejectInit!: (err: Error) => void;
+    vi.mocked(KataGoClient).mockImplementationOnce(function () {
+      return {
+        init: vi.fn(() => new Promise((_, rej) => { rejectInit = rej; })),
+        dispose: vi.fn(() => rejectInit?.(new Error('AI 引擎已销毁'))),
+        cancel: vi.fn(),
+        analyze: vi.fn(),
+      };
+    } as never);
+    const ai = new AiPlayer();
+    const pending = ai.setup(() => {});
+    const rejected = expect(pending).rejects.toThrow('canceled');
+    await vi.waitFor(() => expect(ai.status).toBe('initializing'));
+    ai.dispose();
+    await rejected;
+    expect(ai.status).toBe('idle');
+  });
+
+  it('forwards the initialized backend and board history to chooseMove and finalOwnership', async () => {
+    vi.mocked(prepareModels).mockResolvedValue(result());
+    const ai = new AiPlayer();
+    await ai.setup(() => {});
+    const client = vi.mocked(KataGoClient).mock.results[0]!.value;
+    client.analyze.mockResolvedValue({
+      humanPolicy: new Float32Array(82),
+      ownership: new Float32Array(81),
+      rootScoreLead: 0,
+      moves: [{ order: 0, x: -1, y: -1 }],
+    });
+    const board = Array.from({ length: 9 }, () => Array(9).fill(null));
+    const prev = Array.from({ length: 9 }, () => Array(9).fill(null));
+    const prev2 = Array.from({ length: 9 }, () => Array(9).fill(null));
+    await ai.chooseMove({
+      difficulty: 'easy',
+      board,
+      previousBoard: prev,
+      previousPreviousBoard: prev2,
+      currentPlayer: 'black',
+      moveHistory: [],
+      rules: 'chinese-ogs',
+      isLegal: () => true,
+    });
+    expect(client.analyze).toHaveBeenLastCalledWith(expect.objectContaining({
+      backend: 'wasm',
+      previousBoard: prev,
+      previousPreviousBoard: prev2,
+    }));
+    await ai.finalOwnership({
+      board,
+      previousBoard: prev,
+      previousPreviousBoard: prev2,
+      currentPlayer: 'black',
+      moveHistory: [],
+      rules: 'chinese-ogs',
+    });
+    expect(client.analyze).toHaveBeenLastCalledWith(expect.objectContaining({
+      backend: 'wasm',
+      previousBoard: prev,
+      previousPreviousBoard: prev2,
+    }));
+    ai.dispose();
+  });
+
+  it('aborts in-flight prepareModels signal on dispose', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    vi.mocked(prepareModels).mockImplementation((_cb, signal) => {
+      capturedSignal = signal;
+      return new Promise((_, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+      });
+    });
+    const ai = new AiPlayer();
+    const pending = ai.setup(() => {});
+    const rejected = expect(pending).rejects.toThrow('canceled');
+    await vi.waitFor(() => expect(capturedSignal).toBeDefined());
+    expect(capturedSignal!.aborted).toBe(false);
+    ai.dispose();
+    expect(capturedSignal!.aborted).toBe(true);
+    await rejected;
+  });
+
+  it('marks sampled pass moves with isPass: true even when engineBest is a board move', async () => {
+    vi.mocked(prepareModels).mockResolvedValue(result());
+    const ai = new AiPlayer();
+    await ai.setup(() => {});
+    const client = vi.mocked(KataGoClient).mock.results[0]!.value;
+    const humanPolicy = new Float32Array(82);
+    humanPolicy[20] = 1;
+    client.analyze.mockResolvedValue({
+      humanPolicy,
+      ownership: new Float32Array(81),
+      rootScoreLead: 0,
+      moves: [
+        { order: 0, x: 2, y: 2, playSelectionValue: 0, visits: 0, utility: 0 },
+        { order: 1, x: -1, y: -1, playSelectionValue: 100, visits: 64, utility: 0 },
+      ],
+    });
+    const mv = await ai.chooseMove({
+      difficulty: 'easy',
+      board: Array.from({ length: 9 }, () => Array(9).fill(null)),
+      currentPlayer: 'black',
+      moveHistory: [],
+      rules: 'chinese-ogs',
+      isLegal: () => true,
+    });
+    expect(mv).toEqual({ x: -1, y: -1, isPass: true });
+    ai.dispose();
+  });
+
+});

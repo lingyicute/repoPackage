@@ -1,0 +1,64 @@
+name: Font Subsetting & Embed
+
+on:
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "index.html"
+      - "scripts/subset_font.py"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+# 字体任务会改写并推送 index.html；串行执行，避免相邻推送并发时互相覆盖或推送被拒。
+concurrency:
+  group: font-subset-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  subset-and-embed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fonttools==4.68.0 brotli==1.2.1
+
+      - name: Download Nebulove & Subset Font
+        run: |
+          python scripts/subset_font.py
+
+      - name: Commit and push changes as user
+        id: commit
+        env:
+          COMMIT_NAME: ${{ github.actor }}
+          COMMIT_EMAIL: ${{ github.event.pusher.email || format('{0}@users.noreply.github.com', github.actor) }}
+        run: |
+          if git diff --quiet index.html; then
+            echo "No changes in index.html detected."
+          else
+            git config user.name "$COMMIT_NAME"
+            git config user.email "$COMMIT_EMAIL"
+            git add index.html
+            git commit -m "perf: 更新 Nebulove 字体子集"
+            git push
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # GITHUB_TOKEN 推送的提交不会触发其他工作流，字体提交需显式重新发布 Pages。
+      - name: Redeploy Pages with the embedded font
+        if: steps.commit.outputs.pushed == 'true' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run static.yml --ref main

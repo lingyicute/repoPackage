@@ -1,0 +1,213 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_NAME: cloudflared-tunnel-manager
+  APP_ID: uk._92li.cftm.CloudflaredTunnelManager
+
+jobs:
+  check:
+    name: Tests & import check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK4 / libadwaita / PyGObject
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-gi python3-gi-cairo \
+            gir1.2-gtk-4.0 gir1.2-adw-1 gir1.2-pango-1.0 libadwaita-1-0 \
+            xvfb xauth xdotool xclip dbus-x11
+
+      - name: Byte-compile
+        run: python3 -m compileall -q cftm main.py tests
+
+      - name: Unit tests (no display needed)
+        run: |
+          python3 tests/test_quick_tunnel.py
+          python3 -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Doctests (no display needed)
+        run: |
+          python3 - <<'EOF'
+          import doctest
+          import cftm.quick_tunnel as quick_tunnel
+          result = doctest.testmod(quick_tunnel)
+          raise SystemExit(1 if result.failed else 0)
+          EOF
+
+      - name: Import modules under virtual display
+        run: |
+          xvfb-run -a python3 - <<'EOF'
+          import gi
+          gi.require_version("Gtk", "4.0")
+          gi.require_version("Adw", "1")
+          from gi.repository import Adw, Gtk
+          import cftm.app, cftm.binary_manager, cftm.tunnel, cftm.dialogs, cftm.versions_page
+          import cftm.quick_tunnel
+          from cftm.tunnel import TunnelConfig
+          cfg = TunnelConfig(hostname="ssh.example.com", port=2222)
+          assert cfg.build_argv("cloudflared")[:3] == ["cloudflared", "access", "tcp"]
+          # 不许再把“协议类型”加回来：access 的 ssh/rdp/smb 只是 tcp 的别名，同一个 Action
+          assert "mode" not in TunnelConfig.__dataclass_fields__
+          # 老配置里残留的 mode 键必须被静默丢弃，且不影响生成的命令行
+          legacy = TunnelConfig.from_dict({"hostname": "nas.example.com", "port": 445, "mode": "smb"})
+          assert legacy.build_argv("cloudflared")[:3] == ["cloudflared", "access", "tcp"]
+          assert "mode" not in legacy.to_dict()
+          print("OK", Adw.get_major_version(), Adw.get_minor_version(), Adw.get_micro_version())
+          EOF
+
+      - name: GTK regression tests
+        env:
+          GTK_A11Y: none
+          G_DEBUG: fatal-warnings
+        run: xvfb-run -a python3 tests/ui_regressions.py -v
+
+      # 真跑一遍 UI：xdotool 制造“窗口获得焦点”、xclip 放剪贴板内容，断言
+      # 弹窗 → 点“是” → 预填好的新建对话框 → 敲端口回车保存 → 落盘。
+      - name: End-to-end test (clipboard quick tunnel)
+        run: xvfb-run -a python3 tests/e2e_quick_tunnel.py
+
+      # 共用的 TunnelDialog 被改动过，普通新建 / 编辑这条路径也要有人守着
+      - name: End-to-end test (tunnel dialog)
+        run: xvfb-run -a python3 tests/e2e_tunnel_dialog.py
+
+  pyinstaller:
+    if: github.event_name != 'pull_request'
+    name: PyInstaller (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 python3-venv python3-gi python3-gi-cairo \
+            gir1.2-gtk-4.0 gir1.2-adw-1 libadwaita-1-0 \
+            gir1.2-glib-2.0 gir1.2-pango-1.0 gir1.2-gdkpixbuf-2.0 \
+            gir1.2-graphene-1.0 gir1.2-harfbuzz-0.0 gir1.2-freedesktop \
+            libgirepository-1.0-1 gobject-introspection \
+            librsvg2-common adwaita-icon-theme gsettings-desktop-schemas \
+            shared-mime-info binutils
+
+      - name: Create venv with system site packages
+        run: |
+          python3 -m venv --system-site-packages .venv
+          .venv/bin/pip install --upgrade pip "pyinstaller>=6.13"
+
+      - name: Build with PyInstaller
+        run: |
+          .venv/bin/pyinstaller --noconfirm --clean cloudflared-tunnel-manager.spec
+
+      - name: Verify bundled GI typelibs
+        run: |
+          TYPELIBS="dist/${APP_NAME}/_internal/gi_typelibs"
+          echo "== bundled typelibs =="; ls -1 "$TYPELIBS"
+          for ns in Gtk-4.0 Gdk-4.0 Gsk-4.0 Adw-1 Gio-2.0 GLib-2.0 GObject-2.0 \
+                    Pango-1.0 PangoCairo-1.0 GdkPixbuf-2.0 Graphene-1.0; do
+            [ -f "${TYPELIBS}/${ns}.typelib" ] || { echo "::error::missing ${ns}.typelib in bundle"; exit 1; }
+          done
+
+      - name: Smoke test frozen binary (headless)
+        run: |
+          # 用干净的环境变量运行，确保只依赖打包产物、不会偷偷加载系统 typelib
+          env -i HOME="$HOME" PATH=/usr/bin:/bin "dist/${APP_NAME}/${APP_NAME}" --self-test
+
+      - name: Package tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = "tag" ] || VERSION="dev-${GITHUB_SHA::7}"
+          OUT="${APP_NAME}-${VERSION}-linux-${{ matrix.arch }}"
+          cp README.md LICENSE* "dist/${APP_NAME}/" 2>/dev/null || true
+          cp data/${APP_ID}.desktop "dist/${APP_NAME}/"
+          tar -C dist -czf "${OUT}.tar.gz" "${APP_NAME}"
+          sha256sum "${OUT}.tar.gz" > "${OUT}.tar.gz.sha256"
+          echo "ARTIFACT=${OUT}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: |
+            ${{ env.ARTIFACT }}.tar.gz
+
+  flatpak:
+    if: github.event_name != 'pull_request'
+    name: Flatpak (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: ${{ env.APP_NAME }}-${{ matrix.arch }}.flatpak
+          manifest-path: flatpak/${{ env.APP_ID }}.json
+          # cache-key 带 github.sha 会让每次构建的 key 都不同、缓存永远命中不了；
+          # 改为按 arch + 清单文件哈希，才能复用 SDK/运行时缓存。
+          cache-key: flatpak-builder-${{ matrix.arch }}-${{ hashFiles('flatpak/*.json') }}
+          arch: ${{ matrix.arch }}
+          upload-artifact: true
+
+  release:
+    # workflow_dispatch 可以在任意分支上手动触发；nightly 只能由 main 发布
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    name: Publish release
+    needs: [check, pyinstaller, flatpak]
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-nightly
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -hla artifacts
+
+      - name: Create Release and Upload Assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 固定 nightly 标签；并发发布串行化，避免两个作业交错删除/创建。
+          gh release delete "nightly" --yes --cleanup-tag 2>/dev/null || true
+          (cd artifacts && sha256sum *.tar.gz *.flatpak > SHA256SUMS)
+          gh release create "nightly" artifacts/*.tar.gz artifacts/*.flatpak artifacts/SHA256SUMS \
+            --target "$GITHUB_SHA" \
+            --title "Nightly Release" \
+            --notes-file - << 'EOF'
+          自动构建的发行版
+          EOF

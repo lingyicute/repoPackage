@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory
+        android:title="@string/settings_category_appearance"
+        app:iconSpaceReserved="false">
+
+        <ListPreference
+            android:defaultValue="system"
+            android:entries="@array/theme_list"
+            android:entryValues="@array/theme_list_values"
+            android:icon="@drawable/ic_dark_mode"
+            android:key="currentTheme"
+            android:title="@string/settings_theme"
+            app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:icon="@drawable/ic_wallpaper"
+            android:key="pref_dynamic_colors"
+            android:summary="@string/settings_dynamic_colors_summary"
+            android:title="@string/settings_dynamic_colors" />
+
+        <ListPreference
+            android:defaultValue="1"
+            android:entries="@array/color_list"
+            android:entryValues="@array/color_list_values"
+            android:icon="@drawable/ic_palette"
+            android:key="pref_color"
+            android:title="@string/settings_color"
+            app:useSimpleSummaryProvider="true" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="@string/settings_category_game"
+        app:iconSpaceReserved="false">
+
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:icon="@drawable/ic_animation"
+            android:key="pref_animationActivated"
+            android:summary="@string/settings_animation_summary"
+            android:title="@string/settings_animation" />
+
+        <SwitchPreferenceCompat
+            android:defaultValue="true"
+            android:icon="@drawable/ic_screen_lock"
+            android:key="switch_preference_1"
+            android:summary="@string/settings_display_summary"
+            android:title="@string/settings_display" />
+
+    </PreferenceCategory>
+
+</PreferenceScreen>

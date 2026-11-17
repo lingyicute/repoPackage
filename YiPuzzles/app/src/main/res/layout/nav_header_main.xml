@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Navigation drawer header (Material 3) -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="28dp"
+    android:paddingTop="24dp"
+    android:paddingEnd="28dp"
+    android:paddingBottom="16dp">
+
+    <com.google.android.material.card.MaterialCardView
+        android:layout_width="56dp"
+        android:layout_height="56dp"
+        app:cardBackgroundColor="?attr/colorPrimaryContainer"
+        app:cardElevation="0dp"
+        app:shapeAppearance="@style/ShapeAppearance.Material3.Corner.Large">
+
+        <ImageView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@string/app_name"
+            android:padding="6dp"
+            android:scaleType="fitCenter"
+            android:src="@mipmap/ic_launcher_monochrome"
+            app:tint="?attr/colorOnPrimaryContainer" />
+
+    </com.google.android.material.card.MaterialCardView>
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textAppearance="?attr/textAppearanceTitleLarge"
+            android:textColor="?attr/colorOnSurface" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/title_activity_game"
+            android:textAppearance="?attr/textAppearanceBodyMedium"
+            android:textColor="?attr/colorOnSurfaceVariant" />
+
+    </LinearLayout>
+
+</LinearLayout>

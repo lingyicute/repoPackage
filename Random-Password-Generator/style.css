@@ -1,0 +1,1310 @@
+@font-face {
+  font-family: "MierB03";
+  src: url("./fonts/MierB03-SubsetEng-Regular.woff2") format("woff2"), url("./fonts/MierB03-SubsetEng-Regular.woff") format("woff");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "MierB03";
+  src: url("./fonts/MierB03-SubsetEng-ExtraBold.woff2") format("woff2"), url("./fonts/MierB03-SubsetEng-ExtraBold.woff") format("woff");
+  font-style: normal;
+  font-weight: 750;
+  font-display: swap;
+}
+
+:root {
+  --bs-green-bright-rgb: 154, 228, 55;
+  --bs-green-pale-rgb: 200, 235, 155;
+  --bs-white-rgb: 255, 255, 255;
+  --bs-orange-pale-rgb: 255, 221, 191;
+  --bs-orange-faint-rgb: 255, 241, 229;
+  --bs-orange-off-white-rgb: 255, 249, 245;
+  --bs-orange-bright-rgb: 255, 121, 0;
+  --bs-orange-light-rgb: 255, 170, 85;
+  --bs-font-sans-serif: "MierB03", system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --bs-body-font-family: var(--bs-font-sans-serif);
+  --bs-body-font-weight: 400;
+  --bs-body-color: #071d2b;
+  --bs-body-bg: #fff;
+  --bs-link-color: #0d6efd;
+  --bs-link-hover-color: #0a58ca;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  --bs-bg-opacity: 1;
+  --bs-gutter-x: 2rem;
+  --bs-gutter-y: 0;
+  margin: 0;
+  font-family: var(--bs-body-font-family);
+  font-size: 0.875rem;
+  font-weight: var(--bs-body-font-weight);
+  line-height: 1.375rem;
+  color: var(--bs-body-color);
+  background-color: var(--bs-body-bg);
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+}
+
+@media (min-width: 992px) {
+  body {
+    font-size: 1rem;
+    line-height: 1.625rem;
+  }
+}
+
+/* Typography & Utilities */
+h1 {
+  position: relative;
+  margin: 0;
+  font-size: 2.375rem;
+  line-height: 3.125rem;
+  font-weight: 750;
+}
+
+@media (min-width: 375px) {
+  h1 {
+    font-size: 2.625rem;
+    line-height: 3.375rem;
+  }
+}
+
+@media (min-width: 992px) {
+  h1 {
+    font-size: 3.5rem;
+    line-height: 4.5rem;
+  }
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.75rem;
+  line-height: 2.25rem;
+  font-weight: 750;
+}
+
+@media (min-width: 992px) {
+  h2 {
+    font-size: 2.25rem;
+    line-height: 2.875rem;
+  }
+}
+
+.h7 {
+  display: block;
+  font-size: 1.125rem;
+  line-height: 1.5rem;
+  font-weight: 750;
+  margin-bottom: 0.5rem;
+}
+
+@media (min-width: 992px) {
+  .h7 {
+    font-size: 1.375rem;
+    line-height: 1.875rem;
+  }
+}
+
+p {
+  margin: 0;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid #dee2e6;
+}
+
+img {
+  vertical-align: middle;
+}
+
+a {
+  color: var(--bs-link-color);
+  text-decoration: underline;
+}
+
+a:hover {
+  color: var(--bs-link-hover-color);
+}
+
+label {
+  display: inline-block;
+}
+
+input,
+button {
+  margin: 0;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+button {
+  border-radius: 0;
+  text-transform: none;
+  -webkit-appearance: button;
+}
+
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+.body-1 {
+  font-size: 1.125rem;
+  line-height: 1.875rem;
+}
+
+.body-2 {
+  font-size: 1rem;
+  line-height: 1.625rem;
+}
+
+.body-4 {
+  font-size: 0.75rem;
+  line-height: 1rem;
+}
+
+.tagline-sm {
+  font-size: 0.75rem;
+  line-height: 14px;
+  letter-spacing: 0.6px;
+}
+
+@media (min-width: 992px) {
+  .body-1 {
+    font-size: 1.375rem;
+    line-height: 2.25rem;
+  }
+
+  .body-2 {
+    font-size: 1.125rem;
+    line-height: 1.875rem;
+  }
+
+  .body-4 {
+    font-size: 0.875rem;
+    line-height: 1.375rem;
+  }
+
+  .tagline-sm {
+    font-size: 14px;
+    line-height: 1rem;
+    letter-spacing: 0.8px;
+  }
+}
+
+[class*="tagline-"] {
+  font-weight: 750;
+}
+
+.fw-bold {
+  font-weight: 750 !important;
+}
+
+.text-center {
+  text-align: center !important;
+}
+
+.text-muted {
+  color: #526675;
+}
+
+.shadow-none {
+  box-shadow: none !important;
+}
+
+/* Colors */
+.bg-white {
+  --bs-bg-opacity: 1;
+  background-color: rgba(var(--bs-white-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.bg-green-bright {
+  --bs-bg-opacity: 1;
+  background-color: rgba(var(--bs-green-bright-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.bg-green-pale {
+  --bs-bg-opacity: 1;
+  background-color: rgba(var(--bs-green-pale-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.bg-orange-bright {
+  --bs-bg-opacity: 1;
+  background-color: rgba(var(--bs-orange-bright-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.bg-orange-light {
+  --bs-bg-opacity: 1;
+  background-color: rgba(var(--bs-orange-light-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.bg-orange-pale {
+  --bs-bg-opacity: 1;
+  background-color: rgba(var(--bs-orange-pale-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.bg-orange-faint {
+  --bs-bg-opacity: 1;
+  background-color: rgba(var(--bs-orange-faint-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.bg-orange-off-white {
+  --bs-bg-opacity: 1;
+  background-color: rgba(var(--bs-orange-off-white-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.border-orange-pale {
+  --bs-border-opacity: 1;
+  border: 1px solid rgba(var(--bs-orange-pale-rgb), var(--bs-border-opacity)) !important;
+}
+
+/* Spacing Utilities */
+.mb-16 {
+  margin-bottom: 1rem !important;
+}
+
+.mb-32 {
+  margin-bottom: 2rem !important;
+}
+
+.mb-40 {
+  margin-bottom: 2.5rem !important;
+}
+
+.ms-8 {
+  margin-left: 0.5rem !important;
+}
+
+.me-12 {
+  margin-right: 0.75rem !important;
+}
+
+.ms-12 {
+  margin-left: 0.75rem !important;
+}
+
+@media (min-width: 992px) {
+  .mb-lg-0 {
+    margin-bottom: 0 !important;
+  }
+
+  .mb-lg-40 {
+    margin-bottom: 2.5rem !important;
+  }
+
+  .mb-lg-56 {
+    margin-bottom: 3.5rem !important;
+  }
+
+  .me-lg-16 {
+    margin-right: 1rem !important;
+  }
+
+  .me-lg-24 {
+    margin-right: 1.5rem !important;
+  }
+
+  .ms-lg-16 {
+    margin-left: 1rem !important;
+  }
+}
+
+@media (min-width: 1280px) {
+  .me-xl-24 {
+    margin-right: 1.5rem !important;
+  }
+
+  .me-xl-48 {
+    margin-right: 3rem !important;
+  }
+}
+
+/* Grid & Containers */
+.container {
+  --bs-gutter-x: 2rem;
+  --bs-gutter-y: 0;
+  width: 100%;
+  padding-right: calc(var(--bs-gutter-x) * 0.5);
+  padding-left: calc(var(--bs-gutter-x) * 0.5);
+  margin-right: auto;
+  margin-left: auto;
+}
+
+@media (min-width: 576px) {
+  .container {
+    max-width: 540px;
+  }
+}
+
+@media (min-width: 768px) {
+  .container {
+    max-width: 720px;
+  }
+}
+
+@media (min-width: 992px) {
+  .container {
+    max-width: 960px;
+  }
+}
+
+@media (min-width: 1280px) {
+  .container {
+    max-width: 1224px;
+  }
+}
+
+@media (min-width: 1366px) {
+  .container {
+    max-width: 1320px;
+  }
+}
+
+.row {
+  --bs-gutter-x: 2rem;
+  --bs-gutter-y: 0;
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: calc(-1 * var(--bs-gutter-y));
+  margin-right: calc(-0.5 * var(--bs-gutter-x));
+  margin-left: calc(-0.5 * var(--bs-gutter-x));
+}
+
+.row > * {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 100%;
+  padding-right: calc(var(--bs-gutter-x) * 0.5);
+  padding-left: calc(var(--bs-gutter-x) * 0.5);
+  margin-top: var(--bs-gutter-y);
+}
+
+.justify-content-center {
+  justify-content: center !important;
+}
+
+.col-12 {
+  flex: 0 0 auto;
+  width: 100%;
+}
+
+@media (min-width: 992px) {
+  .col-lg-3 {
+    flex: 0 0 auto;
+    width: 25%;
+  }
+}
+
+@media (min-width: 1280px) {
+  .col-xl-10 {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+}
+
+/* Password Generator Layout */
+.password-generator {
+  padding: 4rem 0;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+}
+
+@media (min-width: 992px) {
+  .password-generator {
+    padding: 8rem 0;
+  }
+}
+
+.password-generator .generator-container {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+@media (min-width: 992px) {
+  .password-generator .generator-container {
+    flex-direction: row;
+    justify-content: center;
+    gap: 2rem;
+  }
+}
+
+/* Keep the illustration above the controls until there is enough room for a
+   two-column layout; center the generator block beneath the illustration. */
+@media (min-width: 992px) and (max-width: 1279px) {
+  .password-generator .generator-container {
+    flex-direction: column;
+    gap: 2rem;
+  }
+
+  .password-generator .generator-container .generator {
+    width: fit-content;
+    max-width: 100%;
+  }
+}
+
+@media (min-width: 1280px) {
+  .password-generator .generator-container {
+    gap: 3rem;
+  }
+}
+
+.password-generator .generator-container .image-container {
+  width: 416px;
+  max-width: 100%;
+  flex-shrink: 0;
+}
+
+.password-generator .generator-container .image-container img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Password Input, Strength Badge, Refresh Icon & Copy Button */
+.password-generator .generator-container .generator .input-container {
+  display: flex;
+  align-items: center;
+}
+
+.password-generator .generator-container .generator .input-container:has(+ .copy-feedback) {
+  margin-bottom: 0 !important;
+}
+
+.copy-feedback {
+  display: block;
+  min-height: 1.375rem;
+  margin: 0.5rem 0 1.5rem;
+  color: #b42318;
+  font-size: 0.875rem;
+  line-height: 1.375rem;
+  text-align: center;
+}
+
+.copy-feedback[data-state="success"] {
+  color: #237804;
+}
+
+@media (min-width: 992px) {
+  .copy-feedback {
+    margin: 0.5rem 0 2.25rem;
+    text-align: left;
+    padding-left: 0.25rem;
+  }
+}
+
+.form-control-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.form-floating {
+  position: relative;
+}
+
+.form-control {
+  background-color: #fff;
+  border: 1px solid #C5D6E0;
+  border-radius: 20px;
+  box-shadow: inset 0 2px 4px rgba(7, 29, 43, 0.12);
+  text-align: start;
+  padding: 0.625rem 1.125rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  position: relative;
+}
+
+.form-control:focus-visible {
+  outline: 2px solid #0070f6;
+  outline-offset: 2px;
+  border-color: #0070f6;
+}
+
+@media (min-width: 992px) {
+  .form-control.size-lg {
+    font-size: 1.125rem;
+    line-height: 1.875rem;
+    padding: 0.75rem 1.75rem;
+    border-radius: 28px;
+  }
+}
+
+.password-generator .generator-container .generator .input-container .form-floating .form-control {
+  width: 320px;
+  text-overflow: ellipsis;
+  padding-right: 5.75rem;
+  cursor: text;
+  user-select: text;
+}
+
+@media (min-width: 992px) {
+  .password-generator .generator-container .generator .input-container .form-floating .form-control {
+    width: 360px;
+    padding-right: 7.5rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  .password-generator .generator-container .generator .input-container .form-floating .form-control {
+    width: 488px;
+  }
+}
+
+.label {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: fit-content;
+  height: fit-content;
+  color: #071d2b;
+  text-align: center;
+}
+
+.label.label-sm {
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+
+@media (min-width: 992px) {
+  .label.label-sm {
+    padding: 4px 12px;
+    border-radius: 7px;
+  }
+}
+
+.password-generator .generator-container .generator .input-container .form-floating > label {
+  position: absolute;
+  top: 50%;
+  right: 34px;
+  left: auto;
+  transform: translateY(-50%);
+  width: 48px;
+  margin: 0;
+  color: #071d2b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
+}
+
+@media (min-width: 992px) {
+  .password-generator .generator-container .generator .input-container .form-floating > label {
+    right: 52px;
+    width: 57px;
+  }
+}
+
+/* Icons */
+.icon {
+  flex: 0 0 auto;
+}
+
+.icon.icon-16 {
+  background-image: url("./images/icons-16.svg");
+  width: 16px;
+  height: 16px;
+}
+
+.icon.icon-16.icon-minus {
+  background-position: -320px 0;
+}
+
+.icon.icon-16.icon-plus {
+  background-position: -288px 0;
+}
+
+.icon.icon-24 {
+  background-image: url("./images/icons-16.svg");
+  width: 16px;
+  height: 16px;
+}
+
+.icon.icon-24.icon-refresh {
+  background-position: 0 -32px;
+}
+
+@media (min-width: 992px) {
+  .icon.icon-24 {
+    background-image: url("./images/icons-24.svg");
+    width: 24px;
+    height: 24px;
+  }
+
+  .icon.icon-24.icon-refresh {
+    background-position: 0 -40px;
+  }
+}
+
+.form-control-wrapper .form-control ~ .icon {
+  display: block;
+  position: absolute;
+  top: 50%;
+  right: 0.75rem;
+  margin-top: -8px;
+  border-radius: 50%;
+}
+
+@media (min-width: 992px) {
+  .form-control-wrapper .form-control ~ .icon {
+    right: 1rem;
+    margin-top: -12px;
+  }
+}
+
+.password-generator .generator-container .generator .input-container .icon {
+  transform: rotate(45deg);
+  cursor: pointer;
+}
+
+.password-generator .generator-container .generator .input-container .icon:focus-visible {
+  outline: 2px solid #0070f6;
+  outline-offset: 4px;
+}
+
+@keyframes refresh-spin {
+  from {
+    transform: rotate(45deg);
+  }
+  to {
+    transform: rotate(405deg);
+  }
+}
+
+.password-generator .generator-container .generator .input-container .icon-refresh.rotate {
+  animation: refresh-spin 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Primary & Copy Button */
+.btn-wrapper {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.btn {
+  position: relative;
+  font-weight: 750;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 0;
+  border: 0;
+  text-decoration: none;
+  border-radius: 400px;
+  transition: box-shadow 0.2s ease-out, opacity 0.2s ease-out;
+  cursor: pointer;
+  color: inherit;
+  background-color: transparent;
+}
+
+.btn:focus-visible {
+  outline: 2px solid #0070f6;
+  outline-offset: 4px;
+}
+
+.btn.size-md {
+  height: 40px;
+  padding: 0 20px;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1rem;
+  letter-spacing: 0.8px;
+}
+
+@media (min-width: 992px) {
+  .btn.size-md {
+    height: 56px;
+    padding: 0 28px;
+    gap: 14px;
+    font-size: 1rem;
+    line-height: 1.25rem;
+    letter-spacing: 1px;
+  }
+}
+
+.btn.theme-blue.full,
+.btn.theme-blue.full:hover {
+  color: #fff;
+}
+
+.btn.theme-blue:not(.disabled).full {
+  box-shadow: 0 8px 32px -16px rgba(0, 112, 246, 0.32), 0 16px 32px -16px rgba(7, 29, 43, 0.32);
+}
+
+.btn:not(.link)::before {
+  content: "";
+  position: absolute;
+  height: 100%;
+  width: 100%;
+  z-index: -1;
+  transition: height 0.2s ease-out, width 0.2s ease-out, background-color 0.2s ease-out;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 400px;
+  border: 2px solid transparent;
+}
+
+.btn.theme-blue.full::before {
+  background: #0070f6;
+  border: none;
+}
+
+.btn.theme-blue:not(.disabled):hover.size-md {
+  box-shadow: 0 12px 32px -16px rgba(0, 112, 246, 0.4), 0 24px 32px -16px rgba(7, 29, 43, 0.4);
+}
+
+.btn.size-md:hover:not(:disabled):not(.disabled)::before {
+  height: calc(100% + 4px);
+  width: calc(100% + 4px);
+}
+
+@media (min-width: 992px) {
+  .btn.size-md:hover:not(:disabled):not(.disabled)::before {
+    height: calc(100% + 6px);
+    width: calc(100% + 6px);
+  }
+}
+
+.copy-btn {
+  position: relative;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.copy-btn-text {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.copy-success-icon {
+  position: absolute;
+  inset: 0;
+  background-color: #52C41A;
+  color: #ffffff;
+  border-radius: inherit;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transform: translateY(100%);
+  transition: transform 0.2s ease;
+}
+
+.copy-btn.copied .copy-success-icon {
+  transform: translateY(0);
+}
+
+.btn.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none !important;
+}
+
+/* Generator Settings: Length Slider & Complexity Checkboxes */
+.password-generator .generator-container .generator-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+@media (min-width: 992px) {
+  .password-generator .generator-container .generator-settings {
+    gap: 2.75rem;
+  }
+}
+
+.password-generator .generator-container .generator-settings .length-settings {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+@media (min-width: 992px) {
+  .password-generator .generator-container .generator-settings .length-settings {
+    flex-direction: row;
+    align-items: center;
+    gap: 0;
+    min-height: 48px;
+  }
+}
+
+.password-generator .generator-container .generator-settings .length-settings > div:first-child,
+.password-generator .generator-container .generator-settings .complexity-settings > div:first-child {
+  flex-shrink: 0;
+}
+
+.password-generator .generator-container .generator-settings .first {
+  display: inline-block;
+  white-space: nowrap;
+  margin-bottom: 0 !important;
+}
+
+.password-generator .generator-container .generator-settings .length-settings .first .ms-8 {
+  display: inline-block;
+  min-width: 2em;
+  text-align: right;
+}
+
+.password-generator .generator-container .generator-settings .length-settings .slider-settings {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 40px;
+}
+
+@media (min-width: 992px) {
+  .password-generator .generator-container .generator-settings .length-settings .slider-settings {
+    justify-content: flex-start;
+    gap: 0.875rem;
+    width: auto;
+    min-height: 48px;
+  }
+}
+
+.password-generator .generator-container .generator-settings .length-settings .slider-settings .button-circle {
+  margin-inline: 0 !important;
+  flex-shrink: 0;
+}
+
+/* Circular +/- Buttons */
+.button-circle {
+  position: relative;
+  z-index: 0;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 50%;
+  transition: color 0.15s ease-in, opacity 0.15s ease-in;
+  color: inherit;
+  border: 0;
+  background-color: transparent;
+}
+
+.button-circle:focus-visible {
+  outline: 2px solid #0070f6;
+  outline-offset: 3px;
+}
+
+.button-circle.size-md {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+@media (min-width: 992px) {
+  .button-circle.size-md {
+    width: 48px;
+    height: 48px;
+  }
+}
+
+.button-circle.theme-dark.outline {
+  color: #071d2b;
+}
+
+.button-circle::before {
+  content: "";
+  position: absolute;
+  height: 100%;
+  width: 100%;
+  z-index: -1;
+  transition: height 0.2s ease-out, width 0.2s ease-out, background-color 0.2s ease-out;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px solid transparent;
+}
+
+.button-circle.theme-dark.outline::before {
+  background: #fff;
+  border-color: #071d2b;
+}
+
+.button-circle.theme-dark:hover.outline:not(:disabled):not(.disabled) {
+  color: #fff;
+}
+
+.button-circle.theme-dark:hover.outline:not(:disabled):not(.disabled)::before {
+  background: #071d2b;
+  height: calc(100% + 4px);
+  width: calc(100% + 4px);
+}
+
+@media (min-width: 992px) {
+  .button-circle.size-md.theme-dark:hover.outline:not(:disabled):not(.disabled)::before {
+    height: calc(100% + 6px);
+    width: calc(100% + 6px);
+  }
+}
+
+.button-circle.theme-dark.outline .icon {
+  filter: brightness(0) saturate(1) invert(9%) sepia(16%) saturate(3060%) hue-rotate(165deg) brightness(88%) contrast(97%);
+}
+
+.button-circle.theme-dark:hover.outline:not(:disabled):not(.disabled) .icon {
+  filter: brightness(0) saturate(1) invert(1) sepia(5%) hue-rotate(72deg) brightness(97%) contrast(110%);
+}
+
+.button-circle.disabled,
+.button-circle:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+/* Range Slider */
+.password-generator .generator-container .generator-settings .slider-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 220px;
+  height: 24px;
+  margin: 0;
+}
+
+@media (min-width: 1280px) {
+  .password-generator .generator-container .generator-settings .slider-container {
+    width: 287px;
+  }
+}
+
+.password-generator .generator-container .generator-settings input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 12px;
+  border-radius: 300px;
+  border: 1px solid #C5D6E0;
+  background-color: #eef2f6;
+  box-shadow: inset 0 1px 2px rgba(7, 29, 43, 0.08);
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+  margin: 0;
+}
+
+.password-generator .generator-container .generator-settings input[type="range"]:focus-visible {
+  outline: 2px solid #0070f6;
+  outline-offset: 4px;
+}
+
+.password-generator .generator-container .generator-settings input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 20px;
+  width: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1px solid #C5D6E0;
+  box-shadow: 0 2px 4px rgba(7, 29, 43, 0.16);
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.password-generator .generator-container .generator-settings input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.08);
+  border-color: #071d2b;
+}
+
+.password-generator .generator-container .generator-settings input[type="range"]::-moz-range-thumb {
+  height: 20px;
+  width: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1px solid #C5D6E0;
+  box-shadow: 0 2px 4px rgba(7, 29, 43, 0.16);
+  cursor: pointer;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.password-generator .generator-container .generator-settings input[type="range"]::-moz-range-track {
+  background: transparent;
+  border: 0;
+}
+
+/* Character Class Checkboxes */
+.password-generator .generator-container .generator-settings .complexity-settings {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+@media (min-width: 992px) {
+  .password-generator .generator-container .generator-settings .complexity-settings {
+    flex-direction: row;
+    gap: 1.25rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  .password-generator .generator-container .generator-settings .complexity-settings {
+    gap: 2.25rem;
+  }
+}
+
+.password-generator .generator-container .generator-settings .complexity-settings .complexity-checkbox {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+@media (min-width: 375px) {
+  .password-generator .generator-container .generator-settings .complexity-settings .complexity-checkbox {
+    gap: 1rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .password-generator .generator-container .generator-settings .complexity-settings .complexity-checkbox {
+    gap: 1.5rem;
+  }
+}
+
+@media (min-width: 1280px) {
+  .password-generator .generator-container .generator-settings .complexity-settings .complexity-checkbox {
+    gap: 2.25rem;
+  }
+}
+
+.password-generator .generator-container .generator-settings .complexity-settings .charset-hint {
+  /* The hint only appears while the last remaining class is locked; keep the
+     reserved height so the settings block does not jump. */
+  margin: 0;
+  min-height: 1.25rem;
+  color: #526675;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+  text-align: center;
+}
+
+@media (min-width: 992px) {
+  .password-generator .generator-container .generator-settings .complexity-settings {
+    position: relative;
+  }
+
+  .password-generator .generator-container .generator-settings .complexity-settings .charset-hint {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 100%;
+  }
+}
+
+.password-generator .generator-settings .complexity-settings .custom-checkbox {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.password-generator .generator-settings .complexity-settings .custom-checkbox input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid #C5D6E0;
+  background-color: #fff;
+  border-radius: 7px;
+  box-shadow: inset 0 2px 4px rgba(7, 29, 43, 0.12);
+  transform: translateY(-0.075em);
+  display: grid;
+  place-content: center;
+  cursor: pointer;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.password-generator .generator-settings .complexity-settings .custom-checkbox input[type="checkbox"]:focus-visible {
+  outline: 2px solid #0070f6;
+  outline-offset: 2px;
+}
+
+.password-generator .generator-settings .complexity-settings .custom-checkbox input[type="checkbox"]::before {
+  content: "";
+  width: 0.8rem;
+  height: 0.8rem;
+  transform: scale(0);
+  transition: transform 0.12s ease-out;
+  background-color: #071d2b;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+.password-generator .generator-settings .complexity-settings .custom-checkbox input[type="checkbox"]:checked::before {
+  transform: scale(1);
+}
+
+.password-generator .generator-settings .complexity-settings .custom-checkbox .custom-control-label {
+  cursor: pointer;
+  user-select: none;
+}
+
+.password-generator .generator-settings .complexity-settings .custom-checkbox input[type="checkbox"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.password-generator .generator-settings .complexity-settings .custom-checkbox input[type="checkbox"]:disabled + .custom-control-label {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Mobile & Tablet Responsive Overrides (<992px) */
+@media (max-width: 991px) {
+  .password-generator .generator-container .generator {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .password-generator .generator-container .generator .input-container {
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .password-generator .generator-container .generator .generator-input {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    margin-bottom: 0 !important;
+  }
+
+  .password-generator .generator-container .generator .input-container .form-floating {
+    width: min(100%, 450px);
+  }
+
+  .password-generator .generator-container .generator .input-container .form-floating .form-control {
+    width: 100%;
+    max-width: 450px;
+    padding-right: 5.5rem;
+  }
+
+  .password-generator .generator-container .generator-settings .slider-container {
+    flex: 0 1 auto;
+    width: clamp(140px, calc(100vw - 140px), 240px);
+  }
+}
+
+/* Password Strength Info Section & Footer */
+.section-py {
+  padding-top: 5rem;
+  padding-bottom: 4rem;
+}
+
+@media (min-width: 992px) {
+  .section-py {
+    padding-top: 7rem;
+    padding-bottom: 3rem;
+  }
+}
+
+.feature-item {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 1.75rem;
+  padding: 1.5rem;
+}
+
+@media (min-width: 576px) {
+  .feature-item {
+    margin-bottom: 2rem;
+  }
+}
+
+@media (min-width: 768px) {
+  .feature-item {
+    margin-bottom: 1.5rem;
+  }
+}
+
+@media (min-width: 992px) {
+  .feature-item {
+    margin-bottom: 2.5rem;
+    height: calc(100% - 2.5rem);
+  }
+}
+
+.feature-item.centered {
+  text-align: center;
+  align-items: center;
+}
+
+.feature-item.size-sm {
+  border-radius: 1.75rem;
+  padding: 2rem 1.75rem;
+}
+
+@media (min-width: 992px) {
+  .feature-item.size-sm {
+    padding: 2.5rem 2rem;
+  }
+}
+
+.feature-item .feature-item-body {
+  display: flex;
+  flex-direction: column;
+  margin-top: 1.5rem;
+  width: 100%;
+}
+
+/* Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   加载遮罩层与页面级细节
+   这些规则原先内联在 index.html 中，为了让 style-src 'self' 生效而移到这里。
+   --------------------------------------------------------------------------- */
+
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: #ffffff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 9999;
+  transition: opacity 0.4s ease;
+}
+
+.loading-overlay img {
+  width: 80px;
+  height: 80px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-overlay {
+    transition: none;
+  }
+}
+
+.footer-divider {
+  margin-top: 5rem;
+  margin-bottom: 2rem;
+}

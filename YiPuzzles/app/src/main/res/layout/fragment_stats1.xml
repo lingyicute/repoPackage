@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clipToPadding="false">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+    <com.google.android.material.card.MaterialCardView
+        style="?attr/materialCardViewFilledStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        app:cardBackgroundColor="?attr/colorPrimaryContainer"
+        app:contentPaddingBottom="8dp"
+        app:contentPaddingLeft="16dp"
+        app:contentPaddingRight="16dp"
+        app:contentPaddingTop="8dp"
+        app:shapeAppearance="@style/ShapeAppearance.Material3.Corner.Large">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp">
+
+            <org.lyi.puzzles.views.BoardPreviewView
+                android:id="@+id/stat_img1"
+                android:layout_width="112dp"
+                android:layout_height="112dp"
+                app:boardSize="4" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="20dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/Stat_High_Number"
+                    android:textAppearance="?attr/textAppearanceLabelLarge"
+                    android:textColor="?attr/colorOnPrimaryContainer" />
+
+                <TextView
+                    android:id="@+id/highest_number1"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textAppearance="?attr/textAppearanceHeadlineMedium"
+                    android:textColor="?attr/colorOnPrimaryContainer" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:text="@string/Stat_High_Point"
+                    android:textAppearance="?attr/textAppearanceLabelLarge"
+                    android:textColor="?attr/colorOnPrimaryContainer" />
+
+                <TextView
+                    android:id="@+id/highest_score1"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0"
+                    android:textAppearance="?attr/textAppearanceHeadlineMedium"
+                    android:textColor="?attr/colorOnPrimaryContainer" />
+            </LinearLayout>
+        </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <com.google.android.material.card.MaterialCardView
+        style="?attr/materialCardViewFilledStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        app:cardBackgroundColor="?attr/colorSurfaceContainerLow"
+        app:contentPaddingBottom="8dp"
+        app:contentPaddingLeft="16dp"
+        app:contentPaddingRight="16dp"
+        app:contentPaddingTop="8dp"
+        app:shapeAppearance="@style/ShapeAppearance.Material3.Corner.Large">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/Stat_Time"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/time_played1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:dividerInsetEnd="0dp"
+            app:dividerInsetStart="0dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/Stat_Amount_Undo"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/undo_number1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:dividerInsetEnd="0dp"
+            app:dividerInsetStart="0dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/Stat_Amount_Swipe"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/moves_All1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+        <com.google.android.material.divider.MaterialDivider
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            app:dividerInsetEnd="0dp"
+            app:dividerInsetStart="0dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/Stat_Time_Swipes"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/time_swipes1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <com.google.android.material.card.MaterialCardView
+        style="?attr/materialCardViewFilledStyle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        app:cardBackgroundColor="?attr/colorSurfaceContainerLow"
+        app:contentPaddingBottom="8dp"
+        app:contentPaddingLeft="16dp"
+        app:contentPaddingRight="16dp"
+        app:contentPaddingTop="8dp"
+        app:shapeAppearance="@style/ShapeAppearance.Material3.Corner.Large">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:paddingBottom="4dp"
+            android:text="@string/Stat_Amount_Swipe"
+            android:textAppearance="?attr/textAppearanceTitleSmall"
+            android:textColor="?attr/colorPrimary" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginEnd="16dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_arrow_upward"
+                app:tint="?attr/colorPrimary" />
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/Stat_Swipes_Up"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/moves_T1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginEnd="16dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_arrow_downward"
+                app:tint="?attr/colorPrimary" />
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/Stat_Swipes_Down"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/moves_D1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginEnd="16dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_arrow_back_small"
+                app:tint="?attr/colorPrimary" />
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/Stat_Swipes_Left"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/moves_L1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:minHeight="48dp"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_marginEnd="16dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/ic_arrow_forward"
+                app:tint="?attr/colorPrimary" />
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/Stat_Swipes_Right"
+                android:textAppearance="?attr/textAppearanceBodyLarge"
+                android:textColor="?attr/colorOnSurface" />
+
+            <TextView
+                android:id="@+id/moves_R1"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:textColor="?attr/colorPrimary" />
+        </LinearLayout>
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+    </LinearLayout>
+</ScrollView>

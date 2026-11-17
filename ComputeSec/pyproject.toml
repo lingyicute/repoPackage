@@ -1,0 +1,89 @@
+# ComputeSec 工程配置
+#
+# 运行测试：python -m pytest
+# 运行 lint：ruff check .
+# 覆盖率：  python -m pytest --cov=computesec --cov=run
+# 安装开发环境：pip install -e ".[dev]"
+# 安装程序本体：pip install .   （同时装出 computesec 命令与 desktop/metainfo/图标）
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "computesec"
+description = "评估固件安全 (HSI)、内核加固、硬件品牌信誉与使用习惯的桌面安全评估工具"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+authors = [{ name = "lingyicute" }]
+keywords = ["security", "hardening", "hsi", "fwupd", "sysctl", "gtk4", "libadwaita"]
+classifiers = [
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+# 版本号只在 computesec/data.py 里维护一处，避免 VERSION、metainfo、pyproject 三处漂移。
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/lingyicute/ComputeSec"
+Issues = "https://github.com/lingyicute/ComputeSec/issues"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff", "fonttools", "brotli"]
+# PyGObject / GTK4 / libadwaita 只能由发行版提供（不能用 pip 装），故不写进依赖。
+
+[project.gui-scripts]
+computesec = "computesec.cli:main"   # 与 run.py 共用同一套参数处理
+
+[tool.setuptools]
+packages = ["computesec"]
+
+[tool.setuptools.dynamic]
+version = { attr = "computesec.data.VERSION" }
+
+# desktop / metainfo / 图标不属于 Python 包，用 data-files 装到 share/ 下，
+# 与 run.py --install 和 Flatpak 的布局保持一致。
+[tool.setuptools.data-files]
+"share/applications" = ["data/uk._92li.lingyicute.ComputeSec.desktop"]
+"share/metainfo" = ["data/uk._92li.lingyicute.ComputeSec.metainfo.xml"]
+"share/icons/hicolor/scalable/apps" = ["data/icons/hicolor/scalable/apps/uk._92li.lingyicute.ComputeSec.svg"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+# 与 CI 使用同一套规则，避免本地全绿、CI 变红（反之亦然）。
+# F   = Pyflakes（未使用变量/导入、未定义名称等）
+# E7  = 语句层面的风格问题（E731 lambda 赋值、E741 易混淆变量名等）
+# E9  = 运行时才会暴露的语法错误
+# B   = flake8-bugbear（可变默认参数、盲捕异常等常见 bug 模式）
+lint.select = ["F", "E7", "E9", "B"]
+lint.ignore = []
+
+[tool.coverage.run]
+source = ["computesec", "run"]
+# ui.py / main.py / wizard.py 需要 GTK 与显示服务器才能实例化，lint 作业里根本
+# 无法导入（由 smoke 作业在 Xvfb 上跑 tests/test_ui_smoke.py 覆盖）。把它们排除，
+# 门槛才真正约束"该测的代码"。
+#
+# 不排除的后果不是数字难看，而是门槛失效：这三个模块共约 1140 条语句，占总量
+# 的 44%，全部按 0% 计入时总覆盖率只有 44%（被覆盖的语句约 1149 条），往 UI 里
+# 再加约 300 行不带测试的代码就会击穿 40%，而报错看起来像"测试变少了"，真实
+# 原因却是"新写的 UI 代码按 0% 计"。排除后总量为 1441 条、覆盖率 80%。
+omit = [
+    "computesec/ui.py",
+    "computesec/main.py",
+    "computesec/wizard.py",
+]
+
+[tool.coverage.report]
+# 覆盖率门槛：只作为"不许后退"的栏杆，不追求好看的数字。
+# 当前实测 80%（checks.py 70% 是主要拖累项），留 2 个点余量。
+fail_under = 78
+skip_covered = false
+show_missing = true
