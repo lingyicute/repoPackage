@@ -80,7 +80,9 @@ main{flex:1;width:100%;max-width:1600px;margin:0 auto;padding:22px 28px 50px}
 .chg-item canvas{width:56px;height:42px;object-fit:contain;background:var(--checker);border-radius:4px;border:1px solid var(--border)}
 .chg-item .info{flex:1;font-size:12px}.chg-item .info b{display:block}.chg-item .info span{color:var(--fg2);font-family:var(--mono);font-size:11px}
 .tip{color:var(--fg2);font-size:12px;padding:8px 0}
-.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:100}.modal-bg.open{display:flex}
+.modal-bg{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:0;border:0;background:transparent;color:inherit;display:none;align-items:center;justify-content:center}
+.modal-bg::backdrop{background:rgba(0,0,0,.4)}
+.modal-bg[open]{display:flex}
 .modal{background:var(--bg);border-radius:14px;width:460px;max-width:94vw;max-height:92vh;overflow:auto;box-shadow:var(--shadow);padding:20px 22px}
 .modal.wide{width:900px}
 .modal h3{margin:0 0 12px;font-size:17px}.modal p{color:var(--fg2);margin:0 0 10px}
@@ -161,8 +163,8 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px;border-top
 </main>
 <footer>Diffchecker · <span data-i18n="footer">rewritten as a dependency-free single page — all processing happens locally in your browser</span></footer>
 
-<div class="modal-bg" id="alignModal"><div class="modal wide" role="dialog" aria-modal="true">
-  <h3 data-i18n="align">Align Images</h3>
+<dialog class="modal-bg" id="alignModal" aria-labelledby="alignModalTitle"><div class="modal wide">
+  <h3 id="alignModalTitle" data-i18n="align">Align Images</h3>
   <div class="align-grid">
     <div class="align-view" id="alignView"><canvas id="alignA"></canvas><canvas id="alignB"></canvas></div>
     <div class="align-ctl">
@@ -183,22 +185,25 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px;border-top
     </div>
   </div>
   <div class="modal-actions"><button class="btn" id="alignUndo" data-i18n="undoAlign">Undo Alignment</button><span class="spacer"></span><button class="btn" id="alignCancel" data-i18n="cancel">Cancel</button><button class="btn primary" id="alignApply" data-i18n="apply">Apply</button></div>
-</div></div>
+</div></dialog>
 
-<div class="modal-bg" id="promptModal"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="pmTitle"><h3 id="pmTitle"></h3><p id="pmMsg"></p><div class="modal-actions"><button class="btn" id="pmSkip"></button><button class="btn primary" id="pmGo"></button></div></div></div>
+<dialog class="modal-bg" id="promptModal" aria-labelledby="pmTitle"><div class="modal"><h3 id="pmTitle"></h3><p id="pmMsg"></p><div class="modal-actions"><button class="btn" id="pmSkip"></button><button class="btn primary" id="pmGo"></button></div></div></dialog>
 
-<div class="modal-bg" id="exportModal"><div class="modal" role="dialog" aria-modal="true">
-  <h3 data-i18n="export">Export</h3>
+<dialog class="modal-bg" id="exportModal" aria-labelledby="exportModalTitle"><div class="modal">
+  <h3 id="exportModalTitle" data-i18n="export">Export</h3>
   <label data-i18n="format">Format</label>
   <div class="choices" id="fmtChoices"><button class="choice" data-fmt="png" aria-pressed="true"><b>PNG</b><small data-i18n="fmtPng">Current comparison view at full resolution.</small></button><button class="choice" data-fmt="pdf" aria-pressed="false"><b>PDF</b><small data-i18n="fmtPdf">Report via your browser's PDF printer.</small></button></div>
+  <div id="pngOptions"><label class="chk"><input type="checkbox" id="expWorking"> <span data-i18n="workingExport">Export at working resolution</span></label></div>
+  <div id="pdfOptions" class="hidden">
   <label data-i18n="reportContent">Report content</label>
   <label class="chk"><input type="checkbox" id="expSrc" checked> <span data-i18n="srcImages">Source images</span> — <small data-i18n="srcImagesD">Add the original and changed images to the report.</small></label>
   <label class="chk"><input type="checkbox" id="expList" checked> <span id="expListLbl">Change list</span> — <small data-i18n="chgListD">Add original and changed crops, with an optional difference preview, for each detected region.</small></label>
   <label data-i18n="diffStyle">Difference style</label>
   <div class="seg" id="expDiffStyle"><button data-s="subtract" aria-pressed="true" data-i18n="m.subtract">Subtract</button><button data-s="none" aria-pressed="false" data-i18n="none">None</button></div>
   <p class="tip" data-i18n="alwaysIncluded">The comparison result and summary are always included.</p>
+  </div>
   <div class="modal-actions"><button class="btn" id="exportCancel" data-i18n="cancel">Cancel</button><button class="btn primary" id="exportGo" data-i18n="export">Export</button></div>
-</div></div>
+</div></dialog>
 <div class="offline-notice" id="notice" role="status" aria-live="polite"></div>
 <div id="report"></div>
 
@@ -210,10 +215,16 @@ const I18N={en:{'nav.text':'Text','nav.images':'Images','nav.excel':'Excel',offl
 zh:{'nav.text':'文本','nav.images':'图片','nav.excel':'Excel',offline:'离线运行 · 无需联网',dark:'深色',light:'浅色','hero.title':'图片对比','hero.d1':'找出两张图片之间的差异！','hero.d2':'添加两张图片，差异会显示在下方。',original:'原始图片',changed:'修改后的图片',dropHere:'把图片拖到这里',browse:'或点击选择文件 · 也可按 Ctrl+V 粘贴',find:'查找差异',tryExample:'试试示例',swap:'左右互换',reset:'重置','m.split':'并排','m.fade':'淡入淡出','m.flicker':'闪烁','m.slider':'滑块','m.highlight':'高亮','m.subtract':'差值',opacity:'不透明度',slower:'更慢',faster:'更快',fOriginal:'原图',fChanged:'修改后',hlStyle:'高亮样式',hlContext:'保留背景',hlChanges:'仅显示差异',threshold:'阈值',align:'对齐图片',zoom:'缩放',fit:'适应窗口',export:'导出',changeList:'差异列表',tools:'工具',drawBoxes:'绘制边框',darken:'压暗背景',scanSettings:'检测设置',addScan:'添加检测',removeScan:'移除检测',scan:'检测 {n}',preset:'预设',custom:'自定义',tinySpecks:'细小杂点',wordsSentences:'文字 / 句子',graphics:'图形 / 大块区域',diffThreshold:'差异阈值',grouping:'合并半径',minBlob:'最小区域面积',maxRegion:'最大区域占比',change:'差异 {n}',focus:'定位',noChanges:'未检测到差异。',tooDifferent:'两张图片的差异过大，无法逐项列出。',autoAlign:'自动对齐',manual:'手动对齐',allowed:'允许的变换方式',rotate:'旋转',scale:'比例',autoAlignBtn:'自动对齐',flipH:'水平翻转',flipV:'垂直翻转',undoAlign:'撤销对齐',cancel:'取消',apply:'应用',dragTip:'在预览中拖动修改后的图片即可移动，滚轮可缩放预览。',alignFail:'自动对齐失败，请尝试手动调整。',alignOk:'已对齐：平移 {dx}, {dy} 像素 · 旋转 {rot}° · 缩放 {sc}（置信度 {c}）',mismatchTitle:'是否自动对齐图片？',mismatchMsg:'两张图片的分辨率似乎不同，直接比较可能无法对齐。',skip:'跳过',autoAlignGo:'自动对齐',format:'格式',fmtPng:'导出当前对比视图（原始分辨率）。',fmtPdf:'通过浏览器的“打印为 PDF”功能生成报告。',reportContent:'报告内容',srcImages:'源图片',srcImagesD:'在报告中附上原始图片和修改后的图片。',chgList:'差异列表（{n}）',chgListD:'为每个检测到的区域附上原图与修改后的裁剪图，并可选附带差值预览。',diffStyle:'差异样式',none:'无',alwaysIncluded:'报告中始终包含对比结果和摘要。',identicalTitle:'两张图片看起来完全相同',identicalMsg:'两张图片之间没有可见差异',needTwo:'请先添加两张图片。',loading:'正在加载图片…',footer:'零依赖单页应用 · 所有处理均在浏览器本地完成 · 由 lingyicute 倾情呈现',summary:'{p}% 的像素不同 · {n} 个区域',opencv:'已检测到 OpenCV，使用 ORB 特征点对齐'}};
 Object.assign(I18N.en,{summary1:'{p}% of pixels differ · {n} region',decodeFail:'Could not decode {name}',hudScale:' (working scale {s})',hudDiff:'{p}% px differ',toggleScan:'Enable / disable this scan',remove:'Remove',holdATip:'Show original. Shortcut: 1',holdBTip:'Show changes. Shortcut: 2',sbTip:'Collapse sidebar',sbTipOpen:'Expand sidebar',exportFailed:'Export failed. Please try again.',rptTitle:'Image comparison',rptOrig:'Original',rptChg:'Changed',rptMode:'Mode',rptSummary:'Summary',rptAlign:'Alignment',rptCmp:'Comparison'});
 Object.assign(I18N.zh,{summary1:'{p}% 的像素不同 · {n} 个区域',decodeFail:'无法解码 {name}',hudScale:'（工作缩放 {s}）',hudDiff:'{p}% 的像素不同',toggleScan:'启用 / 停用此检测',remove:'移除',holdATip:'显示原图。快捷键：1',holdBTip:'显示修改后的图片。快捷键：2',sbTip:'收起侧边栏',sbTipOpen:'展开侧边栏',exportFailed:'导出失败，请重试。',rptTitle:'图片对比报告',rptOrig:'原始图片',rptChg:'修改后的图片',rptMode:'模式',rptSummary:'摘要',rptAlign:'对齐参数',rptCmp:'对比结果'});
+Object.assign(I18N.en,{noMatchingRegions:'Pixels differ, but no regions match these scan settings.',truncatedRegions:'Only a subset of regions is shown. Narrow the scan settings to see fewer regions.'});
+Object.assign(I18N.zh,{noMatchingRegions:'图片像素有差异，但没有符合当前检测设置的区域。',truncatedRegions:'仅显示部分差异区域。请缩小检测范围或提高门槛。'});
+Object.assign(I18N.en,{imageTooLarge:'{name} exceeds the browser’s supported image size.',compareFailed:'Could not render these images for comparison.'});
+Object.assign(I18N.zh,{imageTooLarge:'{name} 超出图片尺寸上限。',compareFailed:'无法绘制图片对比结果。'});
+Object.assign(I18N.en,{workingExport:'Export at working resolution',pngTooLarge:'The full-size PNG is too large. Select working resolution and export again.'});
+Object.assign(I18N.zh,{workingExport:'以工作分辨率导出',pngTooLarge:'原始尺寸的 PNG 过大，请勾选工作分辨率后重试。'});
 let lang=lsGet('offline-lang'),theme=lsGet('offline-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');if(!I18N[lang])lang=/^zh/i.test(navigator.language||'')?'zh':'en';
 const t=(k,v)=>{let s=(I18N[lang][k]??I18N.en[k]??k);if(v)for(const x in v)s=s.split('{'+x+'}').join(v[x]);return s};
 const $=id=>document.getElementById(id);
-function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.dataset.i18n));$('langBtn').textContent=lang==='en'?'中文':'English';$('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.querySelectorAll('[data-i18n-title]').forEach(e=>e.title=t(e.dataset.i18nTitle));document.title=t('hero.title')+' — Diffchecker';document.querySelectorAll('.switch').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});document.querySelectorAll('.modal[role="dialog"]').forEach(m=>{const h=m.querySelector('h3');if(h&&h.textContent)m.setAttribute('aria-label',h.textContent)});if(S.W){applyTransform();redrawFlicker()}renderPasses();renderList()}
+function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.dataset.i18n));$('langBtn').textContent=lang==='en'?'中文':'English';$('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.querySelectorAll('[data-i18n-title]').forEach(e=>e.title=t(e.dataset.i18nTitle));document.title=t('hero.title')+' — Diffchecker';document.querySelectorAll('.switch').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});if(S.W){applyTransform();redrawFlicker()}renderPasses();renderList()}
 function applyTheme(){document.documentElement.dataset.theme=theme;$('themeBtn').textContent=t(theme==='dark'?'light':'dark')}
 $('langBtn').onclick=()=>{lang=lang==='en'?'zh':'en';lsSet('offline-lang',lang);applyLang()};
 $('themeBtn').onclick=()=>{theme=theme==='dark'?'light':'dark';lsSet('offline-theme',theme);applyTheme()};
@@ -222,63 +233,133 @@ const notice=m=>{const n=$('notice');n.textContent=m;n.classList.add('show');cle
 /* ===================== state ===================== */
 const S={A:null,B:null,align:null,mode:'highlight',fade:.5,flick:1400,hlMode:'context',hlThr:25,zoom:1,px:0,py:0,sliderPos:.5,boxes:true,darken:false,passes:[],regions:[],active:-1,W:0,H:0,scale:1};
 const defAlign=()=>({dx:0,dy:0,rot:0,scale:1,fh:false,fv:false});S.align=defAlign();
-const MAXDIM=2600;// working resolution cap
+const MAXDIM=2600,MAX_SOURCE_PIXELS=32*1024*1024,MAX_CANVAS_DIM=16384;
+const fitsCanvas=(w,h,maxPixels)=>w>0&&h>0&&w<=MAX_CANVAS_DIM&&h<=MAX_CANVAS_DIM&&w*h<=maxPixels;
+function workingFrame(w,h){const scale=Math.min(1,MAXDIM/Math.max(w,h));return {w:Math.max(1,Math.round(w*scale)),h:Math.max(1,Math.round(h*scale)),scale}}
 let baseA,baseB,dataA,dataB,diffMap,signMap,diffCount=0,holdSide=0,flickTimer=null,flickState=0;
 const mk=(w,h)=>{const c=document.createElement('canvas');c.width=Math.max(1,Math.round(w));c.height=Math.max(1,Math.round(h));return c};
 
 /* ===================== loading ===================== */
-let openTarget='A';
+let openTarget='A',alignJob=0;
+const loadVersion={A:0,B:0},pending={A:false,B:false};
+function cancelLoad(side){loadVersion[side]++;pending[side]=false}
+function cancelLoads(){cancelLoad('A');cancelLoad('B')}
+function stopAuto(){alignJob++;$('autoAlignBtn').disabled=false}
+function closeAlign(){stopAuto();$('alignModal').close()}
+function clearComparison(){
+  closeAlign();$('promptModal').close();$('exportModal').close();
+  $('pmGo').onclick=$('pmSkip').onclick=null;
+  clearInterval(flickTimer);clearTimeout(window._sc);clearTimeout(window._hlt);holdSide=0;flickState=0;
+  S.W=S.H=0;S.regions=[];S.active=-1;diffCount=0;
+  baseA=baseB=dataA=dataB=diffMap=signMap=overlay=sliderEl=mainCanvas=null;
+  stage.replaceChildren();$('chgList').replaceChildren();$('result').classList.add('hidden');
+  for(const id of ['alignA','alignB']){$(id).width=$(id).height=1}
+}
 const hasFiles=e=>!!e.dataTransfer&&Array.from(e.dataTransfer.types||[]).includes('Files');
 for(const side of ['A','B']){const d=$('drop'+side);d.onclick=e=>{if(e.target.closest('.rm'))return;openTarget=side;$('fileInput').value='';$('fileInput').click()};d.onkeydown=e=>{if(e.target!==d||(e.key!=='Enter'&&e.key!==' '))return;e.preventDefault();d.click()};
   d.addEventListener('dragover',e=>{if(!hasFiles(e))return;e.preventDefault();d.classList.add('drag')});d.addEventListener('dragleave',e=>{if(!d.contains(e.relatedTarget))d.classList.remove('drag')});d.addEventListener('drop',e=>{d.classList.remove('drag');if(!hasFiles(e))return;e.preventDefault();const f=e.dataTransfer.files[0];if(f)loadFile(f,side)})}
 $('fileInput').onchange=e=>{const f=e.target.files[0];if(f)loadFile(f,openTarget)};
-document.addEventListener('paste',e=>{const it=[...(e.clipboardData?.items||[])].find(i=>i.type.startsWith('image/'));if(!it)return;const f=it.getAsFile();if(!f)return;loadFile(f,!S.A?'A':!S.B?'B':openTarget)});
-async function loadFile(f,side){if(!f.type.startsWith('image/')&&!/\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|tiff?)$/i.test(f.name)){notice(t('decodeFail',{name:f.name}));return}notice(t('loading'));
-  const url=URL.createObjectURL(f);try{const img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=url});setImage(side,img,f.name)}catch(e){console.error(e);notice(t('decodeFail',{name:f.name}))}finally{URL.revokeObjectURL(url)}}
-function setImage(side,img,name,quiet){/* 没有固有尺寸的 SVG（无 width / height 与 viewBox）宽高为 0，退回默认画布而不是得到 1×1 的空白图 */const c=mk(img.naturalWidth||img.width||1024,img.naturalHeight||img.height||768);c.getContext('2d').drawImage(img,0,0,c.width,c.height);S[side]={c,name,w:c.width,h:c.height};const d=$('drop'+side);d.classList.add('has');
-  d.innerHTML=`<span class="lbl" data-i18n="${side==='A'?'original':'changed'}">${t(side==='A'?'original':'changed')}</span><img alt=""><div class="meta"></div><button class="btn sm ghost rm" data-i18n-title="remove" title="${t('remove')}">✕</button>`;{const k=Math.min(1,600/Math.max(c.width,c.height)),th=mk(c.width*k,c.height*k);th.getContext('2d').drawImage(c,0,0,th.width,th.height);d.querySelector('img').src=th.toDataURL('image/png')}d.querySelector('.meta').textContent=`${name} · ${c.width}×${c.height}`;
-  d.querySelector('.rm').onclick=e=>{e.stopPropagation();S[side]=null;S.W=S.H=0;S.regions=[];S.active=-1;d.classList.remove('has');d.innerHTML=`<span class="lbl" data-i18n="${side==='A'?'original':'changed'}">${t(side==='A'?'original':'changed')}</span><div class="big" data-i18n="dropHere">${t('dropHere')}</div><div class="hint" data-i18n="browse">${t('browse')}</div>`;clearInterval(flickTimer);$('result').classList.add('hidden')};
-  S.align=defAlign();if(!quiet&&S.A&&S.B)maybePromptAlign()}
-function maybePromptAlign(){if(S.A.w!==S.B.w||S.A.h!==S.B.h){showPrompt(t('mismatchTitle'),t('mismatchMsg'),t('skip'),t('autoAlignGo'),async()=>{compare();try{const r=await autoAlign(S.A.c,S.B.c,{rot:true,scale:true});if(r){S.align=r;compare();notice(t('alignOk',{dx:r.dx.toFixed(0),dy:r.dy.toFixed(0),rot:r.rot.toFixed(1),sc:r.scale.toFixed(3),c:r.conf.toFixed(2)}))}else{notice(t('alignFail'))}}catch(e){console.error(e);notice(t('alignFail'))}},()=>compare())}else compare()}
-function showPrompt(title,msg,skip,go,onGo,onSkip){$('pmTitle').textContent=title;$('pmMsg').textContent=msg;$('pmSkip').textContent=skip;$('pmGo').textContent=go;$('promptModal').classList.add('open');$('pmSkip').onclick=()=>{$('promptModal').classList.remove('open');onSkip&&onSkip()};$('pmGo').onclick=()=>{$('promptModal').classList.remove('open');onGo()}}
+document.addEventListener('paste',e=>{const it=[...(e.clipboardData?.items||[])].find(i=>i.type.startsWith('image/'));if(!it)return;const f=it.getAsFile();if(!f)return;e.preventDefault();loadFile(f,!S.A&&!pending.A?'A':!S.B&&!pending.B?'B':openTarget)});
+async function loadFile(f,side){
+  cancelLoad(side);const version=loadVersion[side],current=()=>version===loadVersion[side];
+  if(!f.type.startsWith('image/')&&!/\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|tiff?)$/i.test(f.name)){notice(t('decodeFail',{name:f.name}));return}
+  pending[side]=true;notice(t('loading'));const url=URL.createObjectURL(f);
+  try{const img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=url});if(current())setImage(side,img,f.name)}
+  catch(e){if(current()){console.error(e);notice(t(e.message==='imageTooLarge'?'imageTooLarge':'decodeFail',{name:f.name}))}}
+  finally{if(current())pending[side]=false;URL.revokeObjectURL(url)}
+}
+function setImage(side,img,name,quiet){
+  const w=img.naturalWidth||img.width||1024,h=img.naturalHeight||img.height||768;
+  if(!fitsCanvas(w,h,MAX_SOURCE_PIXELS))throw new Error('imageTooLarge');
+  const c=img instanceof HTMLCanvasElement?img:mk(w,h);
+  if(c!==img)c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+  const k=Math.min(1,600/Math.max(c.width,c.height)),th=mk(c.width*k,c.height*k);th.getContext('2d').drawImage(c,0,0,th.width,th.height);
+  const thumb=th.toDataURL('image/png');if(thumb==='data:,')throw new Error('Could not render the image thumbnail');
+  clearComparison();S[side]={c,name,w:c.width,h:c.height};const d=$('drop'+side);d.classList.add('has');
+  d.innerHTML=`<span class="lbl" data-i18n="${side==='A'?'original':'changed'}">${t(side==='A'?'original':'changed')}</span><img alt=""><div class="meta"></div><button class="btn sm ghost rm" data-i18n-title="remove" title="${t('remove')}">✕</button>`;
+  d.querySelector('img').src=thumb;d.querySelector('.meta').textContent=`${name} · ${c.width}×${c.height}`;
+  d.querySelector('.rm').onclick=e=>{e.stopPropagation();cancelLoad(side);S[side]=null;clearComparison();d.classList.remove('has');
+    d.innerHTML=`<span class="lbl" data-i18n="${side==='A'?'original':'changed'}">${t(side==='A'?'original':'changed')}</span><div class="big" data-i18n="dropHere">${t('dropHere')}</div><div class="hint" data-i18n="browse">${t('browse')}</div>`;d.focus()};
+  S.align=defAlign();if(!quiet&&S.A&&S.B)maybePromptAlign();
+}
+function alignNotice(r){notice(t('alignOk',{dx:r.dx.toFixed(0),dy:r.dy.toFixed(0),rot:r.rot.toFixed(1),sc:r.scale.toFixed(3),c:r.conf.toFixed(2)}))}
+function maybePromptAlign(){
+  if(S.A.w===S.B.w&&S.A.h===S.B.h){compare();return}
+  showPrompt(t('mismatchTitle'),t('mismatchMsg'),t('skip'),t('autoAlignGo'),async()=>{
+    if(!compare())return;const job=++alignJob,current=()=>job===alignJob;
+    try{const r=await autoAlign(S.A.c,S.B.c,{rot:true,scale:true,active:current});if(!current())return;
+      if(r){S.align=r;compare();alignNotice(r)}else notice(t('alignFail'));
+    }catch(e){if(current()){console.error(e);notice(t('alignFail'))}}
+  },()=>compare());
+}
+function showPrompt(title,msg,skip,go,onGo,onSkip){$('pmTitle').textContent=title;$('pmMsg').textContent=msg;$('pmSkip').textContent=skip;$('pmGo').textContent=go;$('promptModal').showModal();$('pmSkip').onclick=()=>{$('promptModal').close();onSkip&&onSkip()};$('pmGo').onclick=()=>{$('promptModal').close();onGo()}}
 $('findBtn').onclick=()=>{if(!S.A||!S.B)return notice(t('needTwo'));compare();$('result').scrollIntoView({behavior:'smooth'})};
 // 交换两张图时同步求逆对齐参数，保持已对齐的效果。
 // drawAligned 的线性部分是 L = s·R(θ)·F（F 为翻转对角阵），L⁻¹ = (1/s)·F·R(−θ)：
 // 无翻转或同时水平 + 垂直翻转（F = −I，与旋转可交换）时为 R(−θ)·F；只有一个方向翻转时 F·R(−θ) = R(θ)·F，旋转角保持不变。
 function invertAlign(al,a,b){const th=al.rot*Math.PI/180,c=Math.cos(th),s=Math.sin(th),k=1/al.scale,vx=a.w/2-b.w/2-al.dx,vy=a.h/2-b.h/2-al.dy,ux=k*(c*vx+s*vy)*(al.fh?-1:1),uy=k*(-s*vx+c*vy)*(al.fv?-1:1),one=!!al.fh!==!!al.fv;
   return {dx:b.w/2+ux-a.w/2,dy:b.h/2+uy-a.h/2,rot:one?al.rot:-al.rot,scale:k,fh:!!al.fh,fv:!!al.fv}}
-$('swapBtn').onclick=()=>{if(!S.A||!S.B)return;const a=S.A,b=S.B,al=S.align;setImage('A',b.c,b.name,true);setImage('B',a.c,a.name,true);S.align=invertAlign(al,a,b);compare()};
-$('resetBtn').onclick=()=>{S.align=defAlign();S.passes=[];S.seeded=false;S.regions=[];S.active=-1;if(S.A&&S.B)compare()};
+$('swapBtn').onclick=()=>{if(!S.A||!S.B)return;cancelLoads();const a=S.A,b=S.B,al=S.align;setImage('A',b.c,b.name,true);setImage('B',a.c,a.name,true);S.align=invertAlign(al,a,b);compare()};
+$('resetBtn').onclick=()=>{cancelLoads();clearComparison();S.align=defAlign();S.passes=[];S.seeded=false;S.regions=[];S.active=-1;if(S.A&&S.B)compare()};
 
 /* ===================== compositing ===================== */
-function buildBases(){const W=Math.max(S.A.w,S.B.w),H=Math.max(S.A.h,S.B.h);S.scale=Math.min(1,MAXDIM/Math.max(W,H));S.W=Math.round(W*S.scale);S.H=Math.round(H*S.scale);
-  baseA=mk(S.W,S.H);const ca=baseA.getContext('2d');ca.drawImage(S.A.c,0,0,S.A.w*S.scale,S.A.h*S.scale);
-  baseB=mk(S.W,S.H);drawAligned(baseB.getContext('2d'),S.B.c,S.align,S.scale);
-  dataA=ca.getImageData(0,0,S.W,S.H);dataB=baseB.getContext('2d').getImageData(0,0,S.W,S.H);computeDiffMap()}
-function drawAligned(ctx,img,al,s){ctx.save();ctx.scale(s,s);const w=img.width,h=img.height;ctx.translate(w/2+al.dx,h/2+al.dy);ctx.rotate(al.rot*Math.PI/180);ctx.scale(al.scale*(al.fh?-1:1),al.scale*(al.fv?-1:1));ctx.drawImage(img,-w/2,-h/2);ctx.restore()}
-function computeDiffMap(){const a=dataA.data,b=dataB.data,n=S.W*S.H;diffMap=new Uint8Array(n);signMap=new Int8Array(n);diffCount=0;
-  for(let i=0,p=0;i<n;i++,p+=4){const aa=a[p+3],ba=b[p+3];let dr,dg,db;if(aa<255||ba<255){// blend onto white
-      const fa=aa/255,fb=ba/255;dr=(a[p]*fa+255*(1-fa))-(b[p]*fb+255*(1-fb));dg=(a[p+1]*fa+255*(1-fa))-(b[p+1]*fb+255*(1-fb));db=(a[p+2]*fa+255*(1-fa))-(b[p+2]*fb+255*(1-fb))}else{dr=a[p]-b[p];dg=a[p+1]-b[p+1];db=a[p+2]-b[p+2]}
-    const m=Math.max(Math.abs(dr),Math.abs(dg),Math.abs(db));const mq=Math.min(255,Math.round(m));diffMap[i]=mq;if(mq)diffCount++;const lum=dr*.299+dg*.587+db*.114;signMap[i]=lum<0?1:-1;/* 1: B lighter → removed */}}
-function compositeCanvas(mode){const W=S.W,H=S.H,c=mk(W,H),ctx=c.getContext('2d');
-  if(mode==='fade'){ctx.drawImage(baseA,0,0);ctx.globalAlpha=S.fade;ctx.drawImage(baseB,0,0);ctx.globalAlpha=1}
-  else if(mode==='slider'){ctx.drawImage(baseB,0,0);ctx.save();ctx.beginPath();ctx.rect(0,0,Math.round(W*S.sliderPos),H);ctx.clip();ctx.drawImage(baseA,0,0);ctx.restore()}
-  else if(mode==='flicker'){ctx.drawImage(flickShow()===0?baseA:baseB,0,0)}
-  else if(mode==='subtract'){const out=ctx.createImageData(W,H),o=out.data,a=dataA.data,b=dataB.data;const bl=(d,p,c)=>{const al=d[p+3];return al===255?d[p+c]:d[p+c]*al/255+255-al},ab=(p,c)=>Math.round(Math.abs(bl(a,p,c)-bl(b,p,c)));for(let p=0;p<o.length;p+=4){o[p]=ab(p,0);o[p+1]=ab(p,1);o[p+2]=ab(p,2);o[p+3]=255}ctx.putImageData(out,0,0)}
-  else if(mode==='highlight'){const out=ctx.createImageData(W,H),o=out.data,a=dataA.data,b=dataB.data,thr=S.hlThr,ctxMode=S.hlMode==='context';
-    for(let i=0,p=0;i<diffMap.length;i++,p+=4){if(diffMap[i]>thr){if(signMap[i]>0){o[p]=235;o[p+1]=50;o[p+2]=35}else{o[p]=30;o[p+1]=180;o[p+2]=90}o[p+3]=255}else if(ctxMode){const fa=a[p+3]/255;const g=(a[p]*.299+a[p+1]*.587+a[p+2]*.114)*fa+255*(1-fa);const v=Math.round(255-(255-g)*.45);o[p]=o[p+1]=o[p+2]=v;o[p+3]=255}else{o[p]=o[p+1]=o[p+2]=255;o[p+3]=255}}
-    ctx.putImageData(out,0,0)}
-  return c}
+function makeBases(w,h){
+  const sx=w/Math.max(S.A.w,S.B.w),sy=h/Math.max(S.A.h,S.B.h),a=mk(w,h),b=mk(w,h);
+  a.getContext('2d').drawImage(S.A.c,0,0,S.A.w*sx,S.A.h*sy);drawAligned(b.getContext('2d'),S.B.c,S.align,sx,sy);
+  return [a,b];
+}
+function buildBases(){const frame=workingFrame(Math.max(S.A.w,S.B.w),Math.max(S.A.h,S.B.h));S.W=frame.w;S.H=frame.h;S.scale=frame.scale;
+  [baseA,baseB]=makeBases(S.W,S.H);
+  dataA=baseA.getContext('2d').getImageData(0,0,S.W,S.H);dataB=baseB.getContext('2d').getImageData(0,0,S.W,S.H);computeDiffMap()}
+function drawAligned(ctx,img,al,sx,sy=sx){ctx.save();ctx.scale(sx,sy);const w=img.width,h=img.height;ctx.translate(w/2+al.dx,h/2+al.dy);ctx.rotate(al.rot*Math.PI/180);ctx.scale(al.scale*(al.fh?-1:1),al.scale*(al.fv?-1:1));ctx.drawImage(img,-w/2,-h/2);ctx.restore()}
+function diffPixels(a,b,map,sign,rgba){
+  let changed=0;
+  const delta=(black,opacity)=>Math.min(255,Math.round(Math.max(Math.abs(black),Math.abs(black+opacity))));
+  for(let i=0,p=0;p<a.length;i++,p+=4){
+    // 对黑、白底分别比较预乘后的颜色：不漏掉透明度变化，也不比较全透明像素下不可见的 RGB。
+    const aa=a[p+3],ba=b[p+3],fa=aa/255,fb=ba/255,opacity=ba-aa;
+    const dr=a[p]*fa-b[p]*fb,dg=a[p+1]*fa-b[p+1]*fb,db=a[p+2]*fa-b[p+2]*fb;
+    const r=delta(dr,opacity),g=delta(dg,opacity),bl=delta(db,opacity),m=Math.max(r,g,bl);
+    if(map)map[i]=m;if(sign)sign[i]=dr*.299+dg*.587+db*.114+opacity<0?1:-1;
+    if(rgba){rgba[p]=r;rgba[p+1]=g;rgba[p+2]=bl;rgba[p+3]=255}if(m)changed++;
+  }
+  return changed;
+}
+function computeDiffMap(){const n=S.W*S.H;diffMap=new Uint8Array(n);signMap=new Int8Array(n);diffCount=diffPixels(dataA.data,dataB.data,diffMap,signMap)}
+function paintBaseMode(ctx,mode,a,b){const W=a.width,H=a.height;ctx.clearRect(0,0,W,H);
+  if(mode==='fade'){
+    // 在透明画布上相加两个按权重预乘的图层，避免 B 的透明区域泄露未衰减的 A。
+    ctx.save();ctx.globalAlpha=1-S.fade;ctx.drawImage(a,0,0);ctx.globalCompositeOperation='lighter';ctx.globalAlpha=S.fade;ctx.drawImage(b,0,0);ctx.restore();
+  }else if(mode==='slider'){
+    const x=Math.round(W*S.sliderPos);
+    if(x>0)ctx.drawImage(a,0,0,x,H,0,0,x,H);
+    if(x<W)ctx.drawImage(b,x,0,W-x,H,x,0,W-x,H);
+  }else ctx.drawImage(flickShow()===0?a:b,0,0);
+}
+function compositeCanvas(mode,sourceA=baseA,sourceB=baseB){const W=sourceA.width,H=sourceA.height,c=mk(W,H),ctx=c.getContext('2d');
+  if(mode==='fade'||mode==='slider'||mode==='flicker'){paintBaseMode(ctx,mode,sourceA,sourceB);return c}
+  const cached=sourceA===baseA&&sourceB===baseB;
+  const a=cached?dataA.data:sourceA.getContext('2d').getImageData(0,0,W,H).data,b=cached?dataB.data:sourceB.getContext('2d').getImageData(0,0,W,H).data;
+  const out=ctx.createImageData(W,H),o=out.data;
+  if(mode==='subtract')diffPixels(a,b,null,null,o);
+  else if(mode==='highlight'){
+    const d=cached?diffMap:new Uint8Array(W*H),sign=cached?signMap:new Int8Array(W*H),thr=S.hlThr,context=S.hlMode==='context';
+    if(!cached)diffPixels(a,b,d,sign);
+    for(let i=0,p=0;i<d.length;i++,p+=4){if(d[i]>thr){if(sign[i]>0){o[p]=235;o[p+1]=50;o[p+2]=35}else{o[p]=30;o[p+1]=180;o[p+2]=90}}
+      else{const fa=a[p+3]/255,g=(a[p]*.299+a[p+1]*.587+a[p+2]*.114)*fa+255*(1-fa);o[p]=o[p+1]=o[p+2]=context?Math.round(255-(255-g)*.45):255}o[p+3]=255}
+  }
+  ctx.putImageData(out,0,0);return c;
+}
 function flickShow(){return holdSide||flickState?(holdSide===1?0:holdSide===2?1:flickState):0}
 /* ===================== view / stage ===================== */
 const stage=$('stage'),viewport=$('viewport');let overlay=null,sliderEl=null,mainCanvas=null;
 function renderStage(){stage.innerHTML='';stage.classList.toggle('pix',S.zoom>=3);const W=S.W,H=S.H;
   if(S.mode==='split'){const wrap=document.createElement('div');wrap.className='split-pair';wrap.style.paddingTop='24px';for(const [c,k] of [[baseA,'original'],[baseB,'changed']]){const d=document.createElement('div');d.innerHTML=`<span class="tag" data-i18n="${k}">${t(k)}</span>`;d.appendChild(c);wrap.appendChild(d)}stage.appendChild(wrap);overlay=null;mainCanvas=null}
   else{mainCanvas=compositeCanvas(S.mode);stage.appendChild(mainCanvas);overlay=mk(W,H);overlay.id='overlay';stage.appendChild(overlay);drawOverlay();
-    if(S.mode==='slider'){sliderEl=document.createElement('div');sliderEl.className='sl-handle';sliderEl.style.height=H+'px';sliderEl.style.left=(W*S.sliderPos-1)+'px';stage.appendChild(sliderEl);sliderEl.onpointerdown=e=>{e.stopPropagation();sliderEl.setPointerCapture(e.pointerId);const mv=ev=>{const r=stage.getBoundingClientRect();S.sliderPos=Math.max(0,Math.min(1,(ev.clientX-r.left)/(W*S.zoom)));sliderEl.style.left=(W*S.sliderPos-1)+'px';const cx=mainCanvas.getContext('2d');cx.drawImage(baseB,0,0);cx.save();cx.beginPath();cx.rect(0,0,Math.round(W*S.sliderPos),H);cx.clip();cx.drawImage(baseA,0,0);cx.restore()};sliderEl.onpointermove=mv;sliderEl.onpointerup=sliderEl.onpointercancel=()=>{sliderEl.onpointermove=null}}}}
+    if(S.mode==='slider'){sliderEl=document.createElement('div');sliderEl.className='sl-handle';sliderEl.style.height=H+'px';sliderEl.style.left=(W*S.sliderPos-1)+'px';stage.appendChild(sliderEl);sliderEl.onpointerdown=e=>{e.stopPropagation();sliderEl.setPointerCapture(e.pointerId);const mv=ev=>{const r=stage.getBoundingClientRect();S.sliderPos=Math.max(0,Math.min(1,(ev.clientX-r.left)/(W*S.zoom)));sliderEl.style.left=(W*S.sliderPos-1)+'px';paintBaseMode(mainCanvas.getContext('2d'),'slider',baseA,baseB)};sliderEl.onpointermove=mv;sliderEl.onpointerup=sliderEl.onpointercancel=()=>{sliderEl.onpointermove=null}}}}
   $('flickTag').classList.toggle('hidden',S.mode!=='flicker');applyTransform();$('ctlFade').classList.toggle('hidden',S.mode!=='fade');$('ctlFlicker').classList.toggle('hidden',S.mode!=='flicker');$('ctlHighlight').classList.toggle('hidden',S.mode!=='highlight');
   clearInterval(flickTimer);if(S.mode==='flicker'){flickTimer=setInterval(()=>{flickState^=1;redrawFlicker()},S.flick);redrawFlicker()}}
-function redrawFlicker(){if(!mainCanvas||S.mode!=='flicker')return;const cx=mainCanvas.getContext('2d');const s=flickShow();cx.drawImage(s===0?baseA:baseB,0,0);$('flickTag').textContent=s===0?t('fOriginal'):t('fChanged')}
+function redrawFlicker(){if(!mainCanvas||S.mode!=='flicker')return;const s=flickShow();paintBaseMode(mainCanvas.getContext('2d'),'flicker',baseA,baseB);$('flickTag').textContent=s===0?t('fOriginal'):t('fChanged')}
 function drawOverlay(){if(!overlay)return;const cx=overlay.getContext('2d');cx.clearRect(0,0,S.W,S.H);if(!S.regions.length)return;
   if(S.darken){cx.fillStyle='rgba(0,0,0,.5)';cx.fillRect(0,0,S.W,S.H);cx.globalCompositeOperation='destination-out';cx.fillStyle='#000';for(const r of S.regions){cx.fillRect(r.x,r.y,r.w,r.h)}cx.globalCompositeOperation='source-over'}
   if(S.boxes){const lw=Math.max(1,2/S.zoom);S.regions.forEach((r,i)=>{cx.lineWidth=i===S.active?lw*2:lw;cx.strokeStyle=i===S.active?'#ffb400':'#ff3b30';cx.strokeRect(r.x-lw,r.y-lw,r.w+2*lw,r.h+2*lw);cx.font=`${Math.max(10,14/S.zoom)}px system-ui`;const lbl=String(i+1);const tw=cx.measureText(lbl).width+6/S.zoom;const th=Math.max(12,16/S.zoom),ly=Math.max(0,r.y-lw-th);cx.fillStyle=i===S.active?'#ffb400':'#ff3b30';cx.fillRect(r.x-lw,ly,tw,th);cx.fillStyle='#fff';cx.fillText(lbl,r.x-lw+3/S.zoom,ly+th*0.78)})}}
@@ -291,7 +372,7 @@ viewport.addEventListener('wheel',e=>{e.preventDefault();const r=viewport.getBou
 viewport.onpointerdown=e=>{if(e.target.closest('.sl-handle'))return;viewport.setPointerCapture(e.pointerId);viewport.classList.add('panning');const sx=e.clientX-S.px,sy=e.clientY-S.py;viewport.onpointermove=ev=>{S.px=ev.clientX-sx;S.py=ev.clientY-sy;applyTransform()};viewport.onpointerup=viewport.onpointercancel=()=>{viewport.onpointermove=null;viewport.classList.remove('panning')}};
 /* toolbar */
 $('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;const sp=S.mode==='split';S.mode=b.dataset.mode;$('modeSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));renderStage();if(sp||S.mode==='split')fit()};// 只有进出并排模式时舞台尺寸才会变；其余模式之间切换保留当前的缩放与位置，便于对着同一处细节来回比较
-$('fadeRange').oninput=e=>{S.fade=e.target.value/100;$('fadeVal').textContent=e.target.value+'%';if(mainCanvas){const cx=mainCanvas.getContext('2d');cx.clearRect(0,0,S.W,S.H);cx.drawImage(baseA,0,0);cx.globalAlpha=S.fade;cx.drawImage(baseB,0,0);cx.globalAlpha=1}};
+$('fadeRange').oninput=e=>{S.fade=e.target.value/100;$('fadeVal').textContent=e.target.value+'%';if(mainCanvas)paintBaseMode(mainCanvas.getContext('2d'),'fade',baseA,baseB)};
 $('flickRange').oninput=e=>{S.flick=2100-+e.target.value;if(S.mode==='flicker'){clearInterval(flickTimer);flickTimer=setInterval(()=>{flickState^=1;redrawFlicker()},S.flick)}};
 const hold=(side,on)=>{holdSide=on?side:0;redrawFlicker()};
 for(const [id,side] of [['holdA',1],['holdB',2]]){const b=$(id);b.onpointerdown=()=>hold(side,true);b.onpointerup=b.onpointerleave=b.onpointercancel=()=>hold(side,false)}
@@ -301,8 +382,12 @@ $('swBoxes').onclick=()=>{S.boxes=!S.boxes;$('swBoxes').setAttribute('aria-check
 $('sbToggle').onclick=()=>{const c=$('work').classList.toggle('collapsed'),b=$('sbToggle');/* 收起后按钮仍写着“收起侧边栏”、aria-expanded 也不变，读屏与悬停提示都对不上当前状态 */b.setAttribute('aria-expanded',String(!c));b.dataset.i18nTitle=c?'sbTipOpen':'sbTip';b.title=t(b.dataset.i18nTitle);b.textContent=c?'⇤':'⇥'};
 
 /* ===================== compare pipeline ===================== */
-function compare(){if(!S.A||!S.B)return;$('result').classList.remove('hidden');buildBases();if(!S.seeded){S.seeded=true;S.passes=[newPass('words-sentences')]}/* 只在首次（或重置后）补上默认检测，用户删光检测后再对齐 / 换图不应又冒出一个 */S.passes.forEach(p=>{if(p.linked)p.options=presetOptions(p.presetId)});scan();renderStage();fit();
-  if(diffCount===0){notice(t('identicalTitle')+' — '+t('identicalMsg'))}}
+function compare(){if(!S.A||!S.B)return false;
+  try{buildBases();$('result').classList.remove('hidden');if(!S.seeded){S.seeded=true;S.passes=[newPass('words-sentences')]}
+    S.passes.forEach(p=>{if(p.linked)p.options=presetOptions(p.presetId)});scan();renderStage();fit();
+    if(diffCount===0)notice(t('identicalTitle')+' — '+t('identicalMsg'));return true
+  }catch(e){console.error(e);clearComparison();notice(t('compareFailed'));return false}
+}
 /* ---- scan / change detection ---- */
 const PRESETS={'tiny-specks':e=>({diffThreshold:80,groupingRadius:0,minBlobArea:2,maxBlobAreaFraction:.01}),'words-sentences':e=>({diffThreshold:20,groupingRadius:Math.round(Math.max(2,Math.min(12,4*e))),minBlobArea:Math.round(Math.max(15,Math.min(300,30*e))),maxBlobAreaFraction:.15}),'graphics-large-blocks':e=>({diffThreshold:25,groupingRadius:Math.round(Math.max(5,Math.min(25,10*e))),minBlobArea:Math.round(Math.max(100,Math.min(2000,200*e))),maxBlobAreaFraction:.5})};
 const scaleFactor=()=>Math.max(.25,Math.min(4,Math.sqrt(S.W*S.H)/1000));
@@ -311,37 +396,65 @@ let passSeq=0;const newPass=id=>({id:++passSeq,presetId:id,linked:true,options:p
 function dilate(mask,W,H,r){if(r<=0)return mask;const tmp=new Uint8Array(W*H),out=new Uint8Array(W*H);
   for(let y=0;y<H;y++){const row=y*W;let cnt=0;for(let x=-r;x<W;x++){const add=x+r;if(add<W&&mask[row+add])cnt++;const rem=x-r-1;if(rem>=0&&mask[row+rem])cnt--;if(x>=0)tmp[row+x]=cnt>0?1:0}}
   for(let x=0;x<W;x++){let cnt=0;for(let y=-r;y<H;y++){const add=y+r;if(add<H&&tmp[add*W+x])cnt++;const rem=y-r-1;if(rem>=0&&tmp[rem*W+x])cnt--;if(y>=0)out[y*W+x]=cnt>0?1:0}}return out}
-const SCR={n:0,seen:null,stack:null};
-function components(mask,W,H,x0,y0,x1,y1){// 8-connected labelling within rect; returns boxes with area
-  if(SCR.n!==W*H){SCR.n=W*H;SCR.seen=new Uint8Array(W*H);SCR.stack=new Int32Array(W*H)}const seen=SCR.seen,stack=SCR.stack,boxes=[];for(let y=y0;y<y1;y++)seen.fill(0,y*W+x0,y*W+x1);
-  for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){const i=y*W+x;if(!mask[i]||seen[i])continue;let sp=0;stack[sp++]=i;seen[i]=1;let minx=x,maxx=x,miny=y,maxy=y,area=0;
-    while(sp){const j=stack[--sp];const jx=j%W,jy=(j-jx)/W;area++;if(jx<minx)minx=jx;if(jx>maxx)maxx=jx;if(jy<miny)miny=jy;if(jy>maxy)maxy=jy;
-      for(let dy=-1;dy<=1;dy++){const ny=jy+dy;if(ny<y0||ny>=y1)continue;for(let dx=-1;dx<=1;dx++){const nx=jx+dx;if(nx<x0||nx>=x1)continue;const k=ny*W+nx;if(mask[k]&&!seen[k]){seen[k]=1;stack[sp++]=k}}}}
-    boxes.push({x:minx,y:miny,w:maxx-minx+1,h:maxy-miny+1,area})}return boxes}
-function detect(thrMask,W,H,o,rect,radius,out){const d=dilate(radius?subMask(thrMask,W,H,rect):thrMask,W,H,radius);const boxes=components(d,W,H,rect.x0,rect.y0,rect.x1,rect.y1);const maxA=o.maxBlobAreaFraction*W*H;
-  for(const b of boxes){if(b.area<o.minBlobArea)continue;if(b.w*b.h>maxA&&radius>0){detect(thrMask,W,H,o,{x0:b.x,y0:b.y,x1:b.x+b.w,y1:b.y+b.h},Math.floor(radius/2),out);continue}
-    // tighten box to real diff pixels & count
-    let minx=b.x+b.w,maxx=b.x-1,miny=b.y+b.h,maxy=b.y-1,cnt=0;for(let y=b.y;y<b.y+b.h;y++)for(let x=b.x;x<b.x+b.w;x++){if(thrMask[y*W+x]){cnt++;if(x<minx)minx=x;if(x>maxx)maxx=x;if(y<miny)miny=y;if(y>maxy)maxy=y}}if(cnt<Math.min(o.minBlobArea,b.area)||maxx<minx)continue;
-    out.push({x:minx,y:miny,w:maxx-minx+1,h:maxy-miny+1,px:cnt})}}
-function subMask(mask,W,H,r){const m=new Uint8Array(W*H);for(let y=r.y0;y<r.y1;y++)for(let x=r.x0;x<r.x1;x++)m[y*W+x]=mask[y*W+x];return m}
+function components(mask,raw,W,H,minArea,visit){
+  const seen=new Uint8Array(W*H),queue=new Int32Array(W*H);
+  for(let i=0;i<mask.length;i++){if(!mask[i]||seen[i])continue;
+    let end=1,minX=W,minY=H,maxX=-1,maxY=-1,px=0;queue[0]=i;seen[i]=1;
+    for(let p=0;p<end;p++){const j=queue[p],x=j%W,y=(j-x)/W;
+      if(raw[j]){px++;minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y)}
+      for(let ny=Math.max(0,y-1);ny<=Math.min(H-1,y+1);ny++)for(let nx=Math.max(0,x-1);nx<=Math.min(W-1,x+1);nx++){
+        const k=ny*W+nx;if(mask[k]&&!seen[k]){seen[k]=1;queue[end++]=k}
+      }
+    }
+    if(px>=minArea&&visit({x:minX,y:minY,w:maxX-minX+1,h:maxY-minY+1,px},queue,end)===false)return false;
+  }
+  return true;
+}
+function detect(thrMask,W,H,o,rect,radius,out,limit=Infinity){
+  const maxArea=o.maxBlobAreaFraction*W*H;
+  function visitMask(raw,w,h,ox,oy,rad){
+    return components(dilate(raw,w,h,rad),raw,w,h,o.minBlobArea,(b,queue,end)=>{
+      if(b.w*b.h>maxArea){
+        if(!rad)return; // 已不能再拆分，仍须执行最大面积过滤。
+        // 只缩小当前连通块；外接框里的其他连通块不属于它。
+        const part=new Uint8Array(b.w*b.h);
+        for(let k=0;k<end;k++){const i=queue[k];if(raw[i]){const x=i%w,y=(i-x)/w;part[(y-b.y)*b.w+x-b.x]=1}}
+        return visitMask(part,b.w,b.h,ox+b.x,oy+b.y,Math.floor(rad/2));
+      }
+      out.push({...b,x:ox+b.x,y:oy+b.y});return out.length<limit;
+    });
+  }
+  const w=rect.x1-rect.x0,h=rect.y1-rect.y0;if(!w||!h)return true;
+  let raw=thrMask;if(w!==W||h!==H){raw=new Uint8Array(w*h);for(let y=0;y<h;y++){
+    const offset=(rect.y0+y)*W+rect.x0;raw.set(thrMask.subarray(offset,offset+w),y*w);
+  }}
+  return visitMask(raw,w,h,rect.x0,rect.y0,radius);
+}
 /* IoU 只有在矩形相交时才可能达到阈值。按 32px 网格索引已保留区域，只检查同网格或相邻网格里的候选，
    避免大量互不相交的小区域（噪点、逐像素检测）产生 O(n²) 次无效比较；遍历顺序与原来的全量去重一致。 */
 function dedupeRegions(all){const keep=[],grid=new Map(),CELL=32,cells=(r,fn)=>{const x0=Math.floor(r.x/CELL),x1=Math.floor((r.x+r.w-1)/CELL),y0=Math.floor(r.y/CELL),y1=Math.floor((r.y+r.h-1)/CELL);for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++)fn(x+','+y)};
   for(const r of all){const near=new Set();cells(r,key=>{const bucket=grid.get(key);if(bucket)for(const k of bucket)near.add(k)});let dup=false;for(const k of near){const ix=Math.max(0,Math.min(r.x+r.w,k.x+k.w)-Math.max(r.x,k.x)),iy=Math.max(0,Math.min(r.y+r.h,k.y+k.h)-Math.max(r.y,k.y));const inter=ix*iy;if(inter&&inter/(r.w*r.h+k.w*k.h-inter)>=.4){dup=true;break}}if(!dup){keep.push(r);cells(r,key=>{const bucket=grid.get(key);if(bucket)bucket.push(r);else grid.set(key,[r])})}}return keep}
-function scan(keepPasses){const W=S.W,H=S.H;let all=[];for(const p of S.passes){if(!p.enabled)continue;const o=p.options;const m=new Uint8Array(W*H);for(let i=0;i<m.length;i++)m[i]=diffMap[i]>o.diffThreshold?1:0;const out=[];detect(m,W,H,o,{x0:0,y0:0,x1:W,y1:H},o.groupingRadius,out);out.forEach(r=>r.pass=p.id);all.push(...out)}
+const MAX_SCAN_REGIONS=8000,MAX_PASSES=8;
+function scan(keepPasses){const W=S.W,H=S.H;if(!W||!H)return;const all=[];let truncated=false;
+  for(const p of S.passes){if(!p.enabled)continue;const o=p.options,m=new Uint8Array(W*H),out=[];
+    for(let i=0;i<m.length;i++)m[i]=diffMap[i]>o.diffThreshold?1:0;
+    if(!detect(m,W,H,o,{x0:0,y0:0,x1:W,y1:H},o.groupingRadius,out,MAX_SCAN_REGIONS))truncated=true;
+    for(const r of out){r.pass=p.id;all.push(r)}
+  }
   const keep=dedupeRegions(all);
-  keep.sort((a,b)=>(b.w*b.h)-(a.w*a.h)||a.y-b.y||a.x-b.x);S.regions=keep.slice(0,500);S.tooMany=keep.length>500||(diffCount/(W*H)>.9);S.active=-1;if(keepPasses!==true)renderPasses();renderList();drawOverlay()}
-function renderPasses(){const el=$('passes');/* 重绘会把所有检测卡片换掉：先记下焦点在第几张卡片的哪个控件上，绘完还回去。否则用键盘切换预设或启停检测时，每操作一次焦点就丢一次 */const ae=document.activeElement,fi=el.contains(ae)?[...el.children].indexOf(ae.closest('.pass')):-1,fq=fi<0?'':ae.matches('select')?'select':ae.matches('[data-en]')?'[data-en]':'';el.innerHTML='';S.passes.forEach((p,i)=>{const d=document.createElement('div');d.className='pass';const o=p.options;
+  keep.sort((a,b)=>(b.w*b.h)-(a.w*a.h)||a.y-b.y||a.x-b.x);S.regions=keep.slice(0,500);S.truncated=truncated||keep.length>500;S.active=-1;if(keepPasses!==true)renderPasses();renderList();drawOverlay()}
+function renderPasses(){const el=$('passes');$('addPass').disabled=S.passes.length>=MAX_PASSES;/* 重绘会把所有检测卡片换掉：先记下焦点在第几张卡片的哪个控件上，绘完还回去。否则用键盘切换预设或启停检测时，每操作一次焦点就丢一次 */const ae=document.activeElement,fi=el.contains(ae)?[...el.children].indexOf(ae.closest('.pass')):-1,fq=fi<0?'':ae.matches('select')?'select':ae.matches('[data-en]')?'[data-en]':'';el.innerHTML='';S.passes.forEach((p,i)=>{const d=document.createElement('div');d.className='pass';const o=p.options;
     d.innerHTML=`<div class="ph"><span>${t('scan',{n:i+1})}</span><span><button class="btn sm ghost" data-en title="${t('toggleScan')}">${p.enabled?'●':'○'}</button><button class="btn sm ghost" data-rm title="${t('removeScan')}">✕</button></span></div>
     <div class="row"><span>${t('preset')}</span><select data-k="preset"><option value="__custom__" ${p.linked?'':'selected'}>${t('custom')}</option>${Object.keys(PRESETS).map(k=>`<option value="${k}" ${p.linked&&p.presetId===k?'selected':''}>${t({'tiny-specks':'tinySpecks','words-sentences':'wordsSentences','graphics-large-blocks':'graphics'}[k])}</option>`).join('')}</select></div>
     ${[['diffThreshold',0,255,1,t('diffThreshold')],['groupingRadius',0,30,1,t('grouping')],['minBlobArea',1,2000,1,t('minBlob')],['maxBlobAreaFraction',1,100,1,t('maxRegion')]].map(([k,mn,mx,st,lbl])=>`<div class="row"><span title="${k}">${lbl}</span><input type="range" data-k="${k}" min="${mn}" max="${mx}" step="${st}" value="${k==='maxBlobAreaFraction'?Math.round(o[k]*100):o[k]}"><span class="val">${k==='maxBlobAreaFraction'?Math.round(o[k]*100)+'%':o[k]}</span></div>`).join('')}`;
     d.querySelector('[data-rm]').onclick=()=>{S.passes.splice(i,1);scan()};d.querySelector('[data-en]').onclick=()=>{p.enabled=!p.enabled;scan()};
     d.querySelector('select').onchange=e=>{if(e.target.value==='__custom__'){p.linked=false}else{p.linked=true;p.presetId=e.target.value;p.options=presetOptions(p.presetId)}scan()};
     d.querySelectorAll('input[type=range]').forEach(r=>{r.oninput=()=>{const k=r.dataset.k;p.options[k]=k==='maxBlobAreaFraction'?r.value/100:+r.value;p.linked=false;r.nextElementSibling.textContent=k==='maxBlobAreaFraction'?r.value+'%':r.value;d.querySelector('select').value='__custom__';clearTimeout(window._sc);window._sc=setTimeout(()=>scan(true),120)}});el.appendChild(d)});if(fq&&el.children[fi])el.children[fi].querySelector(fq).focus()}
-$('addPass').onclick=()=>{S.passes.push(newPass(S.passes.length%2?'graphics-large-blocks':'tiny-specks'));scan()};
+$('addPass').onclick=()=>{if(S.passes.length>=MAX_PASSES)return;S.passes.push(newPass(S.passes.length%2?'graphics-large-blocks':'tiny-specks'));scan()};
 function cropCanvas(src,r,maxW=112,maxH=84){const s=Math.min(maxW/r.w,maxH/r.h,4);const c=mk(Math.max(1,r.w*s),Math.max(1,r.h*s));const cx=c.getContext('2d');cx.imageSmoothingEnabled=s<1;cx.drawImage(src,r.x,r.y,r.w,r.h,0,0,c.width,c.height);return c}
 function renderList(){const el=$('chgList');el.innerHTML='';$('chgCount').textContent=S.regions.length;$('expListLbl').textContent=t('chgList',{n:S.regions.length});if(!S.W)return;
-  if(S.tooMany&&!S.regions.length){el.innerHTML=`<div class="tip">${t('tooDifferent')}</div>`;return}if(!S.regions.length){el.innerHTML=`<div class="tip">${t('noChanges')}</div>`;return}
+  if(!S.regions.length){el.innerHTML=`<div class="tip">${t(diffCount?'noMatchingRegions':'noChanges')}</div>`;return}
+  if(S.truncated)el.innerHTML=`<div class="tip">${t('truncatedRegions')}</div>`;
   S.regions.forEach((r,i)=>{const d=document.createElement('div');d.className='chg-item'+(i===S.active?' active':'');d.title=t('focus');d.innerHTML=`<div class="info"><b>${t('change',{n:i+1})}</b><span>${r.w}×${r.h} @ ${r.x},${r.y} · ${r.px}px</span></div>`;d.prepend(cropCanvas(baseB,r));d.prepend(cropCanvas(baseA,r));
     d.onclick=()=>{S.active=i;el.querySelectorAll('.chg-item').forEach((x,j)=>x.classList.toggle('active',j===i));focusRegion(r)};
     d.tabIndex=0;d.setAttribute('role','button');d.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();d.click()}};/* 差异列表项同样可用键盘聚焦并定位 */el.appendChild(d)})}
@@ -349,18 +462,30 @@ function focusRegion(r){if(S.mode==='split'){S.mode='highlight';$('modeSeg').que
 
 /* ===================== alignment ===================== */
 const AL=$('alignModal');let alTmp=null,alView={z:1,x:0,y:0};
-$('alignBtn').onclick=()=>{if(!S.A||!S.B)return;alTmp={...S.align};$('alignErr').textContent='';AL.classList.add('open');setTimeout(initAlignView,0)};
-$('alignCancel').onclick=()=>AL.classList.remove('open');
-$('alignApply').onclick=()=>{S.align={...alTmp};AL.classList.remove('open');compare()};
-$('alignUndo').onclick=()=>{alTmp=defAlign();syncAlignInputs();drawAlign()};
-function initAlignView(){const v=$('alignView'),ca=$('alignA'),cb=$('alignB');ca.width=S.A.w;ca.height=S.A.h;ca.getContext('2d').drawImage(S.A.c,0,0);const W=Math.max(S.A.w,S.B.w),H=Math.max(S.A.h,S.B.h);cb.width=W;cb.height=H;alView.z=Math.min((v.clientWidth-20)/W,(v.clientHeight-20)/H);alView.x=(v.clientWidth-W*alView.z)/2;alView.y=(v.clientHeight-H*alView.z)/2;syncAlignInputs();drawAlign()}
-function drawAlign(){const ca=$('alignA'),cb=$('alignB');const tr=`translate(${alView.x}px,${alView.y}px) scale(${alView.z})`;ca.style.transform=tr;cb.style.transform=tr;ca.style.opacity=1;cb.style.opacity=$('alOpacity').value/100;const cx=cb.getContext('2d');cx.clearRect(0,0,cb.width,cb.height);drawAligned(cx,S.B.c,alTmp,1)}
+$('alignBtn').onclick=()=>{if(!S.A||!S.B)return;stopAuto();alTmp={...S.align};$('alignErr').textContent='';AL.showModal();initAlignView()};
+$('alignCancel').onclick=closeAlign;
+$('alignApply').onclick=()=>{S.align={...alTmp};closeAlign();compare()};
+$('alignUndo').onclick=()=>{stopAuto();alTmp=defAlign();syncAlignInputs();drawAlign()};
+function initAlignView(){
+  const v=$('alignView'),ca=$('alignA'),cb=$('alignB'),W=Math.max(S.A.w,S.B.w),H=Math.max(S.A.h,S.B.h),f=workingFrame(W,H);
+  ca.width=cb.width=f.w;ca.height=cb.height=f.h;alView.sx=f.w/W;alView.sy=f.h/H;
+  ca.getContext('2d').drawImage(S.A.c,0,0,S.A.w*alView.sx,S.A.h*alView.sy);
+  alView.z=Math.max(.02,Math.min((v.clientWidth-20)/f.w,(v.clientHeight-20)/f.h));alView.x=(v.clientWidth-f.w*alView.z)/2;alView.y=(v.clientHeight-f.h*alView.z)/2;syncAlignInputs();drawAlign();
+}
+function drawAlign(){const ca=$('alignA'),cb=$('alignB');const tr=`translate(${alView.x}px,${alView.y}px) scale(${alView.z})`;ca.style.transform=tr;cb.style.transform=tr;ca.style.opacity=1;cb.style.opacity=$('alOpacity').value/100;const cx=cb.getContext('2d');cx.clearRect(0,0,cb.width,cb.height);drawAligned(cx,S.B.c,alTmp,alView.sx,alView.sy)}
 function syncAlignInputs(){$('alDx').value=alTmp.dx.toFixed(1);$('alDy').value=alTmp.dy.toFixed(1);$('alRot').value=alTmp.rot.toFixed(2);$('alScale').value=alTmp.scale.toFixed(4);$('flipH').setAttribute('aria-pressed',alTmp.fh);$('flipV').setAttribute('aria-pressed',alTmp.fv)}
-for(const [id,k] of [['alDx','dx'],['alDy','dy'],['alRot','rot'],['alScale','scale']])$(id).oninput=e=>{const v=parseFloat(e.target.value);if(isFinite(v)&&(k!=='scale'||v>0)){alTmp[k]=v;drawAlign()}};
-$('flipH').onclick=()=>{alTmp.fh=!alTmp.fh;syncAlignInputs();drawAlign()};$('flipV').onclick=()=>{alTmp.fv=!alTmp.fv;syncAlignInputs();drawAlign()};$('alOpacity').oninput=drawAlign;
-{const v=$('alignView');v.onpointerdown=e=>{v.setPointerCapture(e.pointerId);const sx=e.clientX,sy=e.clientY,odx=alTmp.dx,ody=alTmp.dy;v.onpointermove=ev=>{alTmp.dx=odx+(ev.clientX-sx)/alView.z;alTmp.dy=ody+(ev.clientY-sy)/alView.z;syncAlignInputs();drawAlign()};v.onpointerup=v.onpointercancel=()=>{v.onpointermove=null}};
+for(const [id,k] of [['alDx','dx'],['alDy','dy'],['alRot','rot'],['alScale','scale']])$(id).oninput=e=>{const v=parseFloat(e.target.value);if(isFinite(v)&&(k!=='scale'||v>0)){stopAuto();alTmp[k]=v;drawAlign()}};
+$('flipH').onclick=()=>{stopAuto();alTmp.fh=!alTmp.fh;syncAlignInputs();drawAlign()};$('flipV').onclick=()=>{stopAuto();alTmp.fv=!alTmp.fv;syncAlignInputs();drawAlign()};$('alOpacity').oninput=drawAlign;
+{const v=$('alignView');v.onpointerdown=e=>{stopAuto();v.setPointerCapture(e.pointerId);const sx=e.clientX,sy=e.clientY,odx=alTmp.dx,ody=alTmp.dy;v.onpointermove=ev=>{alTmp.dx=odx+(ev.clientX-sx)/(alView.z*alView.sx);alTmp.dy=ody+(ev.clientY-sy)/(alView.z*alView.sy);syncAlignInputs();drawAlign()};v.onpointerup=v.onpointercancel=()=>{v.onpointermove=null}};
  v.addEventListener('wheel',e=>{e.preventDefault();const r=v.getBoundingClientRect();const cx=e.clientX-r.left,cy=e.clientY-r.top;const z=Math.max(.02,Math.min(10,alView.z*(e.deltaY<0?1.12:1/1.12)));const k=z/alView.z;alView.x=cx-(cx-alView.x)*k;alView.y=cy-(cy-alView.y)*k;alView.z=z;drawAlign()},{passive:false})}
-$('autoAlignBtn').onclick=async()=>{$('alignErr').textContent='';$('autoAlignBtn').disabled=true;await new Promise(r=>setTimeout(r,20));try{const r=await autoAlign(S.A.c,S.B.c,{rot:$('allowRot').checked,scale:$('allowScale').checked,fh:alTmp.fh,fv:alTmp.fv});if(!r){$('alignErr').textContent=t('alignFail')}else{alTmp={...r};syncAlignInputs();drawAlign();notice(t('alignOk',{dx:r.dx.toFixed(0),dy:r.dy.toFixed(0),rot:r.rot.toFixed(1),sc:r.scale.toFixed(3),c:r.conf.toFixed(2)}))}}catch(e){console.error(e);$('alignErr').textContent=t('alignFail')}finally{$('autoAlignBtn').disabled=false}};
+$('autoAlignBtn').onclick=async()=>{
+  const job=++alignJob,current=()=>job===alignJob,A=S.A.c,B=S.B.c;
+  const allow={rot:$('allowRot').checked,scale:$('allowScale').checked,fh:alTmp.fh,fv:alTmp.fv,active:current};
+  $('alignErr').textContent='';$('autoAlignBtn').disabled=true;
+  try{await new Promise(r=>setTimeout(r,20));if(!current())return;const r=await autoAlign(A,B,allow);if(!current())return;
+    if(!r)$('alignErr').textContent=t('alignFail');else{alTmp={...r};syncAlignInputs();drawAlign();alignNotice(r)}
+  }catch(e){if(current()){console.error(e);$('alignErr').textContent=t('alignFail')}}finally{if(current())$('autoAlignBtn').disabled=false}
+};
 
 /* ---- pure-JS auto alignment: phase correlation (FFT) with coarse rotation/scale search ---- */
 function fft1d(re,im,inv){const n=re.length;for(let i=1,j=0;i<n;i++){let bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;if(i<j){let tmp=re[i];re[i]=re[j];re[j]=tmp;tmp=im[i];im[i]=im[j];im[j]=tmp}}
@@ -381,8 +506,9 @@ function phaseCorr(ga,gb,N){let F=ga._c&&ga._fft;if(ga._c&&(!F||F.N!==N)){const 
   let dx=px+fx,dy=py+fy;if(dx>N/2)dx-=N;if(dy>N/2)dy-=N;const peak=hx+hy-best;/* 相关面全零（纯色 / 空白图片）时 0/0=NaN，会被 autoAlign 的阈值判断当成“对齐成功”，显式归零 */return {dx,dy,peak,psr:sum>0?peak/Math.sqrt(sum/(N*N)):0}}
 async function autoAlign(A,B,allow){
   /* 翻转无法从相位相关里估计出来：沿用调用方当前的翻转状态去搜索平移 / 旋转 / 缩放，并原样带回结果。否则在手动对齐里先翻转再点“自动对齐”，翻转会被悄悄清掉，镜像的图片永远对不上；OpenCV 的仿射估计同样不含镜像，带翻转时改用内置算法 */
-  const fh=!!allow.fh,fv=!!allow.fv;
-  if(!fh&&!fv&&window.cv&&window.cv.ORB){try{const r=alignWithOpenCV(A,B,allow);if(r){notice(t('opencv'));return r}}catch(e){console.warn('OpenCV align failed',e)}}
+  const fh=!!allow.fh,fv=!!allow.fv,active=allow.active||(()=>true);if(!active())return null;
+  // ORB 同时估计旋转与缩放，不能事后把某一项置零来模拟受限拟合。
+  if(!fh&&!fv&&allow.rot&&allow.scale&&window.cv&&window.cv.ORB){try{const r=alignWithOpenCV(A,B);if(r){notice(t('opencv'));return r}}catch(e){console.warn('OpenCV align failed',e)}}
   const W=Math.max(A.width,B.width),H=Math.max(A.height,B.height);const tick=()=>new Promise(r=>setTimeout(r,0));
   const baseScale=allow.scale?Math.min(A.width/B.width,A.height/B.height):1;
   const evalAt=(N,pa,sc,rot)=>{const pb=grayPatch(B,N,sc,rot,fh,fv,W,H);const r=phaseCorr(pa.g,pb.g,N);return {...r,sc,rot,f:pa.f}};
@@ -390,48 +516,91 @@ async function autoAlign(A,B,allow){
   let N=128,pa=grayPatch(A,N,1,0,false,false,W,H),best=null,n=0;
   const scales=allow.scale?[0.85,0.9,0.95,1,1.05,1.1,1.15].map(s=>s*baseScale):[baseScale];if(allow.scale&&!scales.includes(1))scales.push(1);/* 尺寸不同往往只是裁剪 / 留白不同、内容并没有缩放：按尺寸比推出的候选里通常没有 1，补上“不缩放”，否则只能落在邻近的错误比例上，还会用多余的旋转去凑 */const rots=allow.rot?[-6,-4,-2,-1,0,1,2,4,6]:[0];
   best=evalAt(N,pa,baseScale,0);/* 只有明显优于“不旋转不缩放”时才采用其他候选，避免噪声导致虚假的缩放 */
-  for(const sc of scales)for(const rot of rots){if(sc===baseScale&&rot===0)continue;const r=evalAt(N,pa,sc,rot);if(r.psr>best.psr*1.05)best=r;if(++n%10===0)await tick()}
+  for(const sc of scales)for(const rot of rots){if(sc===baseScale&&rot===0)continue;const r=evalAt(N,pa,sc,rot);if(r.psr>best.psr*1.05)best=r;if(++n%10===0){await tick();if(!active())return null}}
   // 2) refine 256² around best
   N=256;pa=grayPatch(A,N,1,0,false,false,W,H);let ref=evalAt(N,pa,best.sc,best.rot);
   const scales2=allow.scale?[-0.03,-0.015,0,0.015,0.03].map(d=>best.sc*(1+d)):[best.sc];const rots2=allow.rot?[-1,-0.5,0,0.5,1].map(d=>best.rot+d):[0];
-  for(const sc of scales2)for(const rot of rots2){if(sc===best.sc&&rot===best.rot)continue;const r=evalAt(N,pa,sc,rot);if(r.psr>ref.psr*1.03)ref=r;if(++n%6===0)await tick()}
+  for(const sc of scales2)for(const rot of rots2){if(sc===best.sc&&rot===best.rot)continue;const r=evalAt(N,pa,sc,rot);if(r.psr>ref.psr*1.03)ref=r;if(++n%6===0){await tick();if(!active())return null}}
   if(!ref||ref.psr<4)return null;
   // 3) final translation at 512²
   N=512;pa=grayPatch(A,N,1,0,false,false,W,H);let fin=evalAt(N,pa,ref.sc,ref.rot);const f=fin.f;
   /* 终步在 512² 上再做一轮更细的旋转/缩放搜索，只有明显更优才替换 */
-  for(const dr of allow.rot?[-1,-.5,-.25,.25,.5,1]:[0])for(const ds of allow.scale?[-.01,0,.01]:[0]){if(!dr&&!ds)continue;const r=evalAt(N,pa,ref.sc*(1+ds),ref.rot+dr);if(r.psr>fin.psr*1.06)fin=r;await tick()}
+  for(const dr of allow.rot?[0,-1,-.5,-.25,.25,.5,1]:[0])for(const ds of allow.scale?[-.01,0,.01]:[0]){if(!dr&&!ds)continue;const r=evalAt(N,pa,ref.sc*(1+ds),ref.rot+dr);if(r.psr>fin.psr*1.06)fin=r;await tick();if(!active())return null}
   // Both patches are drawn with their top-left at the frame origin (same as drawAligned with dx=dy=0), so the
   // correlation peak is directly the shift that must be applied to B (peak at -d when B = A shifted by d).
   // 不旋转也不缩放时把位移取整：这种情况（截图错位、裁剪、留白）真实位移几乎总是整数像素，而亚像素估计约 0.1px 的误差会让整张图被重采样，在边缘处冒出大量假差异
   const whole=fin.rot===0&&fin.sc===1,px=v=>whole?Math.round(v)||0:v;
   return {dx:px(fin.dx/f),dy:px(fin.dy/f),rot:fin.rot,scale:fin.sc,fh,fv,conf:Math.min(1,fin.psr/40)};
 }
-function alignWithOpenCV(A,B,allow={}){const cv=window.cv,del=[];const keep=x=>(del.push(x),x);
+function alignWithOpenCV(A,B){const cv=window.cv,del=[];const keep=x=>(del.push(x),x);
   try{const ma=keep(cv.imread(A)),mb=keep(cv.imread(B)),ga=keep(new cv.Mat()),gb=keep(new cv.Mat());cv.cvtColor(ma,ga,cv.COLOR_RGBA2GRAY);cv.cvtColor(mb,gb,cv.COLOR_RGBA2GRAY);const orb=keep(new cv.ORB(4000,1.2,8,31,0,2,cv.ORB_HARRIS_SCORE,31,20));const k1=keep(new cv.KeyPointVector()),k2=keep(new cv.KeyPointVector()),d1=keep(new cv.Mat()),d2=keep(new cv.Mat()),nomask=keep(new cv.Mat());orb.detectAndCompute(ga,nomask,k1,d1);orb.detectAndCompute(gb,nomask,k2,d2);
-    const bf=keep(new cv.BFMatcher(cv.NORM_HAMMING,false)),mm=keep(new cv.DMatchVectorVector());bf.knnMatch(d2,d1,mm,2);const src=[],dst=[];for(let i=0;i<mm.size();i++){const m=mm.get(i);if(m.size()<2)continue;const a=m.get(0),b=m.get(1);if(a.distance<.75*b.distance){const p2=k2.get(a.queryIdx).pt,p1=k1.get(a.trainIdx).pt;src.push(p2.x,p2.y);dst.push(p1.x,p1.y)}}
-    if(src.length<8)return null;const sm=keep(cv.matFromArray(src.length/2,1,cv.CV_32FC2,src)),dm=keep(cv.matFromArray(dst.length/2,1,cv.CV_32FC2,dst)),inl=keep(new cv.Mat());const M=keep(cv.estimateAffinePartial2D(sm,dm,inl,cv.RANSAC,5,2000,.95,10));if(M.empty())return null;const m=M.data64F;
-    // M = [[s·cosθ, −s·sinθ, tx],[s·sinθ, s·cosθ, ty]]；canvas 的 rotate(θ) 与之同向，所以 θ = atan2(m[3], m[0])（原先误用 m[1]，符号相反）
-    const sc=allow.scale===false?1:Math.hypot(m[0],m[3]),rot=allow.rot===false?0:Math.atan2(m[3],m[0])*180/Math.PI;// B centre maps to:
+    if(d1.empty()||d2.empty())return null;
+    const bf=keep(new cv.BFMatcher(cv.NORM_HAMMING,false)),mm=keep(new cv.DMatchVectorVector());bf.knnMatch(d2,d1,mm,2);const src=[],dst=[];
+    for(let i=0;i<mm.size();i++){const matches=mm.get(i);try{
+      if(matches.size()<2)continue;const a=matches.get(0),b=matches.get(1);
+      if(a.distance<.75*b.distance){const p2=k2.get(a.queryIdx).pt,p1=k1.get(a.trainIdx).pt;src.push(p2.x,p2.y);dst.push(p1.x,p1.y)}
+    }finally{matches.delete?.()}}
+    if(src.length<8)return null;const sm=keep(cv.matFromArray(src.length/2,1,cv.CV_32FC2,src)),dm=keep(cv.matFromArray(dst.length/2,1,cv.CV_32FC2,dst)),inl=keep(new cv.Mat());const M=keep(cv.estimateAffinePartial2D(sm,dm,inl,cv.RANSAC,5,2000,.95,10));
+    if(M.empty())return null;const m=M.data64F,good=inl.data.reduce((n,v)=>n+Number(v!==0),0),conf=good/(src.length/2);
+    if(m.length!==6||!m.every(Number.isFinite)||good<4||conf<.35)return null;
+    const scale=Math.hypot(m[0],m[3]),rot=Math.atan2(m[3],m[0])*180/Math.PI;
+    if(!(scale>0))return null;
     const cxB=B.width/2,cyB=B.height/2,tx=m[0]*cxB+m[1]*cyB+m[2],ty=m[3]*cxB+m[4]*cyB+m[5];
-    return {dx:tx-cxB,dy:ty-cyB,rot,scale:sc,fh:false,fv:false,conf:.9}}
+    return {dx:tx-cxB,dy:ty-cyB,rot,scale,fh:false,fv:false,conf}}
   finally{for(const x of del){try{x.delete()}catch(e){}}}}
 
 /* ===================== export ===================== */
 let expFmt='png',expDiff='subtract';
 const stem=(n,d)=>{n=n||d;return n.replace(/\.[^.]+$/,'')||n};
 const baseName=()=>(stem(S.A?.name,'original')+'-vs-'+stem(S.B?.name,'changed')).replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100).replace(/[. ]+$/,'')||'image-comparison';
-$('exportBtn').onclick=()=>$('exportModal').classList.add('open');$('exportCancel').onclick=()=>$('exportModal').classList.remove('open');
-$('fmtChoices').onclick=e=>{const b=e.target.closest('.choice');if(!b)return;expFmt=b.dataset.fmt;$('fmtChoices').querySelectorAll('.choice').forEach(c=>c.setAttribute('aria-pressed',String(c===b)))};
+$('exportBtn').onclick=()=>$('exportModal').showModal();$('exportCancel').onclick=()=>$('exportModal').close();
+$('fmtChoices').onclick=e=>{const b=e.target.closest('.choice');if(!b)return;expFmt=b.dataset.fmt;$('fmtChoices').querySelectorAll('.choice').forEach(c=>c.setAttribute('aria-pressed',String(c===b)));$('pngOptions').classList.toggle('hidden',expFmt!=='png');$('pdfOptions').classList.toggle('hidden',expFmt!=='pdf')};
 $('expDiffStyle').onclick=e=>{const b=e.target.closest('button');if(!b)return;expDiff=b.dataset.s;$('expDiffStyle').querySelectorAll('button').forEach(c=>c.setAttribute('aria-pressed',String(c===b)))};
 function download(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1500)}
-function exportCanvas(){if(S.mode==='split'){const c=mk(S.W*2+16,S.H),cx=c.getContext('2d');cx.fillStyle='#fff';cx.fillRect(0,0,c.width,c.height);cx.drawImage(baseA,0,0);cx.drawImage(baseB,S.W+16,0);return c}const c=compositeCanvas(S.mode);if(overlay)c.getContext('2d').drawImage(overlay,0,0);return c}
-$('exportGo').onclick=async()=>{$('exportModal').classList.remove('open');if(!S.W)return;const c=exportCanvas();
-  if(expFmt==='png'){c.toBlob(b=>b?download(b,baseName()+'.png'):notice(t('exportFailed')),'image/png');return}
-  const rep=$('report');const esc=s=>String(s).replace(/[&<>]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[x]));
-  let h=`<h1>${t('rptTitle')}</h1><table><tr><th>${t('rptOrig')}</th><td>${esc(S.A.name)} (${S.A.w}×${S.A.h})</td></tr><tr><th>${t('rptChg')}</th><td>${esc(S.B.name)} (${S.B.w}×${S.B.h})</td></tr><tr><th>${t('rptMode')}</th><td>${esc(t('m.'+S.mode))}</td></tr><tr><th>${t('rptSummary')}</th><td>${t(S.regions.length===1?'summary1':'summary',{p:(100*diffCount/(S.W*S.H)).toFixed(2),n:S.regions.length})}</td></tr><tr><th>${t('rptAlign')}</th><td>dx ${S.align.dx.toFixed(1)}, dy ${S.align.dy.toFixed(1)}, rot ${S.align.rot.toFixed(2)}°, scale ${S.align.scale.toFixed(4)}</td></tr></table><h2>${t('rptCmp')}</h2><img src="${c.toDataURL('image/png')}">`;
-  if($('expSrc').checked)h+=`<h2>${t('srcImages')}</h2><div class="srcs"><div><img src="${baseA.toDataURL('image/png')}"><small>${t('fOriginal')}</small></div><div><img src="${baseB.toDataURL('image/png')}"><small>${t('fChanged')}</small></div></div>`;
-  if($('expList').checked&&S.regions.length){h+=`<h2>${t('chgList',{n:S.regions.length})}</h2><div class="crops">`;const sub=compositeCanvas('subtract');S.regions.forEach((r,i)=>{const pad={x:Math.max(0,r.x-8),y:Math.max(0,r.y-8)};pad.w=Math.min(S.W-pad.x,r.w+16);pad.h=Math.min(S.H-pad.y,r.h+16);h+=`<div class="crop"><b>${t('change',{n:i+1})}</b> — ${r.w}×${r.h} @ ${r.x},${r.y}<img src="${cropCanvas(baseA,pad,400,300).toDataURL()}"><img src="${cropCanvas(baseB,pad,400,300).toDataURL()}">${expDiff==='subtract'?`<img src="${cropCanvas(sub,pad,400,300).toDataURL()}">`:''}</div>`});h+='</div>'}
-  rep.innerHTML=h;/* 等报告里的图片（data URL）全部解码完再打印，固定等待 150ms 在大图 / 多区域时会打印出空白图 */await Promise.all([...rep.querySelectorAll('img')].map(i=>i.decode?i.decode().catch(()=>{}):Promise.resolve()));window.print()};
+const MAX_EXPORT_PIXELS=16*1024*1024;
+function exportCanvas(native=false){
+  const w=native?Math.max(S.A.w,S.B.w):S.W,h=native?Math.max(S.A.h,S.B.h):S.H,split=S.mode==='split';
+  if(!fitsCanvas(split?w*2+16:w,h,MAX_EXPORT_PIXELS))throw new Error('pngTooLarge');
+  const [a,b]=w===S.W&&h===S.H?[baseA,baseB]:makeBases(w,h);
+  if(split){const c=mk(w*2+16,h),cx=c.getContext('2d');cx.drawImage(a,0,0);cx.drawImage(b,w+16,0);return c}
+  const c=compositeCanvas(S.mode,a,b);if(overlay)c.getContext('2d').drawImage(overlay,0,0,w,h);return c;
+}
+function pngUrl(canvas){const url=canvas.toDataURL('image/png');if(url==='data:,')throw new Error('PNG encoding failed');return url}
+function reportHtml(c){
+  const esc=s=>String(s).replace(/[&<>]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[x])),al=S.align;
+  const flips=[al.fh?t('flipH'):'',al.fv?t('flipV'):''].filter(Boolean).join(' · ');
+  let h=`<h1>${t('rptTitle')}</h1><table><tr><th>${t('rptOrig')}</th><td>${esc(S.A.name)} (${S.A.w}×${S.A.h})</td></tr><tr><th>${t('rptChg')}</th><td>${esc(S.B.name)} (${S.B.w}×${S.B.h})</td></tr><tr><th>${t('rptMode')}</th><td>${esc(t('m.'+S.mode))}</td></tr><tr><th>${t('rptSummary')}</th><td>${t(S.regions.length===1?'summary1':'summary',{p:(100*diffCount/(S.W*S.H)).toFixed(2),n:S.regions.length})}</td></tr><tr><th>${t('rptAlign')}</th><td>dx ${al.dx.toFixed(1)}, dy ${al.dy.toFixed(1)}, rot ${al.rot.toFixed(2)}°, scale ${al.scale.toFixed(4)}${flips?' · '+esc(flips):''}</td></tr></table><h2>${t('rptCmp')}</h2><img alt="" src="${pngUrl(c)}">`;
+  if($('expSrc').checked){const src=image=>pngUrl(cropCanvas(image.c,{x:0,y:0,w:image.w,h:image.h},1600,1600));
+    h+=`<h2>${t('srcImages')}</h2><div class="srcs"><div><img alt="" src="${src(S.A)}"><small>${t('fOriginal')}</small></div><div><img alt="" src="${src(S.B)}"><small>${t('fChanged')}</small></div></div>`;
+  }
+  if($('expList').checked&&S.regions.length){
+    h+=`<h2>${t('chgList',{n:S.regions.length})}</h2>${S.truncated?`<p>${t('truncatedRegions')}</p>`:''}<div class="crops">`;
+    const sub=expDiff==='subtract'?compositeCanvas('subtract'):null;
+    const max=Math.min(400,Math.floor(Math.sqrt(6000000/(S.regions.length*(sub?3:2)))));
+    for(const [i,r] of S.regions.entries()){const pad={x:Math.max(0,r.x-8),y:Math.max(0,r.y-8)};
+      pad.w=Math.min(S.W,r.x+r.w+8)-pad.x;pad.h=Math.min(S.H,r.y+r.h+8)-pad.y;
+      const crop=canvas=>pngUrl(cropCanvas(canvas,pad,max,max*.75));
+      h+=`<div class="crop"><b>${t('change',{n:i+1})}</b> — ${r.w}×${r.h} @ ${r.x},${r.y}<img alt="" src="${crop(baseA)}"><img alt="" src="${crop(baseB)}">${sub?`<img alt="" src="${crop(sub)}">`:''}</div>`;
+    }
+    h+='</div>';
+  }
+  return h;
+}
+function decodeReportImage(img){if(img.decode)return img.decode();if(img.complete)return img.naturalWidth?Promise.resolve():Promise.reject(new Error('Image failed to load'));
+  return new Promise((r,j)=>{img.addEventListener('load',r,{once:true});img.addEventListener('error',j,{once:true})})}
+let exporting=false,printing=false;
+$('exportGo').onclick=async()=>{
+  $('exportModal').close();if(!S.W||exporting||printing)return;
+  exporting=true;const rep=$('report');
+  try{if(expFmt==='png'){
+      const filename=baseName()+'.png',c=exportCanvas(!$('expWorking').checked),blob=await new Promise(r=>c.toBlob(r,'image/png'));
+      if(!blob)throw new Error('PNG encoding failed');download(blob,filename);return;
+    }
+    rep.innerHTML=reportHtml(exportCanvas());await Promise.all([...rep.querySelectorAll('img')].map(decodeReportImage));
+    printing=true;window.print();
+  }catch(e){printing=false;rep.replaceChildren();console.error(e);notice(t(e.message==='pngTooLarge'?'pngTooLarge':'exportFailed'))}
+  finally{exporting=false}
+};
 
 /* ===================== example ===================== */
 function makeExample(variant){const c=mk(900,620),x=c.getContext('2d');x.fillStyle='#fdfdfb';x.fillRect(0,0,900,620);x.fillStyle='#1f3a5f';x.fillRect(0,0,900,70);x.fillStyle='#fff';x.font='bold 28px system-ui';x.fillText('ATLAS FIELD OPERATIONS — WORK ORDER',28,46);
@@ -441,16 +610,17 @@ function makeExample(variant){const c=mk(900,620),x=c.getContext('2d');x.fillSty
   x.fillStyle='#345';x.fillRect(40,400,variant?380:300,22);x.fillStyle='#777';x.font='12px system-ui';x.fillText(variant?'Budget forecast +12% → re-approval':'Budget forecast +10% → re-approval',40,445);
   if(variant){x.fillStyle='#000';x.font='italic 14px system-ui';x.fillText('Verified by: R. Okafor (second person, pressure systems)',40,560)}else{x.fillStyle='#000';x.font='italic 14px system-ui';x.fillText('Verified by: R. Okafor',40,560)}
   x.strokeStyle='#bbb';x.strokeRect(40,480,420,60);x.fillStyle='#000';x.font='13px monospace';x.fillText(variant?'CHK 8f31c2a9 · build 1122':'CHK 7a9e01bd · build 1047',52,515);return c}
-$('exampleBtn').onclick=()=>{setImage('A',makeExample(0),'work-order-v1.png',true);setImage('B',makeExample(1),'work-order-v2.png',true);compare();$('result').scrollIntoView({behavior:'smooth'})};
-window.addEventListener('afterprint',()=>{$('report').innerHTML=''});
+$('exampleBtn').onclick=()=>{cancelLoads();setImage('A',makeExample(0),'work-order-v1.png',true);setImage('B',makeExample(1),'work-order-v2.png',true);compare();$('result').scrollIntoView({behavior:'smooth'})};
+window.addEventListener('afterprint',()=>{printing=false;$('report').replaceChildren()});
 ['dragover','drop'].forEach(n=>window.addEventListener(n,e=>{if(hasFiles(e))e.preventDefault()}));
 window.addEventListener('resize',()=>{if(S.W&&!$('result').classList.contains('hidden'))fit()});
 /* Optional OpenCV hook: if a full opencv.js (+ .wasm) is loaded before this script, feature-based (ORB) alignment is used automatically. */
 (async()=>{try{if(typeof window.cv==='function'&&!window.cv.Mat){const m=await window.cv(window.Module||{});if(m&&m.Mat)window.cv=m}else if(window.cv&&typeof window.cv.then==='function'){window.cv=await window.cv}}catch(e){console.warn('OpenCV bootstrap skipped',e)}})();
-/* Esc 关闭弹窗（对齐提示等同于“跳过”） */
-document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if($('promptModal').classList.contains('open')){$('pmSkip').click();return}$('alignModal').classList.remove('open');$('exportModal').classList.remove('open')});
-/* 点击弹窗遮罩（而不是弹窗本身）即可关闭，与 Esc 一致 */
-for(const id of ['exportModal','alignModal'])$(id).addEventListener('mousedown',e=>{if(e.target===e.currentTarget)e.currentTarget.classList.remove('open')});
+// 原生对话框处理焦点与 Esc；对齐取消和跳过提示仍走各自的业务逻辑。
+AL.addEventListener('cancel',e=>{e.preventDefault();closeAlign()});
+$('promptModal').addEventListener('cancel',e=>{e.preventDefault();$('pmSkip').click()});
+$('exportModal').addEventListener('mousedown',e=>{if(e.target===e.currentTarget)e.currentTarget.close()});
+AL.addEventListener('mousedown',e=>{if(e.target===e.currentTarget)closeAlign()});
 $('promptModal').addEventListener('mousedown',e=>{if(e.target===e.currentTarget)$('pmSkip').click()});
 applyTheme();applyLang();
 </script>

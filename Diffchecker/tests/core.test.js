@@ -18,7 +18,7 @@ const text = (() => {
 })();
 const excel = (() => {
   const s = script('excel-compare.html');
-  const code = between(s, 'function colIndex', 'function parseXlsx') + between(s, 'function parseCsv', '/* ===================== diff core') + between(s, 'const EQ=0', '/* ===================== UI: loading');
+  const code = between(s, 'function colIndex', 'function parseXlsx') + between(s, 'function scanCsv', '/* ===================== diff core') + between(s, 'const EQ=0', '/* ===================== UI: loading');
   return run(code, 'compare,parseCsv,opts,serialToDate,serialToElapsed,isoDateCell,isZipSig,pairBlock,normalize,inlineDiff,shiftFormula,xstr');
 })();
 
@@ -492,11 +492,11 @@ test('excel.pairBlock: 改动块很大时按位置配对也要求相似度，完
   assert.deepEqual([...seenA], idx); assert.deepEqual([...seenB], idx);
 });
 
-test('excel.inflate: 头部声明的解压后大小被伪造得极大时不会按它分配内存，仍能正确解压', () => {
-  const zlib = require('node:zlib');
-  const raw = Buffer.from('hello hello hello '.repeat(5000));
-  const z = zlib.deflateRawSync(raw);
-  for (const claimed of [0xFFFFFFFF, 1, 0]) assert.equal(Buffer.compare(Buffer.from(inflate(new Uint8Array(z), claimed)), raw), 0);
+test('excel.inflate: 在输出前校验声明长度，解压结果必须准确匹配', () => {
+  const zlib = require('node:zlib'), raw = Buffer.from('hello '.repeat(5000));
+  const z = new Uint8Array(zlib.deflateRawSync(raw));
+  assert.deepEqual(Buffer.from(inflate(z, raw.length)), raw);
+  for (const size of [0xffffffff, 1, 0, raw.length + 1]) assert.throws(() => inflate(z, size), /badZip/);
 });
 
 test('inlineDiff: 自定义忽略规则与忽略空白在行内差异中不再被标为删改，且仍可无损还原', () => {
@@ -750,6 +750,7 @@ test('image.autoAlign: 沿用并带回调用方当前的翻转状态；带翻转
   assert.equal((await X.autoAlign(A, B, { rot: true, scale: true })).fh, false); // 不传翻转时与原先一致
   X.window.cv = { ORB: 1 };
   assert.equal((await X.autoAlign(A, B, { rot: true, scale: true })).dx, 9); assert.equal(X.ocv.length, 1);
+  assert.equal((await X.autoAlign(A, B, { rot: false, scale: true })).dx, 3); assert.equal(X.ocv.length, 1);
   const flipped = await X.autoAlign(A, B, { rot: true, scale: true, fh: true });
   assert.equal(X.ocv.length, 1); assert.equal(flipped.fh, true); assert.equal(flipped.dx, 3);
 });
@@ -890,4 +891,226 @@ test('excel.compare: 新增或删除列含数据时，对应行不能被隐藏�
       assert.equal(nodes.gridWrap.dataset.changes, 2);
     }
   } finally { Object.assign(excel.opts, saved); }
+});
+
+test('文本行内差异：先在整行应用规则，再按粒度比较且还原原文', () => {
+  for (const level of ['char', 'word', 'smart']) {
+    const norm = text.makeNorm({ hideWs: true, igQuotes: true, rules: ['“tag” here', 'OMIT'] });
+    const a = '  left  “tag”   here old😀', b = 'left new😀 OMIT ';
+    const spans = text.inlineDiff(a, b, level, norm);
+    assert.equal(spans.map(s => s.a).join(''), a);
+    assert.equal(spans.map(s => s.b).join(''), b);
+    assert.equal(spans.filter(s => s.t === 1).map(s => s.a).join(''), 'old');
+    assert.equal(spans.filter(s => s.t === 2).map(s => s.b).join(''), 'new');
+    assert.equal(norm.project(a).key, norm(a));
+    assert.equal(norm.project(b).key, norm(b));
+  }
+  const w = text.makeNorm({ hideWs: true });
+  assert.equal(text.inlineDiff('a b', 'ab', 'char', w).filter(s => s.t === 1).map(s => s.a).join(''), ' ');
+});
+
+test('decodeBuf: BOM 优先，奇数字节或无偏向的 NUL 不作为 UTF-16 猜测', () => {
+  for (const f of ['text-compare.html', 'excel-compare.html']) {
+    const code = between(script(f), 'function decodeBuf', f.startsWith('text') ? '\ntry{mergeOpts' : '\nasync function loadFile');
+    const ctx = { TextDecoder };
+    vm.createContext(ctx);
+    vm.runInContext(code + ';this.decodeBuf=decodeBuf', ctx);
+    const dec = b => ctx.decodeBuf(Uint8Array.from(b).buffer);
+    assert.equal(dec([0xef, 0xbb, 0xbf, 0x00, 0x00, 0x61, 0x00, 0x62, 0x00]), '\0\0a\0b\0');
+    assert.equal(dec([0x61, 0x00, 0x62, 0x00, 0x63]), 'a\0b\0c');
+    assert.equal(dec([0x00, 0x61, 0x62, 0x00]), '\0ab\0');
+    assert.equal(dec([0xff, 0xfe, 0x61, 0x00]), 'a');
+  }
+});
+
+test('excel.compare: 表头以前的列不参与匹配；空表头不能与真实名称冲突', () => {
+  const grid = s => excel.parseCsv(s, ',').sheets[0].grid;
+  const saved = { ...excel.opts };
+  try {
+    Object.assign(excel.opts, { mode: 'table', matchHeaders: true, sortCols: false, ignoreWs: false });
+    const a = grid('Report,,,Reference\nName,Price\nTea,1'), b = grid('Report\nName,Price\nTea,1');
+    const r = excel.compare(a, b, 1, 1);
+    assert.equal(r.identical, true);
+    assert.equal(r.columns.length, 2);
+    const named = excel.compare(grid(',Name\n1,Tea'), grid('__col0,Name\n1,Tea'), 0, 0);
+    assert.equal(named.stats.colsDel, 1);
+    assert.equal(named.stats.colsIns, 1);
+  } finally { Object.assign(excel.opts, saved); }
+});
+
+test('excel.compare: 仅含空白的尾部行列只在开启忽略空白时裁掉', () => {
+  const grid = s => excel.parseCsv(s, ',').sheets[0].grid;
+  const saved = { ...excel.opts };
+  try {
+    Object.assign(excel.opts, { mode: 'rows', sortRows: false, ignoreWs: false });
+    const a = grid('Tea, '), b = grid('Tea');
+    assert.equal(excel.compare(a, b, 0, 0).stats.colsDel, 1);
+    assert.equal(excel.compare(grid('Tea\n '), b, 0, 0).stats.rowsDel, 1);
+    excel.opts.ignoreWs = true;
+    assert.equal(excel.compare(a, b, 0, 0).identical, true);
+  } finally { Object.assign(excel.opts, saved); }
+});
+
+test('excel.compare: 在展开稀疏行列之前限制比较规模', () => {
+  const saved = { ...excel.opts };
+  try {
+    Object.assign(excel.opts, { mode: 'rows', sortRows: false });
+    const row = []; row[16383] = { v: 'value', f: null };
+    const cells = Array.from({ length: 40 }, () => row);
+    assert.throws(() => excel.compare({ rows: cells }, { rows: [] }, 0, 0), /compareTooLarge/);
+  } finally { Object.assign(excel.opts, saved); }
+});
+
+test('表格会话：保留实际行宽与公式，拒绝结构无效的单元格', () => {
+  const code = between(script('excel-compare.html'), 'function validateSavedRows', 'function setWorkbook');
+  const { fromJsonGrid, toSavedGrid } = run(code, 'fromJsonGrid,toSavedGrid', 'const t=k=>k,MAX_COMPARE_CELLS=500000;');
+  const cell = []; cell[2] = { v: '3', f: '=1+2' };
+  const rows = [[{ v: ' ' }], cell, []];
+  const saved = JSON.parse(JSON.stringify(toSavedGrid({ name: 'Data' }, { cols: 16384, rows }, 1)));
+  assert.deepEqual(saved.rows.map(r => r.length), [1, 3, 0]);
+  const b = fromJsonGrid(saved), grid = b.load(b.sheets[0]);
+  assert.equal(grid.cols, 3);
+  assert.equal(grid.rows[0][0].v, ' ');
+  assert.equal(grid.rows[1][2].f, '=1+2');
+  for (const bad of [{ rows: [[[]]] }, { rows: [[{ v: {} }]] }, { rows: [['ok']], header: -1 }]) {
+    assert.throws(() => fromJsonGrid(bad), /wrongFile/);
+  }
+});
+
+test('Excel 日期系统：日期格式的 0、虚拟闰日与超过一天的纯时间', () => {
+  const code = between(script('excel-compare.html'), 'function serialToDate', '// t="d"');
+  const { serialToDate, customDateKind, serialToElapsed } = run(code, 'serialToDate,customDateKind,serialToElapsed');
+  assert.equal(serialToDate(0, true, false), '1904-01-01');
+  assert.equal(serialToDate(0.5, true, false), '1904-01-01 12:00:00');
+  assert.equal(serialToDate(1.5, false, true), '12:00:00');
+  assert.equal(serialToDate(60.25, false, false), '1900-02-29 06:00:00');
+  assert.equal(serialToDate(60, false, false, false), '1900-02-28');
+  assert.equal(serialToElapsed(1e300), '1e+300');
+  for (const [format, kind] of [['yyyy-mm-dd hh:mm', 'date'], ['mm', 'date'], ['hh:mm:ss.000', 'time'], ['h:mm AM/PM', 'time'], ['[h]:mm', 'elapsed'], ['0.00 "days"', '']]) {
+    assert.equal(customDateKind(format), kind, format);
+  }
+});
+
+test('XLSX 部件路径：以当前部件目录为基准解析相对路径', () => {
+  const { resolvePart } = run(between(script('excel-compare.html'), 'function resolvePart', 'function parseXlsx'), 'resolvePart');
+  assert.equal(resolvePart('xl/', 'xl/sheet.xml'), 'xl/xl/sheet.xml');
+  assert.equal(resolvePart('custom/nested/', '../sheets/data.xml'), 'custom/sheets/data.xml');
+  assert.equal(resolvePart('xl/', '/worksheets/data.xml'), 'worksheets/data.xml');
+  assert.equal(resolvePart('xl/', '../../outside.xml'), '');
+  assert.equal(resolvePart('', 'https://example.invalid/sheet.xml'), '');
+});
+
+test('readZip: 本地条目名、长度必须与中央目录相符', async () => {
+  const buf = Buffer.from(await zipLib.zipStore([{ name: 'data', data: new TextEncoder().encode('tea') }]).arrayBuffer());
+  for (const offset of [22, 30]) {
+    const changed = Buffer.from(buf); changed[offset] ^= 1;
+    assert.throws(() => zipLib.readZip(Uint8Array.from(changed).buffer).text('data'), /badZip/);
+  }
+});
+
+test('CSV: 按候选分隔符解析引号，拒绝未闭合字段', () => {
+  const read = (s, d) => JSON.parse(JSON.stringify(excel.parseCsv(s, d).sheets[0].grid.rows.map(r => r.map(c => c.v))));
+  assert.deepEqual(read('ID;Label\n1;"first, line\nsecond"\n2;"last, row"'), [['ID', 'Label'], ['1', 'first, line\nsecond'], ['2', 'last, row']]);
+  assert.deepEqual(read('a,tag;ok\nb,"one|two"\nc,x', ','), [['a', 'tag;ok'], ['b', 'one|two'], ['c', 'x']]);
+  assert.throws(() => read('ID,Label\n1,"not closed'), /badCsvQuotes/);
+});
+
+test('CSV 导出：前导空白的公式样式文本被保留为文本，数值保持原样', () => {
+  const { csvField } = run(between(script('excel-compare.html'), 'function csvField', 'function exportDiffFile'), 'csvField');
+  assert.equal(csvField('  =1+2'), "'  =1+2");
+  assert.equal(csvField('＝1+2'), "'＝1+2");
+  assert.equal(csvField('-12.5'), '-12.5');
+  assert.equal(csvField('-.5e+2'), '-.5e+2');
+  assert.equal(csvField('Tea; Coffee | Water'), '"Tea; Coffee | Water"');
+});
+
+test('共享公式：移动相对引用但保留结构化列名和工作表范围', () => {
+  const shift = excel.shiftFormula;
+  assert.equal(shift('SUM(Table1[[#This Row],[A1]])+a1', 2, 1), 'SUM(Table1[[#This Row],[A1]])+b3');
+  assert.equal(shift('S1:S3!C4+[Book.xlsx]S1!d2', 1, 1), 'S1:S3!D5+[Book.xlsx]S1!e3');
+  assert.equal(shift('A1+A1.local+Table1[A1]', 1, 0), 'A2+A1.local+Table1[A1]');
+});
+
+test('XLSX 字符串导出保留回车、控制字符及有效代理对', () => {
+  for (const [f, end] of [['text-compare.html', 'function colName'], ['excel-compare.html', 'function makeXlsx']]) {
+    const { xe } = run(between(script(f), 'const xe=', end), 'xe');
+    const s = 'first\r\nsecond\0\x1b 😀\ud800\ufffe_x000D_';
+    assert.equal(excel.xstr(xe(s)), s);
+    assert.doesNotMatch(xe(s), /[\x00\r\x1b\ufffe]/);
+  }
+});
+
+test('XLSX 写入拒绝超出行、列、文本规格的结果，而不截断数据', () => {
+  for (const f of ['text-compare.html', 'excel-compare.html']) {
+    const code = between(script(f), 'const xe=', 'function exportXlsx');
+    const { makeXlsx } = run(code, 'makeXlsx', 'const TextEncoder=class{encode(){}};' + (f.startsWith('excel') ? 'function colName(){return "A"}' : ''));
+    assert.throws(() => makeXlsx([{ name: 'Test', rows: new Array(1048577) }]), /exportXlsxLimit/);
+    assert.throws(() => makeXlsx([{ name: 'Test', rows: [new Array(16385)] }]), /exportXlsxLimit/);
+    assert.throws(() => makeXlsx([{ name: 'Test', rows: [[{ v: 'x'.repeat(32768) }]] }]), /exportXlsxLimit/);
+  }
+});
+
+test('图片像素差异同时比较颜色和透明度，忽略全透明像素隐藏的颜色', () => {
+  const { diffPixels } = run(between(script('image-compare.html'), 'function diffPixels', 'function computeDiffMap'), 'diffPixels');
+  const a = [255, 255, 255, 0, 255, 0, 0, 0, 20, 30, 40, 255];
+  const b = [255, 255, 255, 255, 0, 0, 255, 0, 20, 35, 40, 255];
+  const map = new Uint8Array(3), rgba = new Uint8Array(12);
+  assert.equal(diffPixels(a, b, map, null, rgba), 2);
+  assert.deepEqual([...map], [255, 0, 5]);
+  assert.deepEqual([...rgba], [255, 255, 255, 255, 0, 0, 0, 255, 0, 5, 0, 255]);
+});
+
+test('图片区域检测：环形区域不重复统计内部区域，并始终执行最大面积过滤', () => {
+  const W = 21, H = 21, mask = new Uint8Array(W * H);
+  for (let j = 2; j <= 18; j++) for (let i = 2; i <= 18; i++) if (i === 2 || i === 18 || j === 2 || j === 18) mask[j * W + i] = 1;
+  mask[10 * W + 10] = 1;
+  const rect = { x0: 0, y0: 0, x1: W, y1: H };
+  for (const radius of [0, 2]) {
+    const all = [], limited = [];
+    img.detect(mask, W, H, { minBlobArea: 1, maxBlobAreaFraction: 1 }, rect, radius, all);
+    assert.deepEqual(all.map(r => r.px), [64, 1]);
+    img.detect(mask, W, H, { minBlobArea: 1, maxBlobAreaFraction: 0.25 }, rect, radius, limited);
+    assert.deepEqual(limited.map(r => r.px), [1]);
+  }
+  const partial = [];
+  assert.equal(img.detect(mask, W, H, { minBlobArea: 1, maxBlobAreaFraction: 1 }, rect, 0, partial, 1), false);
+  assert.equal(partial.length, 1);
+});
+
+test('图片工作画布：极窄的输入仍至少保留一个像素', () => {
+  const { workingFrame, fitsCanvas } = run(between(script('image-compare.html'), 'const MAXDIM=', 'let baseA'), 'workingFrame,fitsCanvas');
+  assert.deepEqual({ ...workingFrame(12000, 1) }, { w: 2600, h: 1, scale: 2600 / 12000 });
+  assert.deepEqual({ ...workingFrame(1, 12000) }, { w: 1, h: 2600, scale: 2600 / 12000 });
+  assert.equal(fitsCanvas(3000, 6000, 32 * 1024 * 1024), true);
+  assert.equal(fitsCanvas(16384, 4096, 32 * 1024 * 1024), false);
+});
+
+test('image.autoAlign: 同时允许旋转和缩放时，终步仍评估仅缩放候选', async () => {
+  const code = between(script('image-compare.html'), 'async function autoAlign', 'function alignWithOpenCV');
+  const pre = 'const window={},setTimeout=f=>f();'
+    + 'function grayPatch(src,N,sc,rot){return {g:{N,sc,rot},f:1}}'
+    + 'function phaseCorr(a,b){return {dx:0,dy:0,psr:b.N===512&&b.sc===1.01&&b.rot===0?100:50}}';
+  const { autoAlign } = run(code, 'autoAlign', pre), dim = { width: 64, height: 64 };
+  const r = await autoAlign(dim, dim, { rot: true, scale: true });
+  assert.equal(r.rot, 0);
+  assert.equal(r.scale, 1.01);
+});
+
+test('文本 PNG 排版保留长行和换行后的高亮，不切断代理对', () => {
+  const { wrapPngLine } = run(between(script('text-compare.html'), 'function wrapPngLine', 'async function exportPng'), 'wrapPngLine');
+  const rows = wrapPngLine([{ text: 'abcd', mark: false }, { text: '😀efgh', mark: true }], 4, () => 1, 10);
+  assert.deepEqual(JSON.parse(JSON.stringify(rows)).map(r => r.map(p => [p.text, p.mark])), [[['abcd', false]], [['😀efg', true]], [['h', true]]]);
+  assert.throws(() => wrapPngLine([{ text: 'x'.repeat(20), mark: true }], 4, () => 1, 3), /image too tall/);
+});
+
+test('共享公式：长标识符保持原样，非 ASCII 字母不会误认成列引用', () => {
+  const name = 'X'.repeat(60000) + '_note';
+  assert.equal(excel.shiftFormula(`${name}+K1+a1`, 1, 1), `${name}+K1+b2`);
+});
+
+test('XLSX 单元格地址保留实际坐标并拒绝越界或非法地址', () => {
+  const { cellAddress } = run(between(script('excel-compare.html'), 'function colIndex', '// OOXML 字符串'), 'cellAddress');
+  assert.deepEqual({ ...cellAddress('xfd1048576') }, { row: 1048575, col: 16383 });
+  assert.deepEqual({ ...cellAddress('B7') }, { row: 6, col: 1 });
+  for (const ref of ['XFE1', 'A1048577', 'A0', 'A7B', '1A', '']) assert.equal(cellAddress(ref), null);
 });
