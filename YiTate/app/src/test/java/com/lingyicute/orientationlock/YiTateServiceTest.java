@@ -1,5 +1,6 @@
 package com.lingyicute.orientationlock;
 
+import android.app.AppOpsManager;
 import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
@@ -7,6 +8,7 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.Process;
 import android.view.View;
 import android.view.WindowManager;
 
@@ -56,9 +58,13 @@ public class YiTateServiceTest {
     }
 
     private int select(int orientation) {
+        preferences.setOrientation(orientation);
+        return dispatchSelection(1);
+    }
+
+    private int dispatchSelection(int startId) {
         return service.onStartCommand(new Intent(context, YiTateService.class)
-                .setAction(YiTateService.ACTION_SET_ORIENTATION)
-                .putExtra(YiTateService.KEY_ORIENTATION, orientation), 0, 1);
+                .setAction(YiTateService.ACTION_SYNC_ORIENTATION), 0, startId);
     }
 
     private View overlay() {
@@ -85,6 +91,15 @@ public class YiTateServiceTest {
         assertNull(overlay());
         assertTrue(shadowOf(service).isStoppedBySelf());
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
+    }
+
+    @Test
+    public void activeLockStopsImmediatelyWhenPreferenceReturnsToDefault() {
+        select(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        assertNotNull(overlay());
+        preferences.setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        assertNull(overlay());
+        assertTrue(shadowOf(service).isStoppedBySelf());
     }
 
     @Test
@@ -162,6 +177,20 @@ public class YiTateServiceTest {
     }
 
     @Test
+    public void appOpRevocationClearsTheLockWithoutWaitingForWakeOrActivity() {
+        select(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+        assertNotNull(overlay());
+        ShadowSettings.setCanDrawOverlays(false);
+        AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+        shadowOf(appOps).setMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, Process.myUid(),
+                context.getPackageName(), AppOpsManager.MODE_ERRORED);
+        shadowOf(Looper.getMainLooper()).idle();
+        assertNull(overlay());
+        assertTrue(shadowOf(service).isStoppedBySelf());
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
+    }
+
+    @Test
     public void missingPermissionDoesNotAttemptToAttachOverlay() {
         ShadowSettings.setCanDrawOverlays(false);
         assertEquals(Service.START_NOT_STICKY, select(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
@@ -173,19 +202,35 @@ public class YiTateServiceTest {
     public void invalidCommandCannotReplaceActiveLock() {
         select(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         View first = overlay();
-        select(999);
-        service.onStartCommand(new Intent(context, YiTateService.class)
-                .setAction(YiTateService.ACTION_SET_ORIENTATION), 0, 1);
+        service.onStartCommand(new Intent(context, YiTateService.class), 0, 2);
         assertSame(first, overlay());
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE, preferences.getOrientation());
     }
 
     @Test
-    public void invalidInitialCommandStopsForegroundAndSelf() {
-        assertEquals(Service.START_NOT_STICKY, select(999));
+    public void invalidInitialCommandStopsWithoutDiscardingSavedChoice() {
+        preferences.setOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        assertEquals(Service.START_NOT_STICKY,
+                service.onStartCommand(new Intent(context, YiTateService.class), 0, 1));
         assertNull(overlay());
-        assertTrue(shadowOf(service).isForegroundStopped());
         assertTrue(shadowOf(service).isStoppedBySelf());
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, preferences.getOrientation());
+    }
+
+    @Test
+    public void queuedStartsApplyOnlyTheLatestSelection() {
+        preferences.setOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+        // The first start has not reached our process yet when the user changes modes.
+        preferences.setOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        assertEquals(Service.START_STICKY, dispatchSelection(1));
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+                ((WindowManager.LayoutParams) overlay().getLayoutParams()).screenOrientation);
+
+        // The user then picks Default before command 2 arrives.
+        preferences.setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        assertEquals(Service.START_NOT_STICKY, dispatchSelection(2));
+        assertNull(overlay());
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
     }
 
     @Test
@@ -215,6 +260,7 @@ public class YiTateServiceTest {
     public void notificationIsForegroundOnAllSupportedApiGenerations() {
         assertNotNull(shadowOf(service).getLastForegroundNotification());
         assertEquals(1, shadowOf(service).getLastForegroundNotificationId());
+        assertTrue(context.getDrawable(R.drawable.ic_stat_orientation).getIntrinsicHeight() > 0);
     }
 
     @Test

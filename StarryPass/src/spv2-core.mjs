@@ -190,17 +190,35 @@ function validateSessionKey(output) {
  * already off the UI thread); everywhere else we run the async variant
  * which yields periodically so the page stays responsive.
  */
-function argon2idDerive(params, inWorker, pureJs, onProgress) {
-    let pending;
+async function argon2idDerive(params, inWorker, pureJs, onProgress, assertCurrent) {
+    const useWasm = !pureJs && wasmProviderEnabled && !!hashwasmArgon2id;
+    let output;
     try {
-        pending = startArgon2id(params, inWorker, pureJs, onProgress);
+        output = await startArgon2id(params, inWorker, useWasm, onProgress);
     } catch (err) {
-        return Promise.reject(classifyKdfError(err));
+        if (!useWasm || !isWasmExecutionError(err)) throw classifyKdfError(err);
+        if (wasmProviderEnabled) {
+            wasmProviderEnabled = false;
+            try { console.warn('StarryPass: WASM execution failed; using noble-hashes.'); } catch { /* diagnostic only */ }
+        }
+        // The boot gate already checked noble. Keep the same cost parameters
+        // and do not start another KDF for work invalidated by a session wipe.
+        assertCurrent();
+        try {
+            output = await startArgon2id(params, inWorker, false, onProgress);
+        } catch (fallbackError) {
+            throw classifyKdfError(fallbackError);
+        }
     }
-    // Only provider failures are classified; a malformed output still
-    // reaches validateSessionKey and keeps its INVALID_KDF_OUTPUT error.
-    return Promise.resolve(pending).then(validateSessionKey, (err) => {
-        throw classifyKdfError(err);
+    // Malformed output must fail closed, not trigger a retry on another provider.
+    return validateSessionKey(output);
+}
+
+function isWasmExecutionError(err) {
+    if (typeof WebAssembly === 'undefined' || !WebAssembly) return false;
+    return ['CompileError', 'LinkError', 'RuntimeError'].some((name) => {
+        const ErrorType = WebAssembly[name];
+        return typeof ErrorType === 'function' && err instanceof ErrorType;
     });
 }
 
@@ -215,8 +233,8 @@ function classifyKdfError(err) {
     return err;
 }
 
-function startArgon2id({ password, salt, ad, memoryKiB, passes, parallelism, tagLength }, inWorker, pureJs, onProgress) {
-    if (!pureJs && wasmProviderEnabled && hashwasmArgon2id) {
+function startArgon2id({ password, salt, ad, memoryKiB, passes, parallelism, tagLength }, inWorker, useWasm, onProgress) {
+    if (useWasm) {
         return hashwasmArgon2id({
             password,
             salt,
@@ -287,9 +305,9 @@ async function computeSessionTag(masterBytes, codeBytes, tierId, nonce) {
 /* ------------------------------------------------------------------ *
  * Stage 3 — HKDF-SHA-256 stream (RFC 5869 on top of Web Crypto)       *
  *                                                                     *
- * T(i) is produced by deriving the first i*32 bytes of the standard   *
- * HKDF-Expand with `info` and taking the last block — byte-identical  *
- * to the original lazy block loop, built purely from subtle.deriveBits.*
+ * Web Crypto returns an HKDF prefix on each call. Grow the prefix in  *
+ * batches and consume only the new suffix, keeping the original       *
+ * byte order without recomputing a prefix for every single block.      *
  * ------------------------------------------------------------------ */
 
 class HkdfStream {
@@ -308,8 +326,8 @@ class HkdfStream {
 
     async nextByte() {
         if (this.pos >= this.buf.length) {
-            const nextIdx = this.blockIdx === 0 ? this.initialBlocks : this.blockIdx + 1;
-            if (nextIdx > HKDF_MAX_BLOCKS) throw new Error('HKDF_EXHAUSTED');
+            if (this.blockIdx === HKDF_MAX_BLOCKS) throw new Error('HKDF_EXHAUSTED');
+            const nextIdx = this.blockIdx === 0 ? this.initialBlocks : Math.min(HKDF_MAX_BLOCKS, this.blockIdx * 2);
             const bits = await subtle().deriveBits(
                 { name: 'HKDF', hash: 'SHA-256', salt: DOMAIN_EXTRACT, info: this.info },
                 this.ikmKey,
@@ -680,7 +698,7 @@ export function spv2CoreFactory(workerGlobal, forcePureJs) {
                     password: inp.masterBytes, salt, ad: DOMAIN_AD,
                     memoryKiB: inp.tierSpec.memoryKiB, passes: inp.tierSpec.passes,
                     parallelism: inp.tierSpec.parallelism, tagLength: 32,
-                }, inWorker, pureJs, onProgress);
+                }, inWorker, pureJs, onProgress, () => assertCurrent(epoch));
                 zeroize(inp.masterBytes);
                 zeroize(salt); salt = null;
                 assertCurrent(epoch);

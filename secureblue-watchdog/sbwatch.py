@@ -617,7 +617,7 @@ def rpmvercmp(a: str, b: str) -> int:
         always newer than an alphabetic one (xyz.4 < 8);
       * numeric segments compare by digit count after leading zeros are
         stripped, so 10.0001 == 10.1 and 1.0 < 1.0.0.
-    Verified against all 91 vectors in rpm's own tests/rpmvercmp.at
+    Verified against all 103 vectors in rpm's own tests/rpmvercmp.at
     (see tests/test_sbwatch.py).
     """
     a = a or ""
@@ -4398,6 +4398,20 @@ def cmd_history(args):
     cur = resolve(reg, snapshot) if snapshot else None
     rows = build_history(reg, scan=args.scan, days=args.days, to=args.to,
                          warn=hist_warnings, cur=cur)
+    snap = _clean_sha256_header(snapshot) if snapshot else None
+    if snap:
+        # build_history() names its anchor after --to. With --at-digest that holds
+        # only while the tag still points at the snapshot: once it has moved, the
+        # row is neither `latest` nor CURRENT. A tag that cannot be read counts as
+        # moved - nothing is claimed that was not seen.
+        try:
+            tag_digest = reg.index_digest(args.to)
+        except (Exception, RegistryError):
+            tag_digest = None
+        if tag_digest != snap:
+            for r in rows:
+                if r["digest"] == snap:
+                    r["tags"] = [t for t in r["tags"] if t != args.to]
     # The shared signature options apply to history too, not just to diff/check.
     if getattr(args, "cosign_pub", None) or getattr(args, "require_cosign", False):
         for row in rows:
@@ -4446,10 +4460,15 @@ def cmd_history(args):
               f"其中 {dup} 次构建与前一构建共享同一个 rpm-ostree inputhash。"
               f"该值来自 Fedora 基础镜像的 compose，看不到 secureblue 自己的重建，"
               f"因此并不能证明软件包集合没有变化——请用 `diff` 对比 digest 来确认。")
+    # The table clips an untagged row's digest to 19 characters, and a clipped digest
+    # is no ref: `diff` refuses it. Give each row's whole digest once.
+    print("\n  full digests, oldest first / 完整 digest，从旧到新：")
+    for r in reversed(rows):
+        print(f"    {ts_short(r.get('created') or '?')}  {r['digest']}")
     oldest = rows[-1]
     print("\n  every image is addressable by its (immutable) digest, e.g. / "
           "每个镜像都可以用其（不可变的）digest 定位，例如：")
-    print(f"    sbwatch.py diff sha256:{oldest['digest'].split(':')[1]} {args.to}")
+    print(f"    sbwatch.py diff sha256:{oldest['digest'].split(':')[1]} {snap or args.to}")
     print(T("  (named tags are mutable - prefer digests when you want a specific build)",
             "  （命名标签可变——想指定某次构建时请优先使用 digest）"))
     return 0

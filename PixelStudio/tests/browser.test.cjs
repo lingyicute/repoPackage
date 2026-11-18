@@ -68,6 +68,14 @@ async function readPixels(page, bytes, fmt) {
   }, { base64: bytes.toString('base64'), fmt });
 }
 
+function withJpegOrientation(jpeg, orientation) {
+  const tiff = Buffer.from('49492a0008000000010012010300010000000100000000000000', 'hex');
+  tiff.writeUInt16LE(orientation, 18);
+  const app1 = Buffer.from('ffe10022457869660000', 'hex');
+  const split = jpeg.readUInt16BE(2) === 0xffe0 ? 4 + jpeg.readUInt16BE(4) : 2;
+  return Buffer.concat([jpeg.subarray(0, split), app1, tiff, jpeg.subarray(split)]);
+}
+
 for (const engine of engines) {
   test(`${engine}: pixel crop, resize, rotations, BMP matte, and comparison`, { timeout: 45000 }, () => open(engine, async (page) => {
     const fixture = await imageFixture(page, 'edges.png', 3, 2, ['red', '#00ff00', 'red', 'blue', null, 'white']);
@@ -110,6 +118,38 @@ for (const engine of engines) {
     const bmp = (await download(page)).bytes;
     assert.equal(bmp.toString('ascii', 0, 2), 'BM');
     assert.deepEqual([...bmp.subarray(57, 60)], [0, 0, 0]); // Transparent pixel is on bottom row, centre.
+  }));
+
+  test(`${engine}: EXIF orientation is applied once before pixel transforms`, { timeout: 45000 }, () => open(engine, async (page) => {
+    const encoded = await page.evaluate(() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 3; canvas.height = 2;
+      const ctx = canvas.getContext('2d');
+      ['red', 'lime', 'blue', 'yellow', 'magenta', 'cyan'].forEach((color, i) => {
+        ctx.fillStyle = color;
+        ctx.fillRect(i % 3, Math.floor(i / 3), 1, 1);
+      });
+      return canvas.toDataURL('image/jpeg', 0.98).split(',')[1];
+    });
+    const jpeg = withJpegOrientation(Buffer.from(encoded, 'base64'), 6);
+    const source = await readPixels(page, jpeg, 'jpeg');
+    assert.deepEqual([source.width, source.height], [2, 3]);
+    await page.locator('#fileInput').setInputFiles({ name: 'oriented.jpg', mimeType: 'image/jpeg', buffer: jpeg });
+    await ready(page, '2×3 · JPEG');
+    await on(page, 'export');
+    await format(page, 'png');
+    await ready(page, '2×3 · PNG (无损)');
+    assert.deepEqual(await readPixels(page, (await download(page)).bytes, 'png'), source);
+    await click(page, '#btnRotateRight');
+    await ready(page, '3×2 · PNG (无损)');
+    const expected = [];
+    for (let x = 0; x < source.width; x++) {
+      for (let y = source.height - 1; y >= 0; y--) {
+        const i = (y * source.width + x) * 4;
+        expected.push(...source.bytes.slice(i, i + 4));
+      }
+    }
+    assert.deepEqual(await readPixels(page, (await download(page)).bytes, 'png'), { width: 3, height: 2, bytes: expected });
   }));
 
   test(`${engine}: EXIF edit and strip, quality modes, and actual export bytes`, { timeout: 45000 }, () => open(engine, async (page) => {
@@ -166,6 +206,86 @@ for (const engine of engines) {
 }
 
 if (engines.includes('chromium')) {
+  test('chromium: keyboard focus moves from the picker to the new crop box', { timeout: 30000 }, () => open('chromium', async (page) => {
+    await page.locator('#btnLoadDemo').press('Enter');
+    await ready(page, '1600×1066 · JPEG');
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'cropBox');
+    await page.keyboard.press('Shift+ArrowLeft');
+    await ready(page, '1599×1066 · JPEG');
+    assert.equal(await page.locator('#inpCropW').inputValue(), '1599');
+  }));
+
+  test('chromium: geometry and metadata editing are enabled only once an image is loaded', { timeout: 30000 }, () => open('chromium', async (page) => {
+    assert.equal(await page.locator('#inpCropW').isDisabled(), true);
+    assert.equal(await page.locator('#inpCropW').inputValue(), '');
+    await on(page, 'resize');
+    assert.equal(await page.locator('#sliderScalePercent').isDisabled(), true);
+    await on(page, 'exif');
+    assert.equal(await page.locator('#exifArtist').isDisabled(), true);
+    assert.equal(await page.locator('#chkStripExif').isDisabled(), false);
+    await click(page, '#btnLoadDemo');
+    await ready(page, 'JPEG');
+    assert.equal(await page.locator('#exifArtist').isDisabled(), false);
+    assert.equal(await page.locator('#inpCropW').inputValue(), '1600');
+    assert.equal(await page.locator('#sliderScalePercent').isDisabled(), false);
+  }));
+
+  test('chromium: a capped resize keeps the requested slider value', { timeout: 30000 }, () => open('chromium', async (page) => {
+    await page.locator('#fileInput').setInputFiles(await imageFixture(page, 'panorama.png', 11000, 1, ['red']));
+    await ready(page, '11000×1 · PNG');
+    await on(page, 'resize');
+    const slider = page.locator('#sliderScalePercent');
+    await slider.press('End');
+    await ready(page, '16383×1 · PNG');
+    assert.equal(await slider.inputValue(), '200');
+    assert.match(await page.locator('#scaleLimitNote').textContent(), /200%.*149%/);
+    await slider.press('ArrowLeft');
+    assert.equal(await slider.inputValue(), '199');
+    await on(page, 'crop');
+    await type(page, '#inpCropW', 8000);
+    await ready(page, '15920×2 · PNG');
+    assert.equal(await page.locator('#scaleLimitNote').isHidden(), true);
+    await type(page, '#inpCropW', 1);
+    await on(page, 'resize');
+    await click(page, '[data-scale="0.5"]');
+    assert.equal(await slider.inputValue(), '50');
+    assert.equal(await page.locator('#resizePresetChips .active').count(), 1);
+  }));
+
+  test('chromium: detected file format and unknown input preserve transparency', { timeout: 30000 }, () => open('chromium', async (page) => {
+    const png = await imageFixture(page, 'mislabeled.jpg', 2, 1, ['red', null]);
+    await page.locator('#fileInput').setInputFiles({ ...png, mimeType: 'image/jpeg' });
+    await ready(page, '2×1 · PNG (无损)');
+    assert.deepEqual((await readPixels(page, (await download(page)).bytes, 'png')).bytes, [255, 0, 0, 255, 0, 0, 0, 0]);
+    const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+    await page.locator('#fileInput').setInputFiles({ name: 'unknown-image', mimeType: 'image/gif', buffer: gif });
+    await ready(page, '1×1 · PNG (无损)');
+    assert.equal((await readPixels(page, (await download(page)).bytes, 'png')).bytes[3], 0);
+    await on(page, 'export');
+    await format(page, 'jpeg');
+    await ready(page, 'JPEG');
+    await page.locator('#fileInput').setInputFiles(png);
+    await ready(page, '2×1 · JPEG');
+  }));
+
+  test('chromium: PNG defaults to lossless and BMP does not change a manual preference', { timeout: 30000 }, () => open('chromium', async (page) => {
+    await page.locator('#fileInput').setInputFiles(await imageFixture(page, 'modes.png', 2, 1, ['red', 'green']));
+    await ready(page, 'PNG (无损)');
+    await on(page, 'export');
+    await click(page, '[data-mode="lossy"]');
+    await click(page, '[data-quality="55"]');
+    await ready(page, 'PNG (质量 55/100)');
+    await format(page, 'bmp');
+    assert.equal(await page.locator('[data-mode="lossless"]').isDisabled(), true);
+    await ready(page, 'BMP (未压缩)');
+    await format(page, 'png');
+    await ready(page, 'PNG (质量 55/100)');
+    await click(page, '[data-mode="lossless"]');
+    await format(page, 'bmp');
+    await format(page, 'jpeg');
+    await ready(page, 'JPEG (最高画质（非无损）)');
+  }));
+
   test('chromium: stale compare image and superseded encodes cannot publish', { timeout: 45000 }, () => open('chromium', async (page) => {
     await page.locator('#fileInput').setInputFiles(await imageFixture(page, 'race.png', 3, 1, ['red', 'green', 'blue']));
     await ready(page, '3×1 · PNG');
@@ -208,11 +328,20 @@ if (engines.includes('chromium')) {
     await page.waitForFunction(() => window.pendingEncodes.length === 2);
     assert.deepEqual(await page.evaluate(() => window.pendingEncodes.map((e) => e.width)), [7, 9]);
     assert.equal(await page.locator('#btnDownloadExport').isDisabled(), true);
+    assert.equal(await page.locator('#estimatedSizeLabel').textContent(), '—');
+    assert.equal(await page.locator('#sizeDeltaPill').textContent(), '');
     await page.evaluate(() => window.pendingEncodes[1].release());
     await ready(page, '9×1 · PNG');
+    const size = await page.locator('#estimatedSizeLabel').textContent();
+    await type(page, '#inpResizeW', 10);
+    await page.waitForFunction(() => window.pendingEncodes.length === 3);
+    await type(page, '#inpResizeW', 9);
+    await ready(page, '9×1 · PNG');
+    assert.equal(await page.locator('#estimatedSizeLabel').textContent(), size);
+    await page.evaluate(() => window.pendingEncodes[2].release());
   }));
 
-  test('chromium: privacy failures cannot export the cached unverified bytes', { timeout: 30000 }, () => open('chromium', async (page) => {
+  test('chromium: metadata failures cannot export the cached unverified bytes', { timeout: 30000 }, () => open('chromium', async (page) => {
     await page.locator('#fileInput').setInputFiles(await imageFixture(page, 'private.png', 2, 1, ['red', 'blue']));
     await ready(page, 'PNG');
     await page.evaluate(() => {
@@ -224,10 +353,14 @@ if (engines.includes('chromium')) {
       window.failMetadata = true;
     });
     await on(page, 'exif');
+    await type(page, '#exifArtist', 'Edited artist');
+    await page.waitForFunction(() => document.querySelector('#m3Snackbar').textContent.includes('无法写入 EXIF'));
+    assert.equal(await page.locator('#btnDownloadExport').isDisabled(), true);
     await click(page, 'label:has(#chkStripExif)');
     assert.equal(await page.locator('#chkStripExif').isChecked(), true);
     await page.waitForFunction(() => document.querySelector('#m3Snackbar').textContent.includes('无法确认 EXIF 已清除'));
     assert.equal(await page.locator('#btnDownloadExport').isDisabled(), true);
+    assert.match(await page.locator('#exportSpecSummary').textContent(), /无法确认 EXIF 已清除/);
     await page.evaluate(() => { window.failMetadata = false; });
     await click(page, 'label:has(#chkStripExif)');
     assert.equal(await page.locator('#chkStripExif').isChecked(), false);
@@ -265,10 +398,69 @@ if (engines.includes('chromium')) {
     await ready(page, '2×20 · PNG');
   }));
 
+  test('chromium: a theme override survives unavailable storage and OS changes', { timeout: 30000 }, () => open('chromium', async (page) => {
+    const trigger = page.locator('#btnThemeToggle');
+    assert.equal(await page.locator('html').getAttribute('data-seed'), null);
+    assert.equal(await trigger.getAttribute('aria-pressed'), 'false');
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+    await click(page, '#btnThemeToggle');
+    assert.equal(await trigger.getAttribute('aria-pressed'), 'false');
+    await page.emulateMedia({ colorScheme: 'light' });
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.locator('html').getAttribute('data-theme'), null);
+  }, { colorScheme: 'light' }, () => {
+    const get = Storage.prototype.getItem;
+    const set = Storage.prototype.setItem;
+    Storage.prototype.getItem = function (key) {
+      return key === 'pixelstudio.prefs' ? '{"seed":"constructor"}' : get.call(this, key);
+    };
+    Storage.prototype.setItem = function (key, value) {
+      if (key === 'pixelstudio.prefs') throw new DOMException('Storage blocked', 'SecurityError');
+      return set.call(this, key, value);
+    };
+  }));
+
+  test('chromium: size metrics and save stay in a very narrow or short dock', { timeout: 30000 }, () => open('chromium', async (page) => {
+    const footer = page.locator('.export-sticky-footer');
+    await page.locator('#sizeDeltaPill').evaluate((el) => { el.textContent = '+1920000000.0%'; });
+    await page.locator('#estimatedSizeLabel').evaluate((el) => { el.textContent = '183.1 MB'; });
+    assert.equal(await footer.evaluate((el) => el.scrollWidth <= el.clientWidth), true);
+    await page.setViewportSize({ width: 1024, height: 200 });
+    await on(page, 'export');
+    const nav = page.locator('.nav-rail');
+    assert.ok(await nav.evaluate((el) => el.scrollTop > 0));
+    const save = await page.locator('#btnDownloadExport').boundingBox();
+    assert.ok(save.y + save.height <= 200);
+    assert.equal(await page.locator('.inspector-scroll').evaluate((el) => el.clientHeight > 0), true);
+  }, { viewport: { width: 320, height: 390 } }));
+
+  test('chromium: extremely short mobile workspace scrolls from preview to export', { timeout: 30000 }, () => open('chromium', async (page) => {
+    await click(page, '#btnLoadDemo');
+    await ready(page, 'JPEG');
+    await on(page, 'export');
+    assert.equal(await page.locator('#panel-export').isVisible(), true);
+    const workspace = page.locator('.workspace-body');
+    assert.ok(await workspace.evaluate((el) => el.scrollTop > 0));
+    await workspace.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    const save = await page.locator('#btnDownloadExport').boundingBox();
+    const nav = await page.locator('.nav-rail').boundingBox();
+    assert.ok(save.y + save.height <= nav.y);
+  }, { viewport: { width: 320, height: 240 }, isMobile: true, hasTouch: true }));
+
   test('chromium: abnormal theme storage and short mobile viewport', { timeout: 30000 }, () => open('chromium', async (page) => {
     const trigger = page.locator('#btnSeedMobile');
     await trigger.press('Enter');
     assert.equal(await trigger.getAttribute('aria-expanded'), 'true');
+    const focused = () => page.evaluate(() => document.activeElement.dataset.seed);
+    assert.equal(await focused(), 'teal');
+    await page.keyboard.press('Tab');
+    assert.equal(await focused(), 'violet');
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('html').getAttribute('data-seed'), 'violet');
+    assert.equal(await trigger.evaluate((el) => document.activeElement === el), true);
+    await trigger.press('Enter');
     await page.keyboard.press('Escape');
     assert.equal(await trigger.getAttribute('aria-expanded'), 'false');
     assert.equal(await trigger.evaluate((el) => document.activeElement === el), true);

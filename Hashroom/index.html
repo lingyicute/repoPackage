@@ -10,34 +10,44 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+    content="default-src 'none'; script-src 'sha256-iDnhUlyAE+38tXFfALFW8Qzn0vop6N//Oxs1fnhroPQ=' 'sha256-EJ8361zf5aUstXPjmHlSoMABAXDFZF8+H6dkIWPopsE='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#f7f5fa">
   <title>Hashroom 文件摘要小助手 by lingyicute</title>
   <meta name="description" content="在浏览器本地计算文件的 MD5、SHA-1、SHA-2、SHA-3、RIPEMD-160 和 CRC32 摘要，并与已有校验值比对。文件不会上传。">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236750a4' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M9 4 7.8 20M16.2 4 15 20M4.5 9h15M3.8 15h15'/%3E%3C/svg%3E">
   <script>
-    try {
-      const accents = ['violet', 'blue', 'teal', 'green', 'orange', 'rose'];
-      const savedTheme = localStorage.getItem('hashroom-theme');
-      const savedAccent = localStorage.getItem('hashroom-accent');
-      const colors = {
-        violet: ['#f7f5fa', '#141218'],
-        blue: ['#f5f7fc', '#10141a'],
-        teal: ['#f4f8f7', '#101615'],
-        green: ['#f5f8f4', '#111612'],
-        orange: ['#faf6f3', '#161310'],
-        rose: ['#faf5f7', '#161214']
-      };
-      const dark = savedTheme === 'dark' || (!savedTheme && matchMedia('(prefers-color-scheme: dark)').matches);
-      const accent = accents.includes(savedAccent) ? savedAccent : 'violet';
-      if (dark) document.documentElement.dataset.theme = 'dark';
-      document.documentElement.dataset.accent = accent;
-      const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.content = colors[accent][dark ? 1 : 0];
-    } catch (error) {
-      // Storage can be blocked; the default theme still renders.
+    const ACCENTS = [
+      {id: 'violet', label: '暮紫', swatch: '#6750a4', background: ['#f7f5fa', '#141218']},
+      {id: 'blue', label: '海蓝', swatch: '#1a56c4', background: ['#f5f7fc', '#10141a']},
+      {id: 'teal', label: '青碧', swatch: '#0f6e66', background: ['#f4f8f7', '#101615']},
+      {id: 'green', label: '森绿', swatch: '#1f7a3a', background: ['#f5f8f4', '#111612']},
+      {id: 'orange', label: '暖橙', swatch: '#9a3412', background: ['#faf6f3', '#161310']},
+      {id: 'rose', label: '玫红', swatch: '#a21c55', background: ['#faf5f7', '#161214']}
+    ];
+    const darkQuery = matchMedia('(prefers-color-scheme: dark)');
+
+    function readSetting(key) {
+      try { return localStorage.getItem(key); } catch (error) { return null; }
     }
+
+    function storeSetting(key, value) {
+      try { localStorage.setItem(key, value); } catch (error) { /* 仍在本页保留偏好 */ }
+    }
+
+    function updateThemeColor() {
+      const {theme, accent} = document.documentElement.dataset;
+      const {background} = ACCENTS.find(item => item.id === accent) || ACCENTS[0];
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.content = background[theme === 'dark' ? 1 : 0];
+    }
+
+    const storedTheme = readSetting('hashroom-theme');
+    let themePreference = storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : null;
+    const storedAccent = readSetting('hashroom-accent');
+    document.documentElement.dataset.theme = themePreference || (darkQuery.matches ? 'dark' : 'light');
+    document.documentElement.dataset.accent = ACCENTS.some(item => item.id === storedAccent) ? storedAccent : 'violet';
+    updateThemeColor();
   </script>
   <style>
     :root {
@@ -48,7 +58,7 @@
       --surface-high: #eae6ef;
       --text: #211d25;
       --muted: #686370;
-      --outline: #bdb7c5;
+      --outline: #87808e;
       --outline-soft: #e2dee7;
       --primary: #6750a4;
       --on-primary: #ffffff;
@@ -72,7 +82,7 @@
       --surface-high: #302b35;
       --text: #e8e0eb;
       --muted: #c9c2ce;
-      --outline: #514b57;
+      --outline: #8a8291;
       --outline-soft: #39343d;
       --error: #ffb4ab;
       --error-container: #601410;
@@ -245,7 +255,6 @@
     }
 
     body {
-      min-width: 320px;
       min-height: 100vh;
       margin: 0;
       background: var(--bg);
@@ -367,6 +376,7 @@
       right: 0;
       z-index: 30;
       width: 248px;
+      max-width: calc(100vw - 32px);
       padding: 14px;
       border: 1px solid var(--outline-soft);
       border-radius: 20px;
@@ -534,8 +544,15 @@
       text-underline-offset: 3px;
     }
 
-    .dropzone:hover .select-hint {
+    .dropzone:hover .select-hint,
+    .dropzone.is-dragging .select-hint {
+      color: var(--on-primary-container);
       text-decoration-color: currentColor;
+    }
+
+    .dropzone:hover .replace-hint,
+    .dropzone.is-dragging .replace-hint {
+      color: var(--on-primary-container);
     }
 
     .file-state {
@@ -548,7 +565,9 @@
     }
 
     .file-details strong {
+      overflow-wrap: break-word;
       overflow-wrap: anywhere;
+      white-space: pre-wrap;
     }
 
     .replace-hint {
@@ -581,6 +600,16 @@
     .clear-file svg {
       width: 18px;
       height: 18px;
+    }
+
+    .file-notice:not(:empty) {
+      margin: 8px 2px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .file-notice.is-error:not(:empty) {
+      color: var(--error);
     }
 
     .visually-hidden {
@@ -830,6 +859,12 @@
       place-items: center;
     }
 
+    .banner-copy {
+      min-width: 0;
+      overflow-wrap: break-word;
+      overflow-wrap: anywhere;
+    }
+
     .banner-copy strong,
     .banner-copy span {
       display: block;
@@ -957,6 +992,7 @@
 
     .text-button:hover:not(:disabled) {
       background: var(--primary-container);
+      color: var(--on-primary-container);
     }
 
     .text-button:disabled {
@@ -1042,7 +1078,8 @@
       background: color-mix(in srgb, var(--success-container) 72%, var(--surface));
     }
 
-    .digest-row.is-mismatch {
+    .digest-row.is-mismatch,
+    .digest-row.is-conflict {
       background: var(--error-container);
       background: color-mix(in srgb, var(--error-container) 76%, var(--surface));
     }
@@ -1082,7 +1119,8 @@
       color: var(--on-success-container);
     }
 
-    .match-pill.is-mismatch {
+    .match-pill.is-mismatch,
+    .match-pill.is-conflict {
       background: var(--error-container);
       color: var(--on-error-container);
     }
@@ -1096,6 +1134,17 @@
       overflow-wrap: anywhere;
       -webkit-user-select: all;
       user-select: all;
+    }
+
+    .copy-status:not(:empty) {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: end;
+    }
+
+    .copy-status.is-error:not(:empty) {
+      color: var(--error);
     }
 
     .copy-button {
@@ -1208,7 +1257,19 @@
       }
     }
 
-    @media (max-width: 320px) {
+    @media (max-width: 328px) {
+      .palette-menu {
+        right: -48px;
+      }
+
+      .swatches {
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .file-state {
+        padding-right: 24px;
+      }
+
       .algorithm-option {
         min-height: 40px;
         padding: 0 10px;
@@ -1223,6 +1284,34 @@
       .results-heading {
         align-items: flex-start;
         flex-direction: column;
+      }
+    }
+
+    @media (forced-colors: active) {
+      .algorithm-option input:checked {
+        forced-color-adjust: none;
+        border-color: Highlight;
+        background: Highlight;
+      }
+
+      .algorithm-mark::after {
+        forced-color-adjust: none;
+        border-color: HighlightText;
+      }
+
+      .swatch {
+        forced-color-adjust: none;
+        border: 1px solid CanvasText;
+      }
+
+      .swatch.is-active {
+        outline: 2px solid Highlight;
+        outline-offset: 2px;
+      }
+
+      .swatch:focus-visible {
+        outline: 3px solid CanvasText;
+        outline-offset: 4px;
       }
     }
 
@@ -1332,6 +1421,7 @@
             </svg>
           </button>
         </div>
+        <p class="file-notice" id="fileNotice" role="status" aria-live="polite" aria-atomic="true"></p>
 
         <section class="panel" aria-labelledby="algorithmTitle">
           <div class="section-head">
@@ -1359,7 +1449,7 @@
           <label>
             <span class="visually-hidden">预期哈希</span>
             <textarea class="expected-input" id="expectedInput" rows="3" spellcheck="false" autocapitalize="off"
-              autocorrect="off" placeholder="粘贴预期哈希，例如 SHA-256: e3b0c442… 或 sha256sum 输出"></textarea>
+              autocorrect="off" autocomplete="off" aria-describedby="compareHint" placeholder="粘贴预期哈希，例如 SHA-256: e3b0c442… 或 sha256sum 输出"></textarea>
           </label>
           <div class="compare-tools">
             <p class="compare-hint" id="compareHint">计算完成后会自动比对，忽略大小写和分隔符。</p>
@@ -1395,6 +1485,7 @@
             <span>复制全部</span>
           </button>
         </div>
+        <p class="copy-status" id="copyStatus" role="status" aria-live="polite" aria-atomic="true"></p>
         <div class="results-panel" id="resultsPanel"></div>
       </section>
 
@@ -1410,15 +1501,6 @@
   </div>
 
   <script>
-    const ACCENTS = [
-      {id: 'violet', label: '暮紫', swatch: '#6750a4'},
-      {id: 'blue', label: '海蓝', swatch: '#1a56c4'},
-      {id: 'teal', label: '青碧', swatch: '#0f6e66'},
-      {id: 'green', label: '森绿', swatch: '#1f7a3a'},
-      {id: 'orange', label: '暖橙', swatch: '#9a3412'},
-      {id: 'rose', label: '玫红', swatch: '#a21c55'}
-    ];
-
     const ALGORITHM_GROUPS = [
       {id: 'common', label: '常用'},
       {id: 'sha2', label: 'SHA-2'},
@@ -1454,6 +1536,7 @@
     const selectedFileState = document.getElementById('selectedFileState');
     const fileName = document.getElementById('fileName');
     const fileMeta = document.getElementById('fileMeta');
+    const fileNotice = document.getElementById('fileNotice');
     const clearFileButton = document.getElementById('clearFile');
     const algorithmMount = document.getElementById('algorithmMount');
     const algorithmCount = document.getElementById('algorithmCount');
@@ -1470,6 +1553,7 @@
     const resultsPanel = document.getElementById('resultsPanel');
     const resultsSection = document.getElementById('resultsSection');
     const copyAllButton = document.getElementById('copyAllButton');
+    const copyStatus = document.getElementById('copyStatus');
     const themeToggle = document.getElementById('themeToggle');
     const paletteToggle = document.getElementById('paletteToggle');
     const paletteMenu = document.getElementById('paletteMenu');
@@ -1486,12 +1570,15 @@
     let algorithmInputs = [];
     let selectedFile = null;
     let currentResults = [];
-    let expectedEntries = [];
-    let expectedInvalid = false;
-    let isCalculating = false;
-    let runToken = 0;
+    let parsedInput;
+    let parsedExpected;
+    let comparison;
+    let currentVerdict = null;
+    let activeCalculation = null;
     let lastElapsed = '';
     const copyTimers = new WeakMap();
+    let copyRequest = 0;
+    let copyStatusTimer;
 
     function rotl32(value, bits) {
       return ((value << bits) | (value >>> (32 - bits))) >>> 0;
@@ -2248,13 +2335,6 @@
       return hasher.digest();
     }
 
-    function hexEqual(left, right) {
-      if (left.length !== right.length) return false;
-      let diff = 0;
-      for (let i = 0; i < left.length; i += 1) diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
-      return diff === 0;
-    }
-
     function firstDifference(left, right) {
       const length = Math.min(left.length, right.length);
       for (let i = 0; i < length; i += 1) if (left[i] !== right[i]) return i + 1;
@@ -2264,7 +2344,7 @@
     function canonicalAlgorithm(token) {
       // FreeBSD 把 SHA-512/256 写作 SHA512t256，去掉中间的 t 再查表。
       const key = token.toLowerCase().replace(/[^a-z0-9]/g, '').replace(/^(sha2?512)t/, '$1');
-      return {
+      const aliases = {
         md5: 'MD5',
         sha1: 'SHA-1',
         sha224: 'SHA-224',
@@ -2286,261 +2366,313 @@
         ripemd160: 'RIPEMD-160',
         rmd160: 'RIPEMD-160',
         crc32: 'CRC32'
-      }[key] || null;
+      };
+      return Object.prototype.hasOwnProperty.call(aliases, key) ? aliases[key] : null;
     }
 
     function algorithmsForLength(length) {
       return ALGORITHMS.filter(item => item.bits / 4 === length);
     }
 
-    function hexTokens(line) {
-      // 不用后行断言：Safari 16.4 之前不支持，正则字面量会让整段脚本解析失败、页面完全不可用。
-      const text = line.replace(/(^|[^a-z0-9_])0x(?=[0-9a-f])/gi, '$1');
-      const found = [...text.matchAll(/[0-9a-fA-F]+/g)].filter(item => {
-        const before = item.index > 0 ? text[item.index - 1] : '';
-        const after = text.slice(item.index + item[0].length);
-        return !/[g-z./\\]/i.test(before) && !/^(?:[g-z/\\]|\.[a-z0-9])/i.test(after);
-      });
-      const tokens = found.map(item => item[0].toLowerCase());
-      // 输入框每次改动都要重新解析，下面的双重循环会反复用到分隔符、相邻关系和分组判断，
-      // 这里一次算好，免得挤满短片段的行反复切片、逐个比较而拖慢页面。
-      const seps = tokens.slice(1).map((token, i) => text.slice(found[i].index + found[i][0].length, found[i + 1].index));
-      // 两个片段之间只隔着空白或常见分隔符（分隔符两侧可以带空白）时才算同一个哈希的相邻分组。
-      // 裸的 sha256sum 行已先被 splitChecksumLine 拆掉文件名，走到这里的连续空白按分组处理，不会把文件名拼进来。
-      const adjacency = seps.map(value => /^(?:\s+|\s*[:\-_,，：]\s*)$/.test(value));
-      // 分组书写的哈希（如 8 位一组）各组等长，仅最后一组可以更短；
-      // 文件名里恰好由十六进制字符组成的片段不满足这一点，不能被拼进哈希。
-      // sameRun[i] 是从第 i 段起连续等长的段数，判断 tokens[start..end] 能否成组只需常数时间。
-      const sameRun = tokens.map(() => 1);
-      for (let i = tokens.length - 2; i >= 0; i -= 1) {
-        if (tokens[i + 1].length === tokens[i].length) sameRun[i] = sameRun[i + 1] + 1;
-      }
-      const grouped = (start, end) => end === start ||
-        (tokens[start].length <= 16 && sameRun[start] >= end - start && tokens[end].length <= tokens[start].length);
-      return {tokens, sep: i => seps[i], adjacent: i => adjacency[i], grouped};
-    }
-
-    // 在所有“连续成组”的片段里挑哈希：标签（如 Hash:）或文件名里零散的十六进制字符，
-    // 既不会被拼进哈希，也不会让分组书写的哈希被误认成其中某一组。
-    function extractHex(line, expectedLength, parsed = hexTokens(line)) {
-      const {tokens, sep, adjacent, grouped} = parsed;
-      let best = '';
-      let bestExact = false;
-      let bestScore = -1;
-      for (let start = 0; start < tokens.length; start += 1) {
-        let joined = '';
-        for (let end = start; end < tokens.length; end += 1) {
-          if (end > start && (!adjacent(end - 1) || sep(end - 1) !== sep(start) || tokens[start].length < 2)) break;
-          joined += tokens[end];
-          if (joined.length > 128 || !grouped(start, end)) break;
-          // 同一串分组哈希还没结束时不提前截断，免得把少写一位的 63 位分组哈希拆成前 56 位。
-          if (tokens[start].length <= 16 && end + 1 < tokens.length && adjacent(end) && (end === start || sep(end) === sep(start)) && grouped(start, end + 1)) continue;
-          if (start > 0 && tokens[start].length <= 16 && adjacent(start - 1) && tokens[start - 1].length >= 2 && tokens[start - 1].length <= 16 && (end > start ? sep(start - 1) === sep(start) : !/[:：]/.test(sep(start - 1)))) continue;
-          if (!HASH_LENGTHS.has(joined.length)) continue;
-          const exact = joined.length === expectedLength;
-          const score = exact ? end - start : joined.length;
-          if ((exact && !bestExact) || (exact === bestExact && score > bestScore)) {
-            best = joined;
-            bestExact = exact;
-            bestScore = score;
-          }
-        }
-      }
-      return best;
-    }
-
-    function longestHexRun(line, parsed = hexTokens(line)) {
-      const {tokens, sep, adjacent} = parsed;
-      let max = 0;
-      for (let start = 0; start < tokens.length; start += 1) {
-        let len = 0;
-        for (let end = start; end < tokens.length; end += 1) {
-          if (end > start && (!adjacent(end - 1) || sep(end - 1) !== sep(start) || tokens[start].length < 2 || tokens[end].length < 2 || tokens[end].length > 16)) break;
-          len += tokens[end].length;
-          max = Math.max(max, len);
-          if (tokens[start].length > 16) break;
-        }
-      }
-      return max;
-    }
-
-    // 真正的校验行不会很长；输入框每次改动都要重新解析，超长的行（比如误粘贴了整个文件）直接当作无法识别，
-    // 免得在上面反复扫描拖慢页面。同一行也只看前几个算法名。
+    // 限制整份粘贴文本和单行大小，不拿被截断的前半份清单作比对。
+    const MAX_EXPECTED_LENGTH = 256 * 1024;
     const MAX_LINE_LENGTH = 2048;
     const MAX_NAMES_PER_LINE = 8;
 
-    // 连字符也可以写成下划线（Python hashlib 的 sha3_256、sha512_256），FreeBSD 则把 SHA-512/256 写作 SHA512t256。
     const NAME_PATTERN = /sha[-_]?(?:2[-_]?)?512[/_t-]?(?:224|256)|sha[-_]?[23][-_]?(?:224|256|384|512)|sha[-_]?(?:224|256|384|512|1)|ripemd[-_]?160|rmd[-_]?160|crc[-_]?32|md[-_]?5/gi;
+    const UNSUPPORTED_PATTERN = /blake[-_]?[23][a-z]*(?:[-_]?[0-9]+)?|b[23]sum|sm[-_]?3|(?:c?shake|kmac)[-_]?(?:128|256)(?:[-_]?[0-9]+)?|keccak[-_]?(?:224|256|384|512)|hmac(?:[-_]?(?:sha[-_]?(?:[23][-_]?)?(?:512(?:[/_t-]?(?:224|256))?|224|256|384|1)|md[-_]?[245]|ripemd[-_]?160|sm-?3))?|md[-_]?[24]|ripemd[-_]?(?:128|256|320)|whirlpool|streebog(?:-?[0-9]+)?|skein(?:-?[0-9]+)?|xxh(?:ash)?(?:[-_]?[0-9]+)*(?:bits?)?|adler[-_]?32|crc[-_]?32c|posix cksum/gi;
 
-    // 紧跟在字母、数字、点或斜杠之后的名字多半是文件名的一部分（如 app.md5），
-    // 后面直接接扩展名、下划线、斜杠或其它字母数字的名字同理（如 sha256.txt、sha256sum.txt），都不当作算法标记。
-    function findAlgorithmNames(line, pattern = NAME_PATTERN) {
-      return [...line.matchAll(pattern)].filter(found => {
-        if (found.index > 0) {
-          const before = line[found.index - 1];
-          if (/[a-z0-9._/\\]/i.test(before)) return false;
-          // 紧贴单个连字符的名字多半是文件名的一部分（如 app-md5.iso），但命令行选项（--sha256）不是。
-          if (before === '-' && found.index > 1 && /[a-z0-9._/\\]/i.test(line[found.index - 2])) return false;
-        }
-        const after = line.slice(found.index + found[0].length).replace(/^sum(?![a-z0-9._/\\-])/i, '');
-        return !/^[a-z0-9._/\\]/i.test(after);
-      });
+    // 只在标签内查找算法名，从不把摘要或文件名里的片段当成算法提示。
+    function findAlgorithmNames(label, pattern = NAME_PATTERN) {
+      const names = [];
+      pattern.lastIndex = 0;
+      for (let found; names.length < MAX_NAMES_PER_LINE && (found = pattern.exec(label));) {
+        const before = label[found.index - 1] || '';
+        const after = label.slice(pattern.lastIndex).replace(/^sum(?![a-z0-9._/\\-])/i, '');
+        if (/[a-z0-9._/\\-]/i.test(before) || /^[a-z0-9._/\\-]/i.test(after)) continue;
+        names.push(found[0]);
+      }
+      return names;
     }
 
-    // SRI（sha256-…）和 openssl、coreutils 的 --base64 输出使用 Base64 编码的摘要，这里转成十六进制。
-    function extractBase64(text, byteLength) {
+    function hexValue(value) {
+      const groups = value.trim().split(/\s*[:：,，_\-]\s*|\s+/);
+      let hex = '';
+      for (const group of groups) {
+        if (!/^(?:0x)?[0-9a-f]+$/i.test(group)) return '';
+        hex += group.replace(/^0x/i, '');
+      }
+      return hex.toLowerCase();
+    }
+
+    // 只解码完整的 Base64 字段（含无填充和 Base64url）；回编码拒绝不正确的填充位。
+    function base64Value(value, byteLength) {
       const padded = Math.ceil(byteLength / 3) * 4;
-      const unpadded = Math.ceil(byteLength * 4 / 3);
-      for (const token of text.match(/[A-Za-z0-9+/_=-]+/g) || []) {
-        for (const candidate of new Set([token, token.replace(/^[-=]/, ''), token.replace(/^[-=]+/, '')])) {
-          const body = candidate.replace(/=+$/, '');
-          if (candidate.length !== padded && candidate.length !== unpadded) continue;
-          if (body.length !== unpadded || /^[0-9a-f]+$/i.test(body) || /[^A-Za-z0-9+/_-]/.test(body)) continue;
-          if (/[+/]/.test(body) && /[-_]/.test(body)) continue;
-          if (candidate.length !== body.length && candidate.length !== padded) continue;
-          try {
-            const normalized = body.replace(/-/g, '+').replace(/_/g, '/');
-            const raw = atob(normalized.padEnd(padded, '='));
-            if (raw.length !== byteLength || btoa(raw).replace(/=+$/, '') !== normalized) continue;
-            return bytesToHex(Uint8Array.from(raw, char => char.charCodeAt(0)));
-          } catch (error) {
-            // 不是合法的 Base64，继续找下一个片段。
-          }
+      const body = value.replace(/=+$/, '');
+      if (body.length !== Math.ceil(byteLength * 4 / 3) || !/^[A-Za-z0-9+/_-]+$/.test(body)) return '';
+      if (/[+/]/.test(body) && /[-_]/.test(body)) return '';
+      if (value.length !== body.length && value.length !== padded) return '';
+      try {
+        const normalized = body.replace(/-/g, '+').replace(/_/g, '/');
+        const raw = atob(normalized.padEnd(padded, '='));
+        if (raw.length === byteLength && btoa(raw).replace(/=+$/, '') === normalized) {
+          return bytesToHex(Uint8Array.from(raw, char => char.charCodeAt(0)));
         }
+      } catch (error) {
+        // 无效编码，不比对。
       }
       return '';
     }
 
-    // 从 sha256sum（“哈希  文件名”“哈希 *文件名”）和 BSD（“SHA256 (文件名) = 哈希”）的输出里拆出文件名，
-    // 既让整份校验清单只比对当前文件，也避免括号或末尾的文件名干扰算法和哈希识别。
-    // 文件名含反斜杠或换行时，coreutils 会转义文件名并在行首加一个反斜杠（两种格式都会）：
-    // 这种行认不出文件名，去掉行首的反斜杠后照常参与比对。
+    function digestField(value, algorithm = null, integrity = false) {
+      value = value.trim();
+      const hex = hexValue(value);
+      const length = algorithm ? ALGORITHMS.find(item => item.id === algorithm).bits / 4 : 0;
+      if (algorithm && algorithm !== 'CRC32' && (integrity || !hex)) {
+        const decoded = base64Value(value, length / 2);
+        if (decoded) return {algorithm, hex: decoded};
+      }
+      if (algorithm ? hex.length === length : HASH_LENGTHS.has(hex.length)) return {algorithm, hex};
+      return {algorithm, strayLength: hex.length};
+    }
+
+    function labelledField(label, value, tagged = false) {
+      label = label.replace(/^--/, '');
+      const names = [...new Set(findAlgorithmNames(label).map(canonicalAlgorithm))];
+      const foreign = findAlgorithmNames(label, UNSUPPORTED_PATTERN).find(name => !names.length || /^hmac/i.test(name));
+      if (foreign) return {unsupported: foreign};
+      if (names.length > 1) return {};
+      const result = digestField(value, names[0]);
+      const neutral = /^(?:(?:hash|digest|checksum)(?: value)?|(?:哈希|散列|摘要)(?:值)?|校验[和值])$/i.test(label);
+      if (!names.length && (tagged || !neutral)) return result.hex ? {unsupported: label.slice(0, 80)} : {};
+      return result;
+    }
+
+    function integrityField(token) {
+      const value = token.split('?')[0];
+      let malformed = null;
+      // 分隔符也可能是标签的一部分，或是 Base64url 的首字符。只接受长度正确的解释。
+      for (let i = 1; i < Math.min(value.length, 32); i += 1) {
+        if (value[i] !== '-') continue;
+        const label = value.slice(0, i);
+        const payload = value.slice(i + 1);
+        if (!/^[a-z][a-z0-9_/-]*$/i.test(label) || !/^[A-Za-z0-9+/_=-]+$/.test(payload)) continue;
+        const id = canonicalAlgorithm(label);
+        if (id) {
+          const parsed = digestField(payload, id, true);
+          if (parsed.hex) return parsed;
+          malformed = parsed;
+        } else if (findAlgorithmNames(label, UNSUPPORTED_PATTERN)[0] === label && !malformed) {
+          malformed = {unsupported: label};
+        }
+      }
+      return malformed;
+    }
+
+    function parseDigestLine(content, tag) {
+      if (tag) return [labelledField(tag, content, true)];
+      if (hexValue(content)) return [digestField(content)];
+      const tokens = content.trim().split(/\s+/);
+      if (tokens.length <= MAX_NAMES_PER_LINE) {
+        const integrity = tokens.map(integrityField);
+        if (integrity.every(Boolean)) return integrity;
+      }
+      const field = content.match(/^([^:=：]+?)\s*[:=：]\s*(.*)$/);
+      const prefixed = content.match(/^(?:--)?([a-z][\w/-]*)\s+(.+)$/i);
+      if (prefixed && (findAlgorithmNames(prefixed[1]).length || findAlgorithmNames(prefixed[1], UNSUPPORTED_PATTERN).length)) {
+        const result = labelledField(prefixed[1], prefixed[2]);
+        if (result.hex || result.strayLength || !field) return [result];
+      }
+      if (field && !hexValue(field[1])) return [labelledField(field[1], field[2])];
+      return [{}];
+    }
+
+    function normalizeDigest(text) {
+      return text.replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, ' ');
+    }
+
+    const WINDOWS_PATH = /^(?:[a-z]:[\\/]|\\\\|\.{1,2}\\)/i;
+
+    function checksumFile(name, escaped = false) {
+      let invalidFile = false;
+      if (escaped) {
+        name = name.replace(/\\([\s\S]|$)/g, (raw, char) => {
+          if (char === 'n') return '\n';
+          if (char === 'r') return '\r';
+          if (char === '\\') return '\\';
+          invalidFile = true;
+          return raw;
+        });
+      } else if (WINDOWS_PATH.test(name)) {
+        // 只在明显是 Windows 路径时把 \ 当分隔符。POSIX 上未转义的反斜杠也可能是文件名的一部分。
+        name = name.replace(/\\/g, '/');
+      }
+      const path = name.replace(/^(?:\.\/)+/, '');
+      const file = path.slice(path.lastIndexOf('/') + 1);
+      return {file, path, invalidFile: invalidFile || !file};
+    }
+
     function splitChecksumLine(line) {
       const escaped = line.startsWith('\\');
       const text = escaped ? line.slice(1) : line;
-      const baseName = name => (escaped ? '' : name.trim().split(/[\\/]/).pop());
-      const bsd = text.match(/^([A-Za-z][\w/-]*)\s*\((.+)\)\s*=\s*(\S.*)$/);
-      if (bsd) return {content: `${bsd[1]} = ${bsd[3]}`, file: baseName(bsd[2])};
-      const sum = text.match(/^((?:\w+sum\s+)?([0-9a-fA-F]{8,128}))(?: [ *])(.+)$/);
-      if (sum && HASH_LENGTHS.has(sum[2].length)) return {content: sum[1], file: baseName(sum[3])};
-      // 不少脚本和表格只用一个空格或制表符分隔哈希与文件名（如 Python 的 print、电子表格粘贴）。
-      // 只有余下部分带扩展名或路径分隔符、明显是文件名时才这样拆，免得把分组哈希的后续片段当成文件名。
-      const spaced = text.match(/^((?:\w+sum\s+)?([0-9a-fA-F]{32,128}))[ \t]+(\S.*)$/);
-      if (spaced && HASH_LENGTHS.has(spaced[2].length) && /[./\\]/.test(spaced[3])) return {content: spaced[1], file: baseName(spaced[3])};
-      return {content: line, file: ''};
+      const bsd = text.match(/^([A-Za-z][\w/-]*)\s*\(([\s\S]*)\)\s*=\s*([\s\S]*)$/);
+      if (bsd) return {tag: bsd[1], content: bsd[3], ...checksumFile(bsd[2], escaped)};
+      // POSIX cksum 输出十进制校验和和文件大小，用的并不是这里的 CRC32。
+      const posix = !escaped && text.match(/^(\d{1,10}) \d+ ([\s\S]+)$/);
+      if (posix && !hexValue(text)) return {tag: 'POSIX cksum', content: posix[1], ...checksumFile(posix[2])};
+      // 前缀必须以十六进制字符结束，避免末尾大量空格被两段正则反复分配。
+      const grouped = text.match(/^([0-9a-fx:：,，_\t \-]*[0-9a-f])[ \t]{2,}(\S[\s\S]*)$/i);
+      if (!escaped && grouped && /^[0-9a-f]{2,16}[ \t:：,，_\-]/i.test(grouped[1]) && /[./\\]/.test(grouped[2])) {
+        const hex = hexValue(grouped[1]);
+        const groups = grouped[1].trim().split(/[\t :：,，_\-]+/);
+        if (hex && (HASH_LENGTHS.has(hex.length) || groups.length > 2)) return {content: grouped[1], ...checksumFile(grouped[2])};
+      }
+      const prefixed = text.match(/^([a-z][\w/-]*)[ \t]+([\s\S]*)$/i);
+      const tag = prefixed && (/sum$/i.test(prefixed[1]) || findAlgorithmNames(prefixed[1]).length ||
+        findAlgorithmNames(prefixed[1], UNSUPPORTED_PATTERN).length) ? prefixed[1] : undefined;
+      const payload = tag ? prefixed[2] : text;
+      const looksLikeDigest = value => /^[0-9a-f]{8,128}$/i.test(normalizeDigest(value)) ||
+        (tag && /^[A-Za-z0-9+/_-]+=*$/.test(value));
+      const sum = payload.match(/^(\S+)( [ *])([\s\S]+)$/);
+      if (sum && looksLikeDigest(sum[1]) &&
+          (escaped || sum[2] !== '  ' || sum[1].length > 16 || !hexValue(normalizeDigest(`${sum[1]} ${sum[3]}`)))) {
+        // PowerShell 的列宽填充不属于绝对路径；GNU 清单的两个分隔字符之后则必须原样保留。
+        const tablePath = !escaped && tag && !/sum$/i.test(tag) && WINDOWS_PATH.test(sum[3].trimStart());
+        const name = tablePath ? sum[3].trimStart() : sum[3];
+        return {tag, content: sum[1], ...checksumFile(name, escaped)};
+      }
+      if (escaped) return {invalidFile: true};
+      // 表格或手写的清单也可能只用一个空格或制表符分隔；不能把下一组十六进制当作文件名。
+      const spaced = payload.match(/^(\S+)[ \t]+(\S[\s\S]*)$/);
+      if (spaced && looksLikeDigest(spaced[1]) && /[./\\]/.test(spaced[2])) {
+        return {tag, content: spaced[1], ...checksumFile(spaced[2])};
+      }
+      const prefixFile = text.match(/^([\s\S]+?)[:：][ \t]+([\s\S]+)$/);
+      if (prefixFile && !/\s[/\\]\s/.test(prefixFile[1]) && /[.\/\\]/.test(prefixFile[1])) {
+        return {content: prefixFile[2], ...checksumFile(prefixFile[1])};
+      }
+      return {content: line};
     }
 
-    // 网页上复制的哈希常用不换行空格、全角空格分组，或夹带零宽字符；macOS 上的文件名还可能是 NFD 形式。
-    // 预期值和当前文件名都先按同样的规则规范化，再识别、比较。
-    function normalizeText(text) {
-      return text.normalize('NFC').replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, ' ');
+    function entriesForFile(entries, fileName, files = entries) {
+      if (!fileName) return {entries, ignored: 0};
+      const named = files.filter(record => record.file);
+      if (!named.length) return {entries, ignored: 0};
+      let matches = named.filter(record => record.file === fileName);
+      if (!matches.length) {
+        const name = fileName.normalize('NFC');
+        matches = named.filter(record => record.file.normalize('NFC') === name);
+      }
+      const paths = new Set(matches.map(record => record.path));
+      const [path] = paths;
+      let issue = paths.size === 0 ? 'missing' : paths.size > 1 ? 'ambiguous' : null;
+      const kept = entries.filter(entry => !entry.file || (!issue && entry.path === path));
+      if (!issue && !kept.some(entry => entry.file)) issue = 'unusable';
+      return {entries: kept, ignored: entries.length - kept.length, issue};
     }
-
-    // 清单里有一行写明了当前文件的名字时，带有其他文件名的行不属于这个文件，不参与比对。
-    function entriesForFile(entries, fileName) {
-      const name = fileName ? normalizeText(fileName) : '';
-      if (!name || !entries.some(entry => entry.file === name)) return {entries, ignored: 0};
-      const kept = entries.filter(entry => !entry.file || entry.file === name);
-      return {entries: kept, ignored: entries.length - kept.length};
-    }
-
-    // Hashroom 算不了、却常见于校验清单的算法名（pkgsrc 的 distinfo、openssl dgst、cksum -a 等的输出，
-    // 以及连命令名一起粘贴的 b2sum/b3sum、xxhsum）。
-    // 标着这些名字的摘要不能按长度去猜：BLAKE2s、BLAKE3、SM3、Keccak-256 等与 SHA-256 等长，硬比只会误报“不一致”。
-    const UNSUPPORTED_PATTERN = /blake[-_]?[23][a-z]*(?:[-_]?[0-9]+)?|b[23]sum|sm-?3|shake-?(?:128|256)|keccak[-_]?(?:224|256|384|512)|hmac(?:[-_]?(?:sha[-_]?(?:[23][-_]?)?(?:512(?:[/_t-]?(?:224|256))?|224|256|384|1)|md[-_]?[245]|ripemd[-_]?160|sm-?3))?|md-?[24]|ripemd-?(?:128|256|320)|whirlpool|streebog(?:-?[0-9]+)?|skein(?:-?[0-9]+)?|xxh(?:ash)?(?:[-_]?[0-9]+)*(?:bits?)?|adler-?32|crc-?32c/gi;
 
     function parseExpected(raw) {
-      const lines = normalizeText(raw).split(/\r\n?|[\n\u2028\u2029]/).map(line => line.trim()).filter(Boolean);
-      if (!lines.length) return {entries: [], invalid: false};
       const entries = [];
-      const unsupported = [];
+      const files = new Map();
+      const unsupported = new Map();
       let invalidLines = 0;
       let unsupportedLines = 0;
       let strayLength = 0;
-      lines.forEach(line => {
-        if (line.length > MAX_LINE_LENGTH) {
-          invalidLines += 1;
-          return;
-        }
-        const {content, file} = splitChecksumLine(line);
-        let algorithm = null;
-        let hex = '';
-        for (const found of findAlgorithmNames(content).slice(0, MAX_NAMES_PER_LINE)) {
-          const id = canonicalAlgorithm(found[0]);
-          const length = ALGORITHMS.find(item => item.id === id).bits / 4;
-          const after = content.slice(found.index + found[0].length);
-          const rest = `${content.slice(0, found.index)} ${after}`;
-          let value = after.startsWith('-') ? '' : extractHex(rest, length);
-          if (value.length !== length && id !== 'CRC32') value = extractBase64(after.startsWith('-') ? after : rest, length / 2) || value;
-          if (!algorithm) {
-            algorithm = id;
-            hex = value;
+      let malformed = null;
+      const tooLarge = raw.length > MAX_EXPECTED_LENGTH;
+      if (!tooLarge) {
+        const rows = raw.split(/\r\n?|\n/);
+        for (let i = 0; i < rows.length; i += 1) {
+          const line = rows[i].replace(/^[\s\u200b-\u200d\u2060]+/, '');
+          if (!line || /^(?:#|;|\/\/)/.test(line) || /^CertUtil: -hashfile command completed successfully\.\s*$/i.test(line)) continue;
+          if (/^Algorithm\s+Hash\s+Path\s*$/i.test(line) && /^-+\s+-+\s+-+\s*$/.test(rows[i + 1] || '')) {
+            i += 1;
+            continue;
           }
-          if (value.length === length) {
-            algorithm = id;
-            hex = value;
-            break;
+          if (rows[i].length > MAX_LINE_LENGTH) {
+            invalidLines += 1;
+            continue;
+          }
+          // CertUtil 的标签与文件名在摘要的上一行。
+          const cert = line.match(/^([a-z][\w/-]*) hash of (?:file )?([\s\S]+):\s*$/i);
+          const record = cert ? {tag: cert[1], content: '', ...checksumFile(cert[2])} : splitChecksumLine(line);
+          if (cert && i + 1 < rows.length && rows[i + 1].length <= MAX_LINE_LENGTH && hexValue(normalizeDigest(rows[i + 1]))) {
+            record.content = rows[++i];
+          }
+          const {content, file, path, tag, invalidFile} = record;
+          if (file && !invalidFile) files.set(path, {file, path});
+          const fields = invalidFile ? [{}] : parseDigestLine(normalizeDigest(content).trim(), tag);
+          if (fields.some(field => !field.hex)) invalidLines += 1;
+          if (fields.some(field => field.unsupported)) unsupportedLines += 1;
+          for (const field of fields) {
+            if (field.hex) entries.push({algorithm: field.algorithm, hex: field.hex, file: file || '', ...(file ? {path} : {})});
+            else if (field.unsupported) {
+              const key = field.unsupported.toLowerCase();
+              if (!unsupported.has(key) && unsupported.size < MAX_NAMES_PER_LINE) unsupported.set(key, field.unsupported);
+            } else {
+              strayLength = Math.max(strayLength, field.strayLength || 0);
+              if (!malformed && field.algorithm) malformed = field;
+            }
           }
         }
-        // 名字对应的长度与读到的哈希不符（如 sha1sum 输出里的文件名 sha256-notes.txt，或标签写错），
-        // 这个名字就不是算法标记，改按长度判断，免得给哈希贴上错误的算法。
-        if (algorithm && hex.length !== ALGORITHMS.find(item => item.id === algorithm).bits / 4) algorithm = null;
-        // 没有可用的算法标记、却标着不支持的算法：这一行不参与比对。名字后面紧跟连字符的多半是文件名（blake3-notes.txt）。
-        // HMAC 例外：“HMAC SHA256: …”“SHA256 HMAC: …”里的 SHA256 会被认成算法标记，但带密钥的摘要与文件的 SHA-256 不可能一致。
-        const foreign = findAlgorithmNames(content, UNSUPPORTED_PATTERN).find(found => content[found.index + found[0].length] !== '-' && (!algorithm || /^hmac/i.test(found[0])));
-        if (foreign) {
-          invalidLines += 1;
-          unsupportedLines += 1;
-          if (!unsupported.some(name => name.toLowerCase() === foreign[0].toLowerCase())) unsupported.push(foreign[0]);
-          return;
-        }
-        let parsedHex;
-        if (!algorithm && !HASH_LENGTHS.has(hex.length)) {
-          parsedHex = hexTokens(content);
-          hex = extractHex(content, 0, parsedHex);
-        }
-        if (!hex || !HASH_LENGTHS.has(hex.length)) {
-          invalidLines += 1;
-          // 记下最长的一段十六进制，复制不完整的哈希可以据此给出提示。
-          strayLength = Math.max(strayLength, longestHexRun(content, parsedHex));
-          return;
-        }
-        entries.push({algorithm, hex, raw: line, file});
-      });
-      return {entries, invalid: invalidLines > 0 && !entries.length, partialInvalid: invalidLines > 0 && entries.length > 0, invalidLines, unsupportedLines, strayLength, unsupported};
-    }
-
-    function entryTargets(entry, algorithm, hex) {
-      if (entry.algorithm) return entry.algorithm === algorithm;
-      return entry.hex.length === hex.length;
-    }
-
-    function rowComparison(result) {
-      let verdict = null;
-      for (const entry of expectedEntries) {
-        if (!entryTargets(entry, result.algorithm, result.hex)) continue;
-        if (hexEqual(entry.hex, result.hex)) return 'match';
-        // 未标注算法的预期值只要被同长度的另一种算法命中，这一行就不算不一致。
-        if (!entry.algorithm && currentResults.some(other => other !== result && other.hex.length === entry.hex.length && hexEqual(other.hex, entry.hex))) continue;
-        verdict = 'mismatch';
       }
-      return verdict;
+      return {entries, files: [...files.values()], invalid: tooLarge || invalidLines > 0 && !entries.length, partialInvalid: invalidLines > 0 && entries.length > 0,
+        invalidLines, unsupportedLines, strayLength, malformed, tooLarge, unsupported: [...unsupported.values()]};
     }
 
-    function candidateAlgorithms() {
-      const ids = new Set();
-      expectedEntries.forEach(entry => {
-        if (entry.algorithm) ids.add(entry.algorithm);
-        // 未标注算法的预期值一旦被某个结果命中，就不必再建议同长度的其他算法。
-        else if (!currentResults.some(result => hexEqual(result.hex, entry.hex))) algorithmsForLength(entry.hex.length).forEach(item => ids.add(item.id));
-      });
-      return [...ids];
+    function compareDigests(entries, results, enabled) {
+      const byId = new Map(results.map(result => [result.algorithm, result.hex]));
+      const groups = new Map();
+      for (const entry of entries) {
+        // 单文件清单的具名算法不能有互相冲突的校验值；无文件名的同组摘要允许作为备选（如 SRI）。
+        const key = entry.file ? (entry.algorithm ? `file:${entry.algorithm}:${entry.path}` : `value:${entry.hex}`) :
+          (entry.algorithm || `length:${entry.hex.length}`);
+        if (!groups.has(key)) groups.set(key, {entry, values: new Set()});
+        groups.get(key).values.add(entry.hex);
+      }
+      const summary = {hasEntries: entries.length > 0, rows: new Map(), matched: new Set(), mismatched: new Set(),
+        needed: new Set(), pending: new Set(), unavailable: new Set(), conflicts: new Set(), firstMismatch: null};
+      const priority = {match: 1, mismatch: 2, conflict: 3};
+      const mark = (id, kind) => {
+        if (byId.has(id) && (priority[summary.rows.get(id)] || 0) < priority[kind]) summary.rows.set(id, kind);
+      };
+      for (const {entry, values} of groups.values()) {
+        const {algorithm, hex, file} = entry;
+        const ids = algorithm ? [algorithm] : algorithmsForLength(hex.length).map(item => item.id);
+        if (algorithm && file && values.size > 1) {
+          summary.conflicts.add(algorithm);
+          mark(algorithm, 'conflict');
+          continue;
+        }
+        const hits = ids.filter(id => values.has(byId.get(id)));
+        if (hits.length) {
+          hits.forEach(id => {
+            summary.matched.add(id);
+            mark(id, 'match');
+          });
+          continue;
+        }
+        const remaining = ids.filter(id => !byId.has(id) && enabled.has(id));
+        if (remaining.length) {
+          summary.pending.add(algorithm || `${hex.length} 位哈希`);
+          remaining.forEach(id => summary.needed.add(id));
+          continue;
+        }
+        const disabled = ids.filter(id => !byId.has(id));
+        if (disabled.length) {
+          disabled.forEach(id => summary.unavailable.add(id));
+          continue;
+        }
+        summary.mismatched.add(ids.join(' / '));
+        ids.forEach(id => mark(id, 'mismatch'));
+        if (!summary.firstMismatch) summary.firstMismatch = {expected: hex, actual: byId.get(ids[0]), ids};
+      }
+      return summary;
     }
 
     function missingCandidates() {
       const selected = new Set(selectedAlgorithms());
-      const disabled = new Set(algorithmInputs.filter(input => input.disabled).map(input => input.value));
-      return candidateAlgorithms().filter(id => !selected.has(id) && !disabled.has(id));
+      return [...comparison.needed].filter(id => !selected.has(id));
     }
 
     function describeCandidates(ids) {
@@ -2554,6 +2686,7 @@
     }
 
     function renderBanner(kind, title, detail) {
+      currentVerdict = {kind, title};
       compareBanner.hidden = false;
       compareBanner.className = `compare-banner is-${kind}`;
       replaceChildren(compareBanner);
@@ -2572,11 +2705,24 @@
     }
 
     function updateComparison() {
-      const parsed = parseExpected(expectedInput.value);
-      const scoped = entriesForFile(parsed.entries, selectedFile && selectedFile.name);
-      expectedEntries = scoped.entries;
-      expectedInvalid = parsed.invalid;
-      clearExpected.disabled = !expectedInput.value;
+      const input = expectedInput.value;
+      if (input !== parsedInput) {
+        parsedInput = input;
+        parsedExpected = parseExpected(input);
+      }
+      const parsed = parsedExpected;
+      const scoped = entriesForFile(parsed.entries, selectedFile && selectedFile.name, parsed.files);
+      const expectedEntries = scoped.entries;
+      const enabled = new Set(algorithmInputs.filter(input => !input.disabled).map(input => input.value));
+      comparison = compareDigests(expectedEntries, currentResults, enabled);
+      currentVerdict = null;
+      const scopeMessage = {
+        missing: '清单里没有当前文件的名字',
+        ambiguous: '清单中有多个路径指向同名文件，无法区分',
+        unusable: '清单中当前文件的校验值无法识别'
+      }[scoped.issue];
+      expectedInput.setAttribute('aria-invalid', String(parsed.invalid));
+      clearExpected.disabled = !input;
       const missing = missingCandidates();
       applySuggested.hidden = !expectedEntries.length || !missing.length;
       applySuggested.textContent = selectedAlgorithms().length ? '补选可能的算法' : '选择这些算法';
@@ -2588,6 +2734,18 @@
         return;
       }
       if (parsed.invalid) {
+        if (parsed.tooLarge) {
+          compareHint.textContent = '未解析超出上限的粘贴内容。';
+          renderBanner('invalid', '预期值过长', '请只保留当前文件相关的校验行，再重新粘贴。');
+          return;
+        }
+        if (parsed.malformed) {
+          const {algorithm, strayLength} = parsed.malformed;
+          const length = ALGORITHMS.find(item => item.id === algorithm).bits / 4;
+          compareHint.textContent = strayLength ? `识别到 ${strayLength} 位十六进制。` : '无法识别完整的摘要字段。';
+          renderBanner('invalid', `${algorithm} 摘要无效`, `应为 ${length} 位十六进制${algorithm === 'CRC32' ? '' : '或等长的 Base64 摘要'}，请检查是否复制完整。`);
+          return;
+        }
         if (parsed.unsupported.length) {
           const names = parsed.unsupported.join('、');
           compareHint.textContent = `预期值标注的算法是 ${names}。`;
@@ -2606,6 +2764,12 @@
         return;
       }
 
+      if (!expectedEntries.length && scopeMessage) {
+        compareHint.textContent = `已忽略 ${scoped.ignored} 条无法归属当前文件的校验值。`;
+        renderBanner('info', scopeMessage, '请确认对应的校验行，或只粘贴当前文件的摘要。');
+        return;
+      }
+
       const named = [...new Set(expectedEntries.map(entry => entry.algorithm).filter(Boolean))];
       const unnamed = expectedEntries.filter(entry => !entry.algorithm);
       const unnamedLengths = [...new Set(unnamed.map(entry => entry.hex.length))];
@@ -2618,63 +2782,35 @@
       // 不支持算法的行已经在上面说明过，这里只数其余无法识别的行，免得同一行被说两遍。
       const otherInvalid = parsed.invalidLines - parsed.unsupportedLines;
       if (parsed.partialInvalid && otherInvalid > 0) hint += `。${parsed.unsupported.length ? '另有' : '有'} ${otherInvalid} 行无法识别，已忽略`;
-      if (scoped.ignored) hint += `。已忽略 ${scoped.ignored} 条属于其他文件的校验值`;
+      if (scopeMessage) hint += `。${scopeMessage}，仅使用未注明文件名的摘要`;
+      if (scoped.ignored) hint += `。已忽略 ${scoped.ignored} 条无法归属当前文件的校验值`;
       compareHint.textContent = `${hint}。`;
 
-      if (!currentResults.length) {
-        renderBanner('info', '等待计算结果', missing.length ? `还需要计算 ${describeCandidates(missing)}。` : '计算完成后会自动比对。');
+      const {matched, mismatched, pending, unavailable, conflicts, firstMismatch} = comparison;
+      if (conflicts.size) {
+        renderBanner('mismatch', '校验清单有冲突', `${describeCandidates([...conflicts])} 对同一个文件给出了不同的摘要，请核对来源。`);
         return;
       }
-
-      const matched = [];
-      const mismatched = [];
-      const pending = [];
-      // 与每一行的判定保持一致：某个结果只要被任意一条预期值命中就算一致，同一算法其余没命中的条目
-      // （如文件被浏览器改名后，整份清单里其他文件的行）不再让横幅和状态栏报“不一致”。
-      const verdicts = new Map(currentResults.map(result => [result, rowComparison(result)]));
-      const unmatchedTargets = entry => {
-        const targets = currentResults.filter(result => entryTargets(entry, result.algorithm, result.hex));
-        if (targets.some(result => hexEqual(result.hex, entry.hex))) return [];
-        return targets.filter(result => verdicts.get(result) === 'mismatch');
-      };
-      expectedEntries.forEach(entry => {
-        const targets = currentResults.filter(result => entryTargets(entry, result.algorithm, result.hex));
-        if (!targets.length) {
-          const label = entry.algorithm || `${entry.hex.length} 位哈希`;
-          if (!pending.includes(label)) pending.push(label);
-          return;
-        }
-        const hit = targets.find(result => hexEqual(result.hex, entry.hex));
-        if (hit) {
-          if (!matched.includes(hit.algorithm)) matched.push(hit.algorithm);
-          return;
-        }
-        const missed = unmatchedTargets(entry);
-        const mismatchLabel = entry.algorithm || missed.map(result => result.algorithm).join(' / ');
-        if (missed.length && !mismatched.includes(mismatchLabel)) mismatched.push(mismatchLabel);
-      });
-
-      if (mismatched.length) {
-        const first = expectedEntries.find(entry => unmatchedTargets(entry).length);
-        const target = unmatchedTargets(first).find(result => result.hex.length === first.hex.length);
-        // 横幅开头已经点名了这一条没匹配的算法（预期值写明了算法，或只有一个候选算法）时，
-        // 不必再重复“与 SHA-256”；只有开头列的是“A / B”这类多个候选时，才需要说明比的是哪一个。
-        const firstMissed = target ? unmatchedTargets(first) : [];
-        const covered = target && (first.algorithm === target.algorithm || (!first.algorithm && firstMissed.length === 1));
-        const compared = target && !covered ? `与 ${target.algorithm} ` : '';
-        const where = target ? `，${compared}从第 ${firstDifference(first.hex, target.hex)} 位开始不同` : '';
-        renderBanner('mismatch', '校验值不一致', `${mismatched.join('、')} 没有匹配${where}。`);
+      if (mismatched.size) {
+        const {expected, actual, ids} = firstMismatch;
+        const compared = ids.length > 1 ? `与 ${ids[0]} ` : '';
+        renderBanner('mismatch', '校验值不一致', `${describeCandidates([...mismatched])} 没有匹配，${compared}从第 ${firstDifference(expected, actual)} 位开始不同。`);
         return;
       }
-      if (pending.length && !matched.length) {
-        renderBanner('info', '还没有可比对的结果', `请计算 ${describeCandidates(missing.length ? missing : pending)}。`);
+      if (pending.size || unavailable.size) {
+        const details = [];
+        if (pending.size) details.push(`还需比对 ${describeCandidates([...pending])}${missing.length ? `，可补选 ${describeCandidates(missing)}` : ''}。`);
+        if (unavailable.size) details.push(`${describeCandidates([...unavailable])} 已停用，无法完成这些比对。`);
+        const title = matched.size ? `已匹配 ${describeCandidates([...matched])}` :
+          pending.size ? (currentResults.length ? '尚未匹配，仍有算法未计算' : '等待计算结果') : '无法完成比对';
+        renderBanner('info', title, details.join(''));
         return;
       }
-      if (pending.length) {
-        renderBanner('info', `已匹配 ${matched.join('、')}`, `仍有预期值尚未计算：${pending.join('、')}。`);
+      if (parsed.partialInvalid) {
+        renderBanner('info', `已匹配 ${describeCandidates([...matched])}`, '仅比对了可识别的摘要，部分校验行未参与。');
         return;
       }
-      renderBanner('match', `与 ${matched.join('、')} 一致`, '预期值与本次计算结果完全相同。');
+      renderBanner('match', `与 ${describeCandidates([...matched])} 一致`, '所列算法的摘要与可用预期值一致。');
     }
 
     function selectedAlgorithms() {
@@ -2704,7 +2840,7 @@
 
     function formatBytes(bytes) {
       if (bytes === 0) return '0 B';
-      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
       let index = 0;
       let value = bytes;
       while (value >= 1024 && index < units.length - 1) {
@@ -2724,18 +2860,18 @@
       const dot = file.name.lastIndexOf('.');
       const extensionName = dot > 0 && dot < file.name.length - 1 ? file.name.slice(dot + 1) : '';
       const extension = extensionName ? extensionName.toUpperCase() : (file.type ? file.type.split('/').pop().toUpperCase() : '文件');
-      const modified = file.lastModified ? new Date(file.lastModified).toLocaleDateString('zh-CN', {year: 'numeric', month: '2-digit', day: '2-digit'}) : '';
+      const modified = Number.isFinite(file.lastModified) ? new Date(file.lastModified).toLocaleDateString('zh-CN', {year: 'numeric', month: '2-digit', day: '2-digit'}) : '';
       return [extension, formatBytes(file.size), modified].filter(Boolean).join(' · ');
     }
 
     function hasExpectedValue() {
-      return expectedEntries.length > 0;
+      return comparison.hasEntries;
     }
 
     function updateComputeButton() {
+      const isCalculating = Boolean(activeCalculation);
       // 计算中按钮变成“取消计算”，大文件不必等到算完或者靠改选项才能中止。
       computeButton.disabled = !isCalculating && (!selectedFile || !selectedAlgorithms().length);
-      computeButton.setAttribute('aria-busy', String(isCalculating));
       computeLabel.textContent = isCalculating ? '取消计算' : (hasExpectedValue() ? '计算并比对' : '计算哈希');
       computeIcon.hidden = isCalculating;
       buttonSpinner.hidden = !isCalculating;
@@ -2756,10 +2892,12 @@
       if (kind === 'loading') {
         const track = document.createElement('div');
         track.className = 'loading-track';
-        track.setAttribute('aria-hidden', 'true');
-        const bar = document.createElement('span');
-        bar.style.width = `${Math.max(4, Math.round(progress * 100))}%`;
-        track.append(bar);
+        track.setAttribute('role', 'progressbar');
+        track.setAttribute('aria-label', '摘要计算进度');
+        track.setAttribute('aria-valuemin', '0');
+        track.setAttribute('aria-valuemax', '100');
+        track.append(document.createElement('span'));
+        setProgressValue(track, progress);
         resultsPanel.append(track);
       }
       const state = document.createElement('div');
@@ -2782,24 +2920,48 @@
       resultsPanel.setAttribute('aria-busy', String(kind === 'loading'));
     }
 
+    function progressPercent(progress) {
+      return Math.max(0, Math.min(100, Math.floor(progress * 100)));
+    }
+
+    function setProgressValue(track, progress) {
+      const percent = progressPercent(progress);
+      track.setAttribute('aria-valuenow', String(percent));
+      track.firstElementChild.style.width = `${percent}%`;
+    }
+
     // 进度更新只改已有的进度条和文字，避免整块重建导致宽度过渡失效。
     function showProgress(description, progress) {
-      const bar = resultsPanel.querySelector('.loading-track span');
+      const track = resultsPanel.querySelector('.loading-track');
       const detail = resultsPanel.querySelector('.empty-description');
-      if (!bar || !detail) {
+      if (!track || !detail) {
         renderMessage('正在计算摘要', description, 'loading', progress);
         return;
       }
-      bar.style.width = `${Math.max(4, Math.round(progress * 100))}%`;
+      setProgressValue(track, progress);
       detail.textContent = description;
     }
 
-    function createDigestRow(result, index, animate) {
-      const comparison = rowComparison(result);
+    function refreshDigestRow(row, result) {
+      const kind = comparison.rows.get(result.algorithm);
+      for (const name of ['match', 'mismatch', 'conflict']) row.classList.toggle(`is-${name}`, kind === name);
+      let pill = row.querySelector('.match-pill');
+      if (!kind) {
+        if (pill) pill.remove();
+        return;
+      }
+      if (!pill) {
+        pill = document.createElement('span');
+        row.querySelector('.digest-meta').append(pill);
+      }
+      pill.className = `match-pill is-${kind}`;
+      pill.textContent = {match: '一致', mismatch: '不一致', conflict: '清单冲突'}[kind];
+    }
+
+    function createDigestRow(result, index) {
       const row = document.createElement('article');
-      row.className = `digest-row${comparison ? ` is-${comparison}` : ''}`;
-      if (animate) row.style.animationDelay = `${index * 40}ms`;
-      else row.style.animation = 'none';
+      row.className = 'digest-row';
+      row.style.animationDelay = `${index * 40}ms`;
       const content = document.createElement('div');
       const meta = document.createElement('div');
       meta.className = 'digest-meta';
@@ -2810,12 +2972,6 @@
       length.className = 'digest-length';
       length.textContent = `${result.hex.length} 个十六进制字符`;
       meta.append(algorithm, length);
-      if (comparison) {
-        const pill = document.createElement('span');
-        pill.className = `match-pill is-${comparison}`;
-        pill.textContent = comparison === 'match' ? '一致' : '不一致';
-        meta.append(pill);
-      }
       const value = document.createElement('code');
       value.className = 'digest-value';
       value.textContent = result.hex;
@@ -2831,14 +2987,14 @@
       button.append(icon);
       button.addEventListener('click', () => copyText(`${result.algorithm}: ${result.hex}`, button, `已复制 ${result.algorithm}`));
       row.append(content, button);
+      refreshDigestRow(row, result);
       return row;
     }
 
-    function renderResults(results, animate = true) {
-      currentResults = results;
-      copyAllButton.disabled = !results.length;
+    function renderResults() {
+      copyAllButton.disabled = !currentResults.length;
       resultsPanel.className = 'results-panel';
-      replaceChildren(resultsPanel, ...results.map((result, index) => createDigestRow(result, index, animate)));
+      replaceChildren(resultsPanel, ...currentResults.map(createDigestRow));
       resultsPanel.setAttribute('aria-busy', 'false');
     }
 
@@ -2846,6 +3002,7 @@
       currentResults = [];
       lastElapsed = '';
       copyAllButton.disabled = true;
+      clearCopyFeedback();
       const previous = copyTimers.get(copyAllButton);
       if (previous) clearTimeout(previous);
       const icon = copyAllButton.querySelector('.copy-icon');
@@ -2854,8 +3011,7 @@
     }
 
     function onAlgorithmsChanged() {
-      runToken += 1;
-      isCalculating = false;
+      stopCalculation();
       refreshAlgorithmStyles();
       clearResults();
       updateComparison();
@@ -2885,10 +3041,10 @@
     }
 
     function setSelectedFile(file) {
-      runToken += 1;
-      isCalculating = false;
+      stopCalculation();
       selectedFile = file || null;
       fileInput.value = '';
+      setFileNotice('');
       clearResults();
       updateComparison();
       updateComputeButton();
@@ -2917,31 +3073,43 @@
 
     function fallbackCopy(text) {
       const active = document.activeElement;
+      const selection = active && typeof active.selectionStart === 'number' ?
+        [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
       const textarea = document.createElement('textarea');
       textarea.value = text;
       textarea.setAttribute('readonly', '');
-      // 固定在视口左上角，聚焦时页面不会跳到底部；12pt 字号避免 iOS 聚焦时缩放页面。
+      // 固定在视口左上角；16px 避免 iOS 聚焦时缩放页面。
       textarea.style.position = 'fixed';
       textarea.style.top = '0';
       textarea.style.left = '0';
-      textarea.style.fontSize = '12pt';
+      textarea.style.fontSize = '16px';
       textarea.style.opacity = '0';
       document.body.append(textarea);
-      textarea.select();
-      // iOS Safari 的 select() 选不中只读文本框里的内容，需要再显式设置一次选区。
-      textarea.setSelectionRange(0, text.length);
-      let copied = false;
       try {
-        copied = document.execCommand('copy');
-      } catch (error) {
-        // 个别浏览器不允许复制时会直接抛错：同样按失败处理，临时文本框和焦点照常还原。
+        textarea.focus({preventScroll: true});
+        textarea.select();
+        textarea.setSelectionRange(0, text.length);
+        if (!document.execCommand('copy')) throw new Error('Clipboard copy failed');
+      } finally {
+        textarea.remove();
+        if (active && active.isConnected && typeof active.focus === 'function') {
+          active.focus({preventScroll: true});
+          if (selection) active.setSelectionRange(...selection);
+        }
       }
-      textarea.remove();
-      if (active && typeof active.focus === 'function') active.focus({preventScroll: true});
-      if (!copied) throw new Error('Clipboard copy failed');
+    }
+
+    function clearCopyFeedback() {
+      copyRequest += 1;
+      clearTimeout(copyStatusTimer);
+      copyStatus.textContent = '';
+      copyStatus.classList.remove('is-error');
     }
 
     async function copyText(text, button, message) {
+      clearCopyFeedback();
+      const request = copyRequest;
+      const stillCurrent = () => copyRequest === request && button.isConnected && !button.disabled;
       try {
         let copied = false;
         if (navigator.clipboard && window.isSecureContext) {
@@ -2952,11 +3120,15 @@
             // 权限被拒或页面被嵌入时 Clipboard API 会失败，改用 execCommand 再试一次。
           }
         }
+        if (!stillCurrent()) return;
         if (!copied) fallbackCopy(text);
         const icon = button.querySelector('.copy-icon');
         if (icon) icon.innerHTML = iconMarkup.check;
         button.classList.add('is-copied');
-        setStatus(message, 'match');
+        copyStatus.textContent = message;
+        copyStatusTimer = setTimeout(() => {
+          if (stillCurrent()) copyStatus.textContent = '';
+        }, 2400);
         const previous = copyTimers.get(button);
         if (previous) clearTimeout(previous);
         copyTimers.set(button, setTimeout(() => {
@@ -2966,7 +3138,10 @@
           button.classList.remove('is-copied');
         }, 1600));
       } catch (error) {
-        setStatus('复制失败，请检查浏览器的剪贴板权限。', 'error');
+        if (stillCurrent()) {
+          copyStatus.classList.add('is-error');
+          copyStatus.textContent = '复制失败，请检查剪贴板权限，或手动选择摘要。';
+        }
       }
     }
 
@@ -2991,131 +3166,186 @@
       });
     }
 
-    // Safari 14 之前和部分 WebView 的 Blob 没有 arrayBuffer()，这时改用 FileReader。
-    function readBlob(blob) {
-      if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
+    function readAbortError() {
+      return new DOMException('File read aborted', 'AbortError');
+    }
+
+    // 浏览器用 FileReader 读取，取消时能中止正在读的分块或整文件，而不只是丢掉结果。
+    function readBlob(blob, signal) {
+      if (signal.aborted) return Promise.reject(readAbortError());
+      if (typeof FileReader !== 'function') return blob.arrayBuffer();
       return new Promise((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error || new Error('Read failed'));
-        reader.onabort = () => reject(new Error('Read aborted'));
-        reader.readAsArrayBuffer(blob);
+        const finish = (settle, value) => {
+          signal.removeEventListener('abort', abort);
+          reader.onload = reader.onerror = reader.onabort = null;
+          settle(value);
+        };
+        const abort = () => {
+          finish(reject, readAbortError());
+          reader.abort();
+        };
+        reader.onload = () => finish(resolve, reader.result);
+        reader.onerror = () => finish(reject, reader.error || new Error('Read failed'));
+        reader.onabort = () => finish(reject, readAbortError());
+        signal.addEventListener('abort', abort, {once: true});
+        try {
+          reader.readAsArrayBuffer(blob);
+        } catch (error) {
+          finish(reject, error);
+        }
       });
     }
 
-    async function hashFile(file, ids, token, onProgress) {
-      const subtle = window.crypto && crypto.subtle;
-      const useBuffer = file.size <= BUFFER_LIMIT && subtle && ids.some(id => WEB_CRYPTO.has(id));
-      let bytes = null;
-      if (useBuffer) {
-        try {
-          bytes = new Uint8Array(await readBlob(file));
-          // 一次性读到的字节数对不上文件大小时不能悄悄按截断的数据算：改走流式处理，
-          // 流式那边会逐块核对长度，读不全时会显式报错。
-          if (bytes.length !== file.size) bytes = null;
-        } catch (error) {
-          // 内存不足或一次性读取失败时，退回到分块流式处理。
-          bytes = null;
-        }
-        if (token !== runToken) return null;
-      }
-      if (bytes) {
-        const results = [];
-        const step = 1024 * 1024;
-        let lastYield = performance.now();
-        for (let i = 0; i < ids.length; i += 1) {
-          if (token !== runToken) return null;
-          const id = ids[i];
-          onProgress(i / ids.length, id);
-          let hex = null;
-          if (WEB_CRYPTO.has(id)) {
-            try {
-              hex = bytesToHex(new Uint8Array(await subtle.digest(id, bytes)));
-              lastYield = performance.now();
-            } catch (error) {
-              hex = null;
-            }
+    const HASH_STEP = 256 * 1024;
+    const SLICE_SIZE = 1024 * 1024;
+    // 原生 digest() 无法中止，快速重算时，新任务走流式路径，不再同时读入另一份大文件。
+    let bufferedHashBusy = false;
+
+    async function hashBuffered(bytes, ids, subtle, signal, onProgress) {
+      const results = [];
+      let lastYield = performance.now();
+      for (let i = 0; i < ids.length; i += 1) {
+        if (signal.aborted) return null;
+        const id = ids[i];
+        onProgress(i / ids.length, id);
+        if (signal.aborted) return null;
+        let hex = '';
+        if (WEB_CRYPTO.has(id)) {
+          try {
+            const digest = new Uint8Array(await subtle.digest(id, bytes));
+            if (digest.length === ALGORITHMS.find(item => item.id === id).bits / 8) hex = bytesToHex(digest);
+            lastYield = performance.now();
+          } catch (error) {
+            // 原生计算失败，仍用已读取的字节走纯 JS 路径。
           }
-          if (hex === null) {
-            const hasher = createHasher(id);
-            for (let offset = 0; offset < bytes.length; offset += step) {
-              if (token !== runToken) return null;
-              hasher.update(bytes.subarray(offset, offset + step));
-              onProgress((i + Math.min(1, (offset + step) / bytes.length)) / ids.length, id);
-              if (performance.now() - lastYield > 30) {
-                await yieldUi();
-                lastYield = performance.now();
-                if (token !== runToken) return null;
-              }
-            }
-            hex = hasher.digest();
+        }
+        if (signal.aborted) return null;
+        if (!hex) {
+          const hasher = createHasher(id);
+          for (let offset = 0; offset < bytes.length; offset += HASH_STEP) {
+            if (signal.aborted) return null;
+            hasher.update(bytes.subarray(offset, offset + HASH_STEP));
+            const done = Math.min(1, (offset + HASH_STEP) / bytes.length);
+            onProgress((i + done) / ids.length, id);
             if (performance.now() - lastYield > 30) {
               await yieldUi();
               lastYield = performance.now();
             }
           }
-          if (token !== runToken) return null;
-          results.push({algorithm: id, hex});
-          onProgress((i + 1) / ids.length, id);
+          if (signal.aborted) return null;
+          hex = hasher.digest();
         }
-        return results;
+        results.push({algorithm: id, hex});
+        onProgress((i + 1) / ids.length, id);
       }
+      return signal.aborted ? null : results;
+    }
 
+    async function hashStreamed(file, ids, signal, onProgress) {
       const hashers = ids.map(id => ({id, hasher: createHasher(id)}));
-      const sliceSize = 1024 * 1024;
       const readSlice = offset => {
-        const pending = readBlob(file.slice(offset, offset + sliceSize)).then(buffer => new Uint8Array(buffer));
+        const pending = readBlob(file.slice(offset, Math.min(offset + SLICE_SIZE, file.size)), signal).then(buffer => new Uint8Array(buffer));
+        // 预读可能在当前块计算时失败；等用到该块再报告错误。
         pending.catch(() => {});
         return pending;
       };
-      // 计算当前分块的同时预读下一块，让磁盘读取和哈希重叠进行。
+      // 空文件也应尝试打开，不能把已删除、不可读或伪装成空文件的项目直接算成空摘要。
+      if (file.size === 0) {
+        const empty = await readBlob(file, signal);
+        if (signal.aborted) return null;
+        if (empty.byteLength !== 0) throw new Error('Unexpected file read length');
+        onProgress(1);
+      }
       let next = file.size > 0 ? readSlice(0) : null;
       let lastYield = performance.now();
-      for (let offset = 0; offset < file.size; offset += sliceSize) {
-        if (token !== runToken) return null;
+      for (let offset = 0; offset < file.size; offset += SLICE_SIZE) {
+        if (signal.aborted) return null;
         const bytes = await next;
-        // 等待读取期间可能已经取消：不再预读下一块，也不再白白计算这一块。
-        if (token !== runToken) return null;
-        // 分块长度与请求范围不符时，继续计算会跳过缺失数据或混入额外字节，产生错误摘要。
-        if (bytes.length !== Math.min(sliceSize, file.size - offset)) throw new Error('Unexpected end of file');
-        next = offset + sliceSize < file.size ? readSlice(offset + sliceSize) : null;
-        // 同时选了很多算法时，一块数据要算很久，每个算法之后都检查一次是否该让出线程。
-        for (const item of hashers) {
-          item.hasher.update(bytes);
-          if (performance.now() - lastYield > 30) {
-            await yieldUi();
-            lastYield = performance.now();
-            if (token !== runToken) return null;
+        if (signal.aborted) return null;
+        if (bytes.length !== Math.min(SLICE_SIZE, file.size - offset)) throw new Error('Unexpected file read length');
+        next = offset + SLICE_SIZE < file.size ? readSlice(offset + SLICE_SIZE) : null;
+        for (const {hasher} of hashers) {
+          for (let start = 0; start < bytes.length; start += HASH_STEP) {
+            hasher.update(bytes.subarray(start, start + HASH_STEP));
+            if (performance.now() - lastYield > 30) {
+              await yieldUi();
+              lastYield = performance.now();
+              if (signal.aborted) return null;
+            }
           }
         }
-        onProgress(Math.min(1, (offset + bytes.length) / Math.max(file.size, 1)));
+        onProgress((offset + bytes.length) / file.size);
       }
-      if (token !== runToken) return null;
+      if (signal.aborted) return null;
       return hashers.map(item => ({algorithm: item.id, hex: item.hasher.digest()}));
+    }
+
+    async function hashFile(file, ids, signal, onProgress) {
+      if (signal.aborted) return null;
+      const subtle = window.crypto && window.crypto.subtle;
+      try {
+        if (!bufferedHashBusy && file.size <= BUFFER_LIMIT && subtle && ids.some(id => WEB_CRYPTO.has(id))) {
+          bufferedHashBusy = true;
+          try {
+            let bytes;
+            try {
+              bytes = new Uint8Array(await readBlob(file, signal));
+            } catch (error) {
+              // 整文件读不进内存时改走分块读取。
+            }
+            if (signal.aborted) return null;
+            if (bytes && bytes.length === file.size) return await hashBuffered(bytes, ids, subtle, signal, onProgress);
+          } finally {
+            bufferedHashBusy = false;
+          }
+        }
+        return await hashStreamed(file, ids, signal, onProgress);
+      } catch (error) {
+        if (signal.aborted) return null;
+        throw error;
+      }
     }
 
     // 结果已经显示时，状态栏跟随最新的比对结论，不留下过时的信息。
     function reportOutcome() {
-      const verdict = compareBanner.querySelector('strong');
       const elapsed = lastElapsed ? `，用时 ${lastElapsed}` : '';
-      if ((hasExpectedValue() || expectedInvalid) && verdict && !compareBanner.hidden) {
-        const isError = compareBanner.classList.contains('is-mismatch') || compareBanner.classList.contains('is-invalid');
-        setStatus(`${verdict.textContent}${elapsed}`, compareBanner.classList.contains('is-match') ? 'match' : isError ? 'error' : '');
+      if (currentVerdict) {
+        const {kind, title} = currentVerdict;
+        setStatus(`${title}${elapsed}`, kind === 'match' ? 'match' : kind === 'mismatch' || kind === 'invalid' ? 'error' : '');
       } else {
         setStatus(`已完成 ${currentResults.length} 种摘要计算${elapsed}。`, 'match');
       }
     }
 
+    function calculationController() {
+      if (typeof AbortController === 'function') return new AbortController();
+      // 旧 WebView 仍有可中止的 FileReader；用本地事件传递取消，不依赖全局 polyfill。
+      const events = document.createDocumentFragment();
+      const signal = {aborted: false, addEventListener: events.addEventListener.bind(events),
+        removeEventListener: events.removeEventListener.bind(events)};
+      return {signal, abort() {
+        if (signal.aborted) return;
+        signal.aborted = true;
+        events.dispatchEvent(new Event('abort'));
+      }};
+    }
+
+    function stopCalculation() {
+      const controller = activeCalculation;
+      activeCalculation = null;
+      if (controller) controller.abort();
+    }
+
     function cancelCalculation() {
-      runToken += 1;
-      isCalculating = false;
+      stopCalculation();
       updateComputeButton();
       setStatus('已取消计算。');
       renderMessage('已取消计算', '点击计算可以重新开始。');
     }
 
     async function computeHashes() {
-      if (isCalculating) {
+      if (activeCalculation) {
         cancelCalculation();
         return;
       }
@@ -3126,45 +3356,53 @@
         return;
       }
       const file = selectedFile;
-      const token = ++runToken;
+      const controller = calculationController();
+      const {signal} = controller;
       clearResults();
       // 上一轮的结果已经清空，比对横幅也跟着回到“等待计算结果”，重算、取消或出错后不再留着旧结论。
       updateComparison();
-      isCalculating = true;
+      activeCalculation = controller;
       updateComputeButton();
       setStatus('正在读取文件并计算摘要…');
-      renderMessage('正在计算摘要', '大文件可能需要一点时间，请保持页面打开。', 'loading', 0.04);
+      renderMessage('正在计算摘要', '大文件可能需要一点时间，请保持页面打开。', 'loading');
       const started = performance.now();
+      let finished = false;
       try {
         let lastPaint = -Infinity;
         let lastName;
-        const results = await hashFile(file, ids, token, (progress, name) => {
-          if (token !== runToken) return;
+        const results = await hashFile(file, ids, signal, (progress, name) => {
+          if (signal.aborted) return;
           const now = performance.now();
           if (name === lastName && now - lastPaint < 100) return;
           lastName = name;
           lastPaint = now;
-          const percent = Math.round(progress * 100);
+          const percent = progressPercent(progress);
           setStatus(name ? `正在计算 ${name} · ${percent}%` : `正在读取并计算 · ${percent}%`, '', true);
           showProgress(name ? `当前算法 ${name}` : '文件正在分块处理。', progress);
         });
-        if (!results || token !== runToken) return;
-        renderResults(results);
+        if (!results || signal.aborted) return;
+        currentResults = results;
         lastElapsed = formatDuration(performance.now() - started);
         updateComparison();
+        renderResults();
         reportOutcome();
-        // 偏好减少动态效果时直接跳到结果，而不是干脆不滚动：小屏幕上结果可能在视口之外。
-        const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-        resultsSection.scrollIntoView({behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest'});
+        finished = true;
       } catch (error) {
-        if (token !== runToken) return;
+        if (signal.aborted) return;
+        controller.abort();
+        clearResults();
+        updateComparison();
         renderMessage('无法计算摘要', '文件读取失败或浏览器无法处理该文件，请重新选择后再试。', 'error');
         setStatus('计算未完成，请重试。', 'error');
       } finally {
-        if (token === runToken) {
-          isCalculating = false;
+        if (activeCalculation === controller) {
+          activeCalculation = null;
           updateComputeButton();
         }
+      }
+      if (finished && typeof resultsSection.scrollIntoView === 'function') {
+        const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        resultsSection.scrollIntoView({behavior: reduceMotion ? 'auto' : 'smooth', block: 'nearest'});
       }
     }
 
@@ -3238,29 +3476,12 @@
       });
     }
 
-    const BACKGROUND_COLORS = {
-      violet: ['#f7f5fa', '#141218'],
-      blue: ['#f5f7fc', '#10141a'],
-      teal: ['#f4f8f7', '#101615'],
-      green: ['#f5f8f4', '#111612'],
-      orange: ['#faf6f3', '#161310'],
-      rose: ['#faf5f7', '#161214']
-    };
-
-    function updateThemeColor() {
-      const accent = document.documentElement.dataset.accent || 'violet';
-      const dark = document.documentElement.dataset.theme === 'dark';
-      const colors = BACKGROUND_COLORS[accent] || BACKGROUND_COLORS.violet;
-      const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.content = colors[dark ? 1 : 0];
-    }
-
     function setAccent(accent, keepOpen = false) {
       document.documentElement.dataset.accent = accent;
       updateSwatches();
       updateThemeColor();
       if (!keepOpen) closePalette();
-      try {localStorage.setItem('hashroom-accent', accent);} catch (error) { }
+      storeSetting('hashroom-accent', accent);
     }
 
     function setTheme(theme, persist = true) {
@@ -3269,8 +3490,10 @@
       themeToggle.setAttribute('aria-label', dark ? '切换浅色模式' : '切换深色模式');
       themeToggle.title = dark ? '切换浅色模式' : '切换深色模式';
       updateThemeColor();
-      if (!persist) return;
-      try {localStorage.setItem('hashroom-theme', theme);} catch (error) { }
+      if (persist) {
+        themePreference = theme;
+        storeSetting('hashroom-theme', theme);
+      }
     }
 
     function closePalette() {
@@ -3292,9 +3515,9 @@
         if (fallback) fallback.checked = true;
       }
       refreshAlgorithmStyles();
-      updateComputeButton();
       // 停用后重新算一遍可补选的算法，别再建议已经停用的那几个。
       updateComparison();
+      updateComputeButton();
       const names = ids.join('、');
       setStatus(`算法自检未通过：${names}，已暂停使用。`, 'error');
       renderMessage('算法自检未通过', `${names} 的计算结果与标准测试向量不一致，已暂停这些算法，其他算法不受影响。`, 'error');
@@ -3348,15 +3571,17 @@
         ['SHA3-512', MSG112, 'afebb2ef542e6579c50cad06d2e578f9f8dd6881d7dc824d26360feebf18a4fa73e3261122948efcfd492e74e82e2189ed0fb440d187f382270cb455f21dd185']
       ];
       const failed = new Set();
-      const encoder = new TextEncoder();
+      const encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+      // 自检向量全是 ASCII；旧 WebView 没有 TextEncoder 时仍能运行自检。
+      const encode = text => encoder ? encoder.encode(text) : Uint8Array.from(text, char => char.charCodeAt(0));
       vectors.forEach(([id, text, expected]) => {
         try {
-          if (digestBytes(id, encoder.encode(text)) !== expected) failed.add(id);
+          if (digestBytes(id, encode(text)) !== expected) failed.add(id);
         } catch (error) {
           failed.add(id);
         }
       });
-      const sample = encoder.encode(MSG112 + MSG56);
+      const sample = encode(MSG112 + MSG56);
       ALGORITHMS.forEach(item => {
         try {
           const whole = digestBytes(item.id, sample);
@@ -3383,51 +3608,63 @@
       if (event.target.files && event.target.files.length) setSelectedFile(event.target.files[0]);
     });
     ['dragenter', 'dragover'].forEach(type => dropzone.addEventListener(type, event => {
-      if (!hasFiles(event)) return;
+      if (!hasFiles(event.dataTransfer)) return;
       event.preventDefault();
       dropzone.classList.add('is-dragging');
     }));
     dropzone.addEventListener('dragleave', event => {
       if (!dropzone.contains(event.relatedTarget)) dropzone.classList.remove('is-dragging');
     });
-    dropzone.addEventListener('drop', event => {
-      if (!hasFiles(event)) return;
-      event.preventDefault();
-      dropzone.classList.remove('is-dragging');
-      acceptDrop(event);
-    });
-    function acceptDrop(event) {
-      const transfer = event.dataTransfer;
-      if (!transfer || !transfer.files.length) return;
-      const item = transfer.items && [...transfer.items].find(entry => entry.kind === 'file');
-      const entry = item && typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null;
-      if (entry && entry.isDirectory) {
-        setStatus('不支持文件夹，请拖入单个文件。', 'error');
-        return;
-      }
-      setSelectedFile(transfer.files[0]);
-      if (transfer.files.length > 1 && selectedAlgorithms().length) {
-        setStatus(`一次只能计算一个文件，已选择第一个，忽略其余 ${transfer.files.length - 1} 个。`);
-      }
+    function setFileNotice(message, error = false) {
+      fileNotice.classList.toggle('is-error', error);
+      fileNotice.textContent = message;
     }
 
-    function hasFiles(event) {
-      const transfer = event.dataTransfer;
-      if (!transfer) return false;
-      // 个别浏览器（以及部分 WebView）在 drop 时 types 可能不含 'Files'，但 files 里已经有文件；
-      // 只认 types 会让这次拖放不被接管，浏览器直接打开文件、页面状态全部丢失。
-      return Boolean((transfer.files && transfer.files.length) || Array.from(transfer.types || []).includes('Files'));
+    function transferItems(transfer) {
+      return Array.from(transfer.items || []).filter(item => item.kind === 'file');
+    }
+
+    function acceptDrop(transfer) {
+      const files = transfer.files || [];
+      const items = transferItems(transfer);
+      const first = items[0];
+      const getEntry = first && (first.getAsEntry || first.webkitGetAsEntry);
+      let entry;
+      if (typeof getEntry === 'function') {
+        try { entry = getEntry.call(first); } catch (error) { /* 改用 FileList */ }
+      }
+      if (entry && entry.isDirectory) {
+        setFileNotice('不支持文件夹，请拖入单个文件。', true);
+        return;
+      }
+      const fromItem = first && typeof first.getAsFile === 'function' ? first.getAsFile() : null;
+      const file = fromItem || files[0];
+      if (!file) {
+        setFileNotice('未读取到文件，请选择单个文件。', true);
+        return;
+      }
+      setSelectedFile(file);
+      const count = Math.max(files.length, items.length);
+      if (count > 1) setFileNotice(`一次只能计算一个文件，已选择第一个，忽略其余 ${count - 1} 项。`);
+    }
+
+    function hasFiles(transfer) {
+      // 有的浏览器在拖放时只填充 types、FileList 或 DataTransferItemList 之一。
+      return Boolean(transfer && ((transfer.files && transfer.files.length) ||
+        Array.from(transfer.types || []).includes('Files') || transferItems(transfer).length));
     }
     window.addEventListener('dragover', event => {
-      if (hasFiles(event)) event.preventDefault();
+      if (!hasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
     });
     window.addEventListener('drop', event => {
-      // 拖放区自己的处理函数已经调用过 preventDefault，这里只接管落在页面其他位置的文件。
-      if (!hasFiles(event) || event.defaultPrevented) return;
-      event.preventDefault();
       dropzone.classList.remove('is-dragging');
-      acceptDrop(event);
+      if (!hasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      acceptDrop(event.dataTransfer);
     });
+    window.addEventListener('dragend', () => dropzone.classList.remove('is-dragging'));
     clearFileButton.addEventListener('click', () => {
       setSelectedFile(null);
       // 清除按钮随即隐藏，把焦点交给选择区域，键盘用户不会丢失位置。
@@ -3438,26 +3675,22 @@
       setCheckedAlgorithms(ALGORITHMS.filter(item => item.group === 'common').map(item => item.id), true);
     });
     document.getElementById('selectAll').addEventListener('click', () => setCheckedAlgorithms(ALGORITHMS.map(item => item.id), true));
-    expectedInput.addEventListener('input', () => {
+    function onExpectedChanged() {
       updateComparison();
       updateComputeButton();
       if (currentResults.length) {
-        renderResults(currentResults, false);
+        currentResults.forEach((result, index) => refreshDigestRow(resultsPanel.children[index], result));
         reportOutcome();
       }
-    });
+    }
+    expectedInput.addEventListener('input', onExpectedChanged);
     clearExpected.addEventListener('click', () => {
       expectedInput.value = '';
-      updateComparison();
-      updateComputeButton();
-      if (currentResults.length) {
-        renderResults(currentResults, false);
-        reportOutcome();
-      }
+      onExpectedChanged();
       expectedInput.focus();
     });
     applySuggested.addEventListener('click', () => {
-      setCheckedAlgorithms(candidateAlgorithms(), false);
+      setCheckedAlgorithms(missingCandidates(), false);
       // 补选后按钮随即隐藏，把焦点交给下一步操作的控件。
       (computeButton.disabled ? dropzone : computeButton).focus();
     });
@@ -3500,11 +3733,8 @@
     themeToggle.addEventListener('click', () => {
       setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
     });
-    const darkQuery = matchMedia('(prefers-color-scheme: dark)');
     const onSchemeChange = event => {
-      let saved = null;
-      try {saved = localStorage.getItem('hashroom-theme');} catch (error) { }
-      if (!saved) setTheme(event.matches ? 'dark' : 'light', false);
+      if (!themePreference) setTheme(event.matches ? 'dark' : 'light', false);
     };
     // 旧版 Safari 的 MediaQueryList 只有 addListener。
     if (darkQuery.addEventListener) darkQuery.addEventListener('change', onSchemeChange);

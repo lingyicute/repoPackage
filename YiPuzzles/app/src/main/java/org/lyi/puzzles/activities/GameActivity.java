@@ -20,17 +20,11 @@ package org.lyi.puzzles.activities;
 
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
-import android.app.Activity;
-import android.content.DialogInterface;
-import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.res.Configuration;
 import android.os.Bundle;
+import android.os.SystemClock;
 import androidx.preference.PreferenceManager;
-import android.util.DisplayMetrics;
-import android.util.Log;
 import android.view.KeyEvent;
-import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -41,22 +35,17 @@ import android.widget.TextView;
 import org.lyi.puzzles.R;
 
 import androidx.appcompat.app.ActionBar;
+import androidx.appcompat.app.AlertDialog;
 
 import com.google.android.material.appbar.MaterialToolbar;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import org.lyi.puzzles.activities.helper.BaseActivityWithoutNavBar;
 import org.lyi.puzzles.activities.helper.GameState;
+import org.lyi.puzzles.activities.helper.GameStorage;
 import org.lyi.puzzles.activities.helper.GameStatistics;
 import org.lyi.puzzles.activities.helper.Gestures;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
-import java.util.Calendar;
 
 /**
  * This activity contains the entire game and draws the game field depending on the selected mode and the screen size.
@@ -75,94 +64,87 @@ import java.util.Calendar;
  */
 
 public class GameActivity extends BaseActivityWithoutNavBar {
-    public static int n = 4;
+    private int n;
     public TextView textFieldPoints;
     public TextView textFieldRecord;
-    public int numberFieldSize = 0;
-    static Element[][] elements = null;
-    static Element[][] last_elements = null;
-    static Element[][] backgroundElements;
-    static GameState gameState = null;
+    private int numberFieldSize;
+    Element[][] elements;
+    Element[][] last_elements;
+    Element[][] backgroundElements;
+    private GameState gameState;
 
     RelativeLayout number_field;
     RelativeLayout number_field_background;
     RelativeLayout touch_field;
     MaterialButton restartButton;
     MaterialButton undoButton;
-    public static int points = 0;
-    public static int last_points = 0;
-    public static long record = 0;
+    private int points;
+    private int last_points;
+    private long record;
 
-    public static long ADDINGSPEED = 100;
-    public static long MOVINGSPEED = 80;
-    public static long SCALINGSPEED = 100;
-    public static float SCALINGFACTOR = 1.1f;
+    private static final long ADDINGSPEED = 100;
+    private static final long MOVINGSPEED = 80;
+    private static final long SCALINGSPEED = 100;
+    private static final float SCALINGFACTOR = 1.1f;
 
-    public static boolean moved = false;
-    public static boolean firstTime = true;
-    public static boolean newGame;
-    public boolean won2048 = false;
-    public static boolean gameOver = false;
-    public static boolean createNewGame = true;
-    public static boolean undo = false;
-    public static boolean animationActivated = true;
-    public static boolean saveState = true;
+    private boolean moved;
+    private boolean newGame;
+    private boolean won2048;
+    private boolean winPending;
+    private AlertDialog roundDialog;
+    private boolean gameOver;
+    private boolean undo;
+    private boolean animationActivated;
+    private boolean saveState = true;
 
-    public final int WINTHRESHOLD = 2048;
-    public final double PROPABILITYFORTWO = 0.9;
-    View.OnTouchListener swipeListener;
-
-
-    static String filename;
-
-    SharedPreferences sharedPref;
-
-    GameStatistics gameStatistics = new GameStatistics(n);
-    public static long startingTime;
-    public int highestNumber;
-
-    private Activity myActivity;
-
-
-    @Override
-    public void onPause() {
-        Log.i("lifecycle", "pause");
-        save();
-
-        super.onPause();
-
-    }
+    private static final int WINTHRESHOLD = 2048;
+    private static final int MAX_TILE = 1 << 30;
+    private static final double PROBABILITY_FOR_TWO = 0.9;
+    private View.OnTouchListener swipeListener;
+    private GameStatistics gameStatistics;
+    private long startingTime = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        n = requestedBoardSize();
+        gameStatistics = GameStorage.readStatistics(getFilesDir(), n);
+        record = gameStatistics.getRecord();
+        // A recreated activity resumes its round even if the original launch started a new one.
+        initializeState(savedInstanceState == null && getIntent().getBooleanExtra("new", true));
 
-        myActivity = this;
-        saveState = true;
-
-        if (savedInstanceState == null) {
-            Intent intent = getIntent();
-            if (firstTime && intent.getBooleanExtra("new", true)) {
-                createNewGame = true;
-                firstTime = false;
-            }
-        }
-
-        sharedPref = PreferenceManager.getDefaultSharedPreferences(this);
+        SharedPreferences sharedPref = PreferenceManager.getDefaultSharedPreferences(this);
         animationActivated = sharedPref.getBoolean("pref_animationActivated", true);
-
-        if (sharedPref.getBoolean("switch_preference_1", true))
+        if (sharedPref.getBoolean("switch_preference_1", true)) {
             getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
         setContentView(R.layout.activity_game);
-
         setupToolbar();
         initResources();
-
-
     }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        startingTime = SystemClock.elapsedRealtime();
+        presentRoundDialog();
+    }
+
+    @Override
+    protected void onPause() {
+        if (startingTime >= 0) {
+            gameStatistics.addTimePlayed(SystemClock.elapsedRealtime() - startingTime);
+            startingTime = -1;
+        }
+        saveStateToFile(gameState);
+        saveStatisticsToFile(gameStatistics);
+        super.onPause();
+    }
+
     private void handleUndo() {
         undoButton.setVisibility(View.INVISIBLE);
         if (undo && last_elements != null) {
+            undo = false;
             gameStatistics.undo();
             elements = last_elements;
             points = last_points;
@@ -186,7 +168,6 @@ public class GameActivity extends BaseActivityWithoutNavBar {
             drawAllElements(elements);
             number_field.refreshDrawableState();
         }
-        undo = false;
     }
     /** Material 3 top app bar with up navigation and the board size as subtitle. */
     private void setupToolbar() {
@@ -196,8 +177,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
         if (actionBar != null) {
             actionBar.setDisplayHomeAsUpEnabled(true);
             actionBar.setTitle(R.string.title_activity_game);
-            int size = getIntent().getIntExtra("n", 4);
-            actionBar.setSubtitle(size + "x" + size);
+            actionBar.setSubtitle(n + "x" + n);
         }
     }
 
@@ -208,97 +188,56 @@ public class GameActivity extends BaseActivityWithoutNavBar {
         textFieldPoints = (TextView) findViewById(R.id.points);
         textFieldRecord = (TextView) findViewById(R.id.record);
         restartButton = (MaterialButton) findViewById(R.id.restartButton);
-        restartButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                saveStatisticsToFile(gameStatistics);
-                createNewGame();
+        restartButton.setOnClickListener(v -> createNewGame());
+        undoButton = findViewById(R.id.undoButton);
+        undoButton.setVisibility(View.INVISIBLE);
+        undoButton.setOnClickListener(v -> handleUndo());
+
+        // Directions are physical left/right, regardless of the surrounding UI language.
+        number_field.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        number_field_background.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        touch_field.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+            ViewGroup.MarginLayoutParams margins = (ViewGroup.MarginLayoutParams) number_field.getLayoutParams();
+            int width = right - left - margins.leftMargin - margins.rightMargin;
+            int height = bottom - top - margins.topMargin - margins.bottomMargin;
+            int side = Math.min(width, height);
+            if (side >= n && side != numberFieldSize) {
+                numberFieldSize = side;
+                resizeBoardLayer(number_field);
+                resizeBoardLayer(number_field_background);
+                initialize();
             }
         });
-        undoButton = (MaterialButton) findViewById(R.id.undoButton);
-
-        undoButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                handleUndo();
-            }
-        });
-
-        startingTime = Calendar.getInstance().getTimeInMillis();
     }
 
-    @Override
-    public void onConfigurationChanged(Configuration newConfig) {
-        // TODO Auto-generated method stub
-        createNewGame = false;
-        super.onConfigurationChanged(newConfig);
+    private void resizeBoardLayer(View layer) {
+        ViewGroup.LayoutParams params = layer.getLayoutParams();
+        params.width = numberFieldSize;
+        params.height = numberFieldSize;
+        layer.setLayoutParams(params);
     }
 
-    public void save() {
-        Log.i("saving", "save");
-        if (!createNewGame)
-            saveStateToFile(gameState);
-        gameStatistics.addTimePlayed(Calendar.getInstance().getTimeInMillis() - startingTime);
-        startingTime = Calendar.getInstance().getTimeInMillis();
+    private void createNewGame() {
         saveStatisticsToFile(gameStatistics);
-        firstTime = true;
+        initializeState(true);
+        if (numberFieldSize > 0) initialize();
     }
 
-    @Override
-    public void onBackPressed() {
-        save();
-
-        super.onBackPressed();
-
+    private int requestedBoardSize() {
+        int size = getIntent().getIntExtra("n", 4);
+        return size >= 4 && size <= 7 ? size : 4;
     }
 
-    public void createNewGame() {
-        createNewGame = true;
-        getIntent().putExtra("new", true);
-        number_field.removeAllViews();
-        number_field_background.removeAllViews();
-        initialize();
-
-    }
-
-    protected void start() {
-        Log.i("activity", "start");
-        saveState = true;
-        android.view.ViewGroup.LayoutParams lp = number_field.getLayoutParams();
-
-        //setting squared Number Field
-        if (number_field.getHeight() > number_field.getWidth())
-            lp.height = number_field.getWidth();
-        else
-            lp.width = number_field.getHeight();
-        number_field.setLayoutParams(lp);
-        number_field_background.setLayoutParams(lp);
-
-        initialize();
-        setListener();
-
-    }
-
-    public void initializeState() {
-        points = 0;
-        Intent intent = getIntent();
-        n = intent.getIntExtra("n", 4);
-        newGame = intent.getBooleanExtra("new", true);
-        filename = intent.getStringExtra("filename");
-        undo = intent.getBooleanExtra("undo", false);
-        if (!newGame) {
-            gameState = readStateFromFile();
-            points = gameState.points;
-            last_points = gameState.last_points;
-        } else {
-            gameState = new GameState(n);
-        }
-        elements = new Element[n][n];
-        last_elements = new Element[n][n];
-        backgroundElements = new Element[n][n];
-        saveState = true;
-
-
+    private void initializeState(boolean startFresh) {
+        GameState stored = startFresh ? null : GameStorage.readState(getFilesDir(), n);
+        newGame = stored == null;
+        gameState = newGame ? new GameState(n) : stored;
+        points = gameState.points;
+        last_points = gameState.last_points;
+        undo = gameState.undo;
+        won2048 = false;
+        winPending = gameState.winPending;
+        gameOver = false;
     }
 
     public void drawAllElements(Element[][] e) {
@@ -315,28 +254,21 @@ public class GameActivity extends BaseActivityWithoutNavBar {
         gameState.points = points;
         gameState.last_points = last_points;
         gameState.undo = undo;
+        boolean hasWon = hasWinningTile();
+        winPending = hasWon && (!won2048 || winPending);
+        won2048 = hasWon;
+        gameState.winPending = winPending;
+        gameOver = !canMove();
         updateHighestNumber();
-        check2048();
 
     }
 
     public void initialize() {
-        Log.i("activity", "initialize");
-        if (getIntent().getIntExtra("n", 4) != n || createNewGame) {
-            initializeState();
-
-        }
-        gameStatistics = readStatisticsFromFile();
-        record = gameStatistics.getRecord();
-        last_points = gameState.last_points;
-        createNewGame = false;
-        DisplayMetrics metrics = new DisplayMetrics();
-        getWindowManager().getDefaultDisplay().getMetrics(metrics);
-        int abstand = (10 * metrics.densityDpi) / DisplayMetrics.DENSITY_DEFAULT;
-        numberFieldSize = number_field.getWidth();
-        if (numberFieldSize > number_field.getHeight())
-            numberFieldSize = number_field.getHeight();
-        int number_size = (numberFieldSize - abstand) / n - abstand;
+        elements = new Element[n][n];
+        backgroundElements = new Element[n][n];
+        int desiredGap = Math.round(10 * getResources().getDisplayMetrics().density);
+        int gap = Math.min(desiredGap, (numberFieldSize - n) / (n + 1));
+        int number_size = (numberFieldSize - (n + 1) * gap) / n;
 
         textFieldRecord.setText("" + record);
         textFieldPoints.setText("" + points);
@@ -356,16 +288,12 @@ public class GameActivity extends BaseActivityWithoutNavBar {
                 elements[i][j].setNumber(gameState.getNumber(i, j));
 
                 elements[i][j].drawItem();
-                if (elements[i][j].getNumber() >= WINTHRESHOLD)
-                    won2048 = true;
                 RelativeLayout.LayoutParams lp = new RelativeLayout.LayoutParams(number_size, number_size);
-                lp.setMarginStart(abstand + j * (number_size + abstand));
-                lp.topMargin = abstand + i * (number_size + abstand);
-                elements[i][j].setDPosition(lp.getMarginStart(), lp.topMargin);
+                lp.leftMargin = gap + j * (number_size + gap);
+                lp.topMargin = gap + i * (number_size + gap);
+                elements[i][j].setDPosition(lp.leftMargin, lp.topMargin);
                 elements[i][j].setLayoutParams(lp);
-                backgroundElements[i][j].setLayoutParams(lp);
-                backgroundElements[i][j].setOnTouchListener(swipeListener);
-                elements[i][j].setOnTouchListener(swipeListener);
+                backgroundElements[i][j].setLayoutParams(new RelativeLayout.LayoutParams(lp));
                 number_field_background.addView(backgroundElements[i][j]);
                 number_field.addView(elements[i][j]);
             }
@@ -379,12 +307,15 @@ public class GameActivity extends BaseActivityWithoutNavBar {
             }
         }
         if (newGame) {
-            moved = true;
             addNumber();
-            moved = true;
             addNumber();
             newGame = false;
         }
+        // Existing wins from older archives are already acknowledged.
+        won2048 = hasWinningTile();
+        updateGameState();
+        setListener();
+        presentRoundDialog();
     }
 
     public void switchElementPositions(Element e1, Element e2) {
@@ -410,10 +341,12 @@ public class GameActivity extends BaseActivityWithoutNavBar {
     }
 
     private boolean handleSwipeTop() {
+        if (winPending || gameOver || roundDialog != null) return false;
+        settleAnimations();
         Element[][] temp = deepCopy(elements);
         int temp_points = points;
         moved = false;
-        Element s = new Element(myActivity);
+        Element s = new Element(this);
 
         for (int i = 0; i < elements.length; i++) {
             s.number = elements[0][i].number;
@@ -422,7 +355,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
 
 
             for (int j = 1; j < elements[i].length; j++) {
-                if (elements[j][i].number != 0 && (s.number == 0 || s.number == elements[j][i].number)) {
+                if (elements[j][i].number != 0 && (s.number == 0 || canMerge(s.number, elements[j][i].number))) {
                     moved = true;
                     elements[j][i].setNumber(s.number + elements[j][i].number);
                     elements[s.posX][s.posY].setNumber(0);
@@ -431,7 +364,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
                     elements[j][i] = elements[s.posX][s.posY];
                     elements[s.posX][s.posY] = z;
                     if (s.number != 0)
-                        points += elements[s.posX][s.posY].number;
+                        points = (int) Math.min(Integer.MAX_VALUE, (long) points + elements[s.posX][s.posY].number);
                     if (s.number != 0)
                         s.posX++;
                     j = s.posX;
@@ -471,27 +404,16 @@ public class GameActivity extends BaseActivityWithoutNavBar {
             }
 
         }
-        if (moved) {
-            gameStatistics.addMoves(1);
-            last_points = temp_points;
-            last_elements = temp;
-            undoButton.setVisibility(View.VISIBLE);
-            undo = true;
-        }
-        if (moved)
-            gameStatistics.moveT();
-        addNumber();
-        setDPositions(animationActivated);
-        updateGameState();
-        //es wurde nach oben gewischt, hier den Code einfügen
-        return false;
+        return finishMove(temp, temp_points, gameStatistics::moveT);
     }
 
     private boolean handleSwipeRight() {
+        if (winPending || gameOver || roundDialog != null) return false;
+        settleAnimations();
         Element[][] temp = deepCopy(elements);
         int temp_points = points;
         moved = false;
-        Element s = new Element(myActivity);
+        Element s = new Element(this);
         for (int i = 0; i < elements.length; i++) {
             s.number = elements[i][elements[i].length - 1].number;
             s.posX = i;
@@ -499,7 +421,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
 
 
             for (int j = elements[i].length - 2; j >= 0; j--) {
-                if (elements[i][j].number != 0 && (s.number == 0 || s.number == elements[i][j].number)) {
+                if (elements[i][j].number != 0 && (s.number == 0 || canMerge(s.number, elements[i][j].number))) {
                     moved = true;
 
                     elements[i][j].setNumber(s.number + elements[i][j].number);
@@ -510,7 +432,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
                     elements[s.posX][s.posY] = z;
 
                     if (s.number != 0)
-                        points += elements[s.posX][s.posY].number;
+                        points = (int) Math.min(Integer.MAX_VALUE, (long) points + elements[s.posX][s.posY].number);
                     if (s.number != 0)
                         s.posY--;
                     j = s.posY;
@@ -551,28 +473,16 @@ public class GameActivity extends BaseActivityWithoutNavBar {
             }
 
         }
-        if (moved) {
-            gameStatistics.addMoves(1);
-            last_points = temp_points;
-            last_elements = temp;
-            undoButton.setVisibility(View.VISIBLE);
-            undo = true;
-        }
-        if (moved)
-            gameStatistics.moveR();
-        addNumber();
-        setDPositions(animationActivated);
-        updateGameState();
-
-        //es wurde nach rechts gewischt, hier den Code einfügen
-        return false;
+        return finishMove(temp, temp_points, gameStatistics::moveR);
     }
 
     private boolean handleSwipeLeft() {
+        if (winPending || gameOver || roundDialog != null) return false;
+        settleAnimations();
         Element[][] temp = deepCopy(elements);
         int temp_points = points;
         moved = false;
-        Element s = new Element(myActivity);
+        Element s = new Element(this);
         for (int i = 0; i < elements.length; i++) {
             s.number = elements[i][0].number;
             s.posX = i;
@@ -580,7 +490,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
 
 
             for (int j = 1; j < elements[i].length; j++) {
-                if (elements[i][j].number != 0 && (s.number == 0 || s.number == elements[i][j].number)) {
+                if (elements[i][j].number != 0 && (s.number == 0 || canMerge(s.number, elements[i][j].number))) {
                     moved = true;
 
 
@@ -592,7 +502,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
                     elements[s.posX][s.posY] = z;
 
                     if (s.number != 0)
-                        points += elements[s.posX][s.posY].number;
+                        points = (int) Math.min(Integer.MAX_VALUE, (long) points + elements[s.posX][s.posY].number);
                     if (s.number != 0)
                         s.posY++;
                     j = s.posY;
@@ -631,27 +541,16 @@ public class GameActivity extends BaseActivityWithoutNavBar {
             }
 
         }
-        if (moved) {
-            gameStatistics.addMoves(1);
-            last_points = temp_points;
-            last_elements = temp;
-            undoButton.setVisibility(View.VISIBLE);
-            undo = true;
-        }
-        if (moved)
-            gameStatistics.moveL();
-        addNumber();
-        setDPositions(animationActivated);
-        updateGameState();
-        //es wurde nach links gewischt, hier den Code einfügen
-        return false;
+        return finishMove(temp, temp_points, gameStatistics::moveL);
     }
 
     private boolean handleSwipeBottom() {
+        if (winPending || gameOver || roundDialog != null) return false;
+        settleAnimations();
         Element[][] temp = deepCopy(elements);
         int temp_points = points;
         moved = false;
-        Element s = new Element(myActivity);
+        Element s = new Element(this);
         for (int i = 0; i < elements.length; i++) {
             s.number = elements[elements[i].length - 1][i].number;
             s.posX = elements[i].length - 1;
@@ -659,7 +558,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
 
 
             for (int j = elements[i].length - 2; j >= 0; j--) {
-                if (elements[j][i].number != 0 && (s.number == 0 || s.number == elements[j][i].number)) {
+                if (elements[j][i].number != 0 && (s.number == 0 || canMerge(s.number, elements[j][i].number))) {
                     moved = true;
 
                     elements[j][i].setNumber(s.number + elements[j][i].number);
@@ -670,7 +569,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
                     elements[s.posX][s.posY] = z;
 
                     if (s.number != 0)
-                        points += elements[s.posX][s.posY].number;
+                        points = (int) Math.min(Integer.MAX_VALUE, (long) points + elements[s.posX][s.posY].number);
                     if (s.number != 0)
                         s.posX--;
                     j = s.posX;
@@ -710,24 +609,33 @@ public class GameActivity extends BaseActivityWithoutNavBar {
             }
 
         }
-        if (moved) {
-            gameStatistics.addMoves(1);
-            last_points = temp_points;
-            last_elements = temp;
-            undoButton.setVisibility(View.VISIBLE);
-            undo = true;
-        }
-        if (moved)
-            gameStatistics.moveD();
-        addNumber();
+        return finishMove(temp, temp_points, gameStatistics::moveD);
+    }
+
+    private boolean finishMove(Element[][] previous, int previousPoints, Runnable countDirection) {
+        if (!moved) return false;
+        gameStatistics.addMoves(1);
+        countDirection.run();
+        last_points = previousPoints;
+        last_elements = previous;
+        undo = true;
+        undoButton.setVisibility(View.VISIBLE);
         setDPositions(animationActivated);
+        addNumber();
+        if (points > record) {
+            record = points;
+            gameStatistics.setRecord(record);
+            textFieldRecord.setText(String.valueOf(record));
+        }
+        textFieldPoints.setText(String.valueOf(points));
         updateGameState();
-        //es wurde nach unten gewischt, hier den Code einfügen
-        return false;
+        presentRoundDialog();
+        return true;
     }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (elements == null) return super.onKeyDown(keyCode, event);
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_UP:
                 handleSwipeTop();
@@ -780,48 +688,48 @@ public class GameActivity extends BaseActivityWithoutNavBar {
     }
 
     public void updateHighestNumber() {
-        for (int i = 0; i < elements.length; i++) {
-            for (int j = 0; j < elements[i].length; j++) {
-                if (highestNumber < elements[i][j].number) {
-                    highestNumber = elements[i][j].number;
-                    gameStatistics.setHighestNumber(highestNumber);
-                }
-            }
+        for (Element[] row : elements) {
+            for (Element tile : row) gameStatistics.setHighestNumber(tile.number);
         }
     }
 
-    public void check2048() {
-        if (won2048 == false) {
-            for (int i = 0; i < elements.length; i++) {
-                for (int j = 0; j < elements[i].length; j++) {
-                    if (elements[i][j].number == WINTHRESHOLD) {
+    private boolean hasWinningTile() {
+        for (Element[] row : elements) {
+            for (Element tile : row) if (tile.number >= WINTHRESHOLD) return true;
+        }
+        return false;
+    }
 
-                        saveStatisticsToFile(gameStatistics);
-                        //MESSAGE
-                        new MaterialAlertDialogBuilder(this)
-                                .setTitle((this.getResources().getString(R.string.Titel_V_Message)))
-                                .setMessage((this.getResources().getString(R.string.Winning_Message)))
-                                .setNegativeButton((this.getResources().getString(R.string.No_Message)), new DialogInterface.OnClickListener() {
-                                    @Override
-                                    public void onClick(DialogInterface dialog, int which) {
-                                        onBackPressed();
+    private static boolean canMerge(int first, int second) {
+        return first < MAX_TILE && first == second;
+    }
 
-                                    }
-                                })
-                                .setPositiveButton((this.getResources().getString(R.string.Yes_Message)), new DialogInterface.OnClickListener() {
-                                    @Override
-                                    public void onClick(DialogInterface dialog, int which) {
-                                    }
-                                })
-                                .setCancelable(false)
-                                .create().show();
-                        won2048 = true;
-                    }
-                }
+    private boolean canMove() {
+        for (int y = 0; y < n; y++) {
+            for (int x = 0; x < n; x++) {
+                int value = elements[y][x].number;
+                if (value == 0 || (x + 1 < n && canMerge(value, elements[y][x + 1].number))
+                        || (y + 1 < n && canMerge(value, elements[y + 1][x].number))) return true;
+            }
+        }
+        return false;
+    }
+
+    private void settleAnimations() {
+        if (!animationActivated) return;
+        for (Element[] row : elements) {
+            for (Element tile : row) {
+                tile.animate().setListener(null).cancel();
+                ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) tile.getLayoutParams();
+                tile.setTranslationX(tile.dPosX - params.leftMargin);
+                tile.setTranslationY(tile.dPosY - params.topMargin);
+                tile.setAlpha(1f);
+                tile.setScaleX(1f);
+                tile.setScaleY(1f);
+                if (tile.dNumber != tile.number) tile.drawItem();
             }
         }
     }
-
 
     public void setDPositions(boolean animation) {
         for (Element[] i : elements) {
@@ -927,200 +835,82 @@ public class GameActivity extends BaseActivityWithoutNavBar {
         }
     }
 
-    public void addNumber() {
-
-        if (points > record) {
-            record = points;
-            gameStatistics.setRecord(record);
-            textFieldRecord.setText("" + record);
+    private void addNumber() {
+        Element[] empty = new Element[n * n];
+        int count = 0;
+        for (Element[] row : elements) {
+            for (Element tile : row) if (tile.number == 0) empty[count++] = tile;
         }
-        if (moved) {
-            gameOver = false;
-            moved = false;
-            textFieldPoints.setText("" + points);
-            Element[] empty_fields = new Element[n * n];
-            int counter = 0;
-            for (int i = 0; i < elements.length; i++) {
-                for (int j = 0; j < elements[i].length; j++) {
-                    if (elements[i][j].number == 0) {
-                        empty_fields[counter++] = elements[i][j];
-                    }
-                }
-            }
-            if (counter > 0) {
-                int index = (int) (Math.random() * counter);
-                int number = 2;
-                if (Math.random() > PROPABILITYFORTWO)
-                    number = 4;
-
-                empty_fields[index].setNumber(number);
-                empty_fields[index].drawItem();
-                if (animationActivated) {
-                    empty_fields[index].setAlpha(0);
-                    empty_fields[index].animate().alpha(1).setInterpolator(new LinearInterpolator()).setStartDelay(MOVINGSPEED).setDuration(ADDINGSPEED).start();
-                }
-                if (counter == 1) {
-                    gameOver = true;
-                    for (int i = 0; i < elements.length; i++) {
-                        for (int j = 0; j < elements[i].length; j++) {
-                            if ((i + 1 < elements.length && elements[i][j].number == elements[i + 1][j].number) || (j + 1 < elements[i].length && elements[i][j].number == elements[i][j + 1].number)) {
-                                gameOver = false;
-                            }
-                        }
-                    }
-                }
-            }
-            updateGameState();
-
-            if (gameOver) {
-                gameOver();
-            }
+        if (count == 0) return;
+        Element tile = empty[(int) (Math.random() * count)];
+        tile.setNumber(Math.random() < PROBABILITY_FOR_TWO ? 2 : 4);
+        tile.drawItem();
+        if (animationActivated) {
+            tile.setAlpha(0);
+            tile.animate().alpha(1).setInterpolator(new LinearInterpolator())
+                    .setStartDelay(MOVINGSPEED).setDuration(ADDINGSPEED).start();
         }
-        Log.i("number of elements", "" + number_field.getChildCount() + ", " + number_field_background.getChildCount());
     }
 
-    public void gameOver() {
-        Log.i("record", "" + record + ", " + gameStatistics.getRecord());
-        saveStatisticsToFile(gameStatistics);
-        new MaterialAlertDialogBuilder(this)
-                .setTitle((this.getResources().getString(R.string.Titel_L_Message, points)))
-                .setMessage(this.getResources().getString(R.string.Lost_Message, points))
-                .setNegativeButton((this.getResources().getString(R.string.No_Message)), new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        createNewGame = true;
-                        getIntent().putExtra("new", true);
-                        initialize();
-                        deleteStateFile();
+    private void presentRoundDialog() {
+        if ((!winPending && !gameOver) || roundDialog != null || elements == null
+                || startingTime < 0 || isFinishing()) return;
+        MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this).setCancelable(false);
+        if (winPending) {
+            builder.setTitle(R.string.Titel_V_Message)
+                    .setMessage(R.string.Winning_Message)
+                    .setNegativeButton(R.string.No_Message, (dialog, which) -> {
+                        acknowledgeWin();
+                        finish();
+                    })
+                    .setPositiveButton(R.string.Yes_Message, (dialog, which) -> acknowledgeWin());
+        } else {
+            builder.setTitle(getString(R.string.Titel_L_Message, points))
+                    .setMessage(getString(R.string.Lost_Message, points))
+                    .setNegativeButton(R.string.No_Message, (dialog, which) -> {
                         saveState = false;
-                        GameActivity.this.onBackPressed();
-
-                    }
-                })
-                .setPositiveButton((this.getResources().getString(R.string.Yes_Message)), new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface dialog, int which) {
-                        createNewGame();
-                    }
-                })
-                .setCancelable(false)
-                .create().show();
-        Log.i("record", "danach");
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        // Handle action bar item clicks here. The action bar will
-        // automatically handle clicks on the Home/Up button, so long
-        // as you specify a parent activity in AndroidManifest.xml.
-        int id = item.getItemId();
-
-        if (id == android.R.id.home) {
-            save();
+                        GameStorage.deleteState(getFilesDir(), n);
+                        finish();
+                    })
+                    .setPositiveButton(R.string.Yes_Message, (dialog, which) -> createNewGame());
+            if (undo) builder.setNeutralButton(R.string.undo, (dialog, which) -> handleUndo());
         }
 
-        return super.onOptionsItemSelected(item);
+        saveStatisticsToFile(gameStatistics);
+        roundDialog = builder.create();
+        roundDialog.setOnDismissListener(dialog -> {
+            roundDialog = null;
+            // The winning move can also fill the last playable cell.
+            presentRoundDialog();
+        });
+        roundDialog.show();
+    }
+
+    private void acknowledgeWin() {
+        winPending = false;
+        gameState.winPending = false;
     }
 
     @Override
-    public void onWindowFocusChanged(boolean hasFocus) {
-        // TODO Auto-generated method stub
-        super.onWindowFocusChanged(hasFocus);
-        start();
-
-
+    protected void onDestroy() {
+        if (roundDialog != null) {
+            roundDialog.setOnDismissListener(null);
+            roundDialog.dismiss();
+        }
+        super.onDestroy();
     }
 
     @Override
-    public void onSaveInstanceState(Bundle savedInstanceState) {
+    protected void onSaveInstanceState(Bundle savedInstanceState) {
         super.onSaveInstanceState(savedInstanceState);
-
-        save();
-
+        saveStateToFile(gameState);
     }
 
-    public void saveStateToFile(GameState nS) {
-        if (saveState) {
-            try {
-                if (filename == null)
-                    filename = "state" + n + ".txt";
-                File file = new File(getFilesDir(), filename);
-                FileOutputStream fileOut = new FileOutputStream(file);
-                ObjectOutputStream out = new ObjectOutputStream(fileOut);
-                out.writeObject(nS);
-                out.close();
-                fileOut.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
+    private void saveStateToFile(GameState state) {
+        if (saveState && !newGame && state != null) GameStorage.writeState(getFilesDir(), n, state);
     }
 
-    public boolean deleteStateFile() {
-        try {
-            if (filename == null)
-                filename = "state" + n + ".txt";
-            File directory = getFilesDir();
-            File f = new File(directory, filename);
-            return f.delete();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return false;
-    }
-
-    public GameState readStateFromFile() {
-        GameState nS = new GameState(n);
-        try {
-            File file = new File(getFilesDir(), filename);
-            FileInputStream fileIn = new FileInputStream(file);
-            ObjectInputStream in = new ObjectInputStream(fileIn);
-            nS = (GameState) in.readObject();
-            boolean emptyField = true;
-            for (int i = 0; i < nS.numbers.length; i++) {
-                if (nS.numbers[i] > 0) {
-                    emptyField = false;
-                    break;
-                }
-            }
-            if (emptyField || nS.n != n) {
-                nS = new GameState(n);
-                newGame = true;
-            }
-            in.close();
-            fileIn.close();
-        } catch (Exception e) {
-            newGame = true;
-            e.printStackTrace();
-        }
-        return nS;
-    }
-
-    public GameStatistics readStatisticsFromFile() {
-        GameStatistics gS = new GameStatistics(n);
-        try {
-            File file = new File(getFilesDir(), "statistics" + n + ".txt");
-            FileInputStream fileIn = new FileInputStream(file);
-            ObjectInputStream in = new ObjectInputStream(fileIn);
-            gS = (GameStatistics) in.readObject();
-            in.close();
-            fileIn.close();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
-        return gS;
-    }
-
-    public void saveStatisticsToFile(GameStatistics gS) {
-        try {
-            File file = new File(getFilesDir(), gS.getFilename());
-            FileOutputStream fileOut = new FileOutputStream(file);
-            ObjectOutputStream out = new ObjectOutputStream(fileOut);
-            out.writeObject(gS);
-            out.close();
-            fileOut.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    private void saveStatisticsToFile(GameStatistics statistics) {
+        GameStorage.writeStatistics(getFilesDir(), n, statistics);
     }
 }

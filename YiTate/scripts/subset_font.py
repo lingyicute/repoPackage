@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Subset Nebulove deterministically and replace only its own @font-face rule."""
+"""Subset Nebulove deterministically and replace only its marked CSS source."""
 import base64
+import hashlib
 from html import unescape
 from io import BytesIO
 import os
@@ -9,25 +10,31 @@ import re
 import tempfile
 import urllib.request
 
-FONT_URL = "https://raw.githubusercontent.com/lingyicute/Nebulove/main/Nebulove.ttf"
+# Font source and separate license: https://github.com/lingyicute/Nebulove
+FONT_REVISION = "df0d98ed69435d0ff1f3705c084aca057f4ca9a5"
+FONT_URL = f"https://raw.githubusercontent.com/lingyicute/Nebulove/{FONT_REVISION}/Nebulove.ttf"
+FONT_SHA256 = "c40a831c4577807aaf7e264fad8dadb6dd2b8fe329bd39abdf74e3ef72770ae4"
 INDEX_PATH = Path(__file__).resolve().parents[1] / "web/index.html"
-FONT_FACE = re.compile(r"@font-face\s*\{[^}]*\}", re.DOTALL | re.IGNORECASE)
-NEBULOVE_FAMILY = re.compile(
-    r'''font-family\s*:\s*(?:"Nebulove"|'Nebulove'|Nebulove)\s*(?:;|\}|\Z)''', re.IGNORECASE
+SOURCE_MARKER = "/* Nebulove source: managed by scripts/subset_font.py */"
+FONT_SOURCE = re.compile(
+    rf'^[ \t]*{re.escape(SOURCE_MARKER)}[ \t]*\n'
+    r'[ \t]*src:[ \t]*url\("(?P<url>[^"\n]*)"\)[ \t]+format\("woff2"\);[ \t]*$',
+    re.MULTILINE,
 )
 PUNCTUATION = "：，。！？；“”‘’（）【】—…·《》×＝÷＋－"
 
 
-def find_font_rule(html):
-    matches = [m for m in FONT_FACE.finditer(html) if NEBULOVE_FAMILY.search(m.group())]
-    if len(matches) != 1:
-        raise ValueError("Expected exactly one Nebulove @font-face rule")
-    return matches[0]
+def find_font_source(html):
+    match = FONT_SOURCE.search(html)
+    if match is None or html.count(SOURCE_MARKER) != 1:
+        raise ValueError("Expected exactly one marked Nebulove WOFF2 source")
+    return match.span("url")
 
 
 def collect_characters(html):
-    # Decode numeric/named HTML entities (e.g. &#x4E2D;). Ignore previous font data.
-    text = unescape(FONT_FACE.sub("", html))
+    start, end = find_font_source(html)
+    # Decode HTML entities (e.g. &#x4E2D;) and omit the old font data.
+    text = unescape(html[:start] + html[end:])
     return "".join(sorted(set(text) | set(map(chr, range(32, 127))) | set(PUNCTUATION)))
 
 
@@ -36,7 +43,12 @@ def build_subset(font_data, characters):
     from fontTools.subset import Subsetter, Options
 
     with TTFont(BytesIO(font_data), recalcTimestamp=False) as font:
-        subsetter = Subsetter(options=Options())
+        options = Options()
+        # Keep upstream copyright, source and license records in every language.
+        options.name_IDs = ["*"]
+        options.name_languages = ["*"]
+        options.name_legacy = True
+        subsetter = Subsetter(options=options)
         subsetter.populate(text=characters)
         subsetter.subset(font)
         font.flavor = "woff2"
@@ -46,25 +58,21 @@ def build_subset(font_data, characters):
 
 
 def embed_font(html, font_data):
-    match = find_font_rule(html)
+    start, end = find_font_source(html)
     encoded = base64.b64encode(font_data).decode("ascii")
-    css = f'''@font-face{{
-  font-family:"Nebulove";
-  src:url("data:font/woff2;charset=utf-8;base64,{encoded}") format("woff2"),
-      url("https://cdn.jsdelivr.net/gh/lingyicute/Nebulove@main/Nebulove.woff2") format("woff2");
-  font-display:swap;
-}}'''
-    return html[:match.start()] + css + html[match.end():]
+    return html[:start] + f"data:font/woff2;base64,{encoded}" + html[end:]
 
 
 def main():
     path = Path(INDEX_PATH)
     html = path.read_text(encoding="utf-8")
-    find_font_rule(html)  # Fail before downloading if the template is invalid.
-    characters = collect_characters(html)
+    characters = collect_characters(html)  # Validate the template before downloading.
     print(f"Subsetting {len(characters)} characters from {FONT_URL}")
     with urllib.request.urlopen(FONT_URL, timeout=30) as response:
-        subset = build_subset(response.read(), characters)
+        source = response.read()
+    if hashlib.sha256(source).hexdigest() != FONT_SHA256:
+        raise ValueError("Nebulove source does not match the pinned SHA-256")
+    subset = build_subset(source, characters)
     updated = embed_font(html, subset)
     if updated == html:
         print("web/index.html is already up to date.")

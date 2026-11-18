@@ -3,11 +3,14 @@ package com.lingyicute.orientationlock;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.AppOpsManager;
 import android.content.ActivityNotFoundException;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.Drawable;
@@ -15,7 +18,10 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
+import android.os.Process;
 import android.provider.Settings;
+import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.TextView;
 
 import com.lingyicute.orientationlock.preference.PreferenceManager;
@@ -69,6 +75,53 @@ public class MainActivityTest {
     }
 
     @Test
+    public void selectingDefaultDoesNotCancelAQueuedForegroundStart() {
+        ShadowSettings.setCanDrawOverlays(true);
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            activity.findViewById(R.id.tv_orientation_landscape).performClick();
+            assertNotNull(shadowOf(activity).getNextStartedService());
+            // The platform has accepted the start; onCreate/startForeground need not have run yet.
+            activity.findViewById(R.id.tv_orientation_default).performClick();
+            assertNull(shadowOf(activity).getNextStoppedService());
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
+        }
+    }
+
+    @Test
+    public void activeActivityReflectsAServiceRollback() {
+        ShadowSettings.setCanDrawOverlays(true);
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            activity.findViewById(R.id.tv_orientation_landscape).performClick();
+            assertTrue(activity.findViewById(R.id.tv_orientation_landscape).isSelected());
+            preferences.setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            assertTrue(activity.findViewById(R.id.tv_orientation_default).isSelected());
+            assertFalse(activity.findViewById(R.id.tv_orientation_landscape).isSelected());
+        }
+    }
+
+    public static class RejectingActivity extends MainActivity {
+        @Override
+        public ComponentName startForegroundService(Intent intent) {
+            throw new IllegalStateException("Foreground start not allowed");
+        }
+    }
+
+    @Test
+    public void rejectedForegroundStartDoesNotPersistOrShowALock() {
+        ShadowSettings.setCanDrawOverlays(true);
+        try (ActivityController<RejectingActivity> controller = Robolectric
+                .buildActivity(RejectingActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            activity.findViewById(R.id.tv_orientation_landscape).performClick();
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
+            assertTrue(activity.findViewById(R.id.tv_orientation_default).isSelected());
+            assertFalse(activity.findViewById(R.id.tv_orientation_landscape).isSelected());
+        }
+    }
+
+    @Test
     public void deniedOverlayPermissionKeepsDefaultSelection() {
         try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
             controller.get().findViewById(R.id.tv_orientation_portrait).performClick();
@@ -89,6 +142,18 @@ public class MainActivityTest {
         try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class)
                 .create(state).start().resume().visible()) {
             assertEquals(ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT, preferences.getOrientation());
+        }
+    }
+
+    @Test
+    public void orientationChoicesAreFocusableButtonsWithWrappingLabels() {
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            Button choice = activity.findViewById(R.id.tv_orientation_reverse_landscape);
+            assertTrue(choice.isFocusable());
+            assertTrue(choice.getMaxLines() > 1);
+            assertNull(choice.getEllipsize());
+            assertTrue(activity.findViewById(R.id.iv_about) instanceof ImageButton);
         }
     }
 
@@ -173,6 +238,20 @@ public class MainActivityTest {
     }
 
     @Test
+    @Config(sdk = {21, 22})
+    public void legacyOverlayPermissionHonorsExplicitAppOpsDenials() {
+        Context context = RuntimeEnvironment.getApplication();
+        AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+        int op = 24; // SYSTEM_ALERT_WINDOW before its public string name.
+        shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(), AppOpsManager.MODE_ALLOWED);
+        assertTrue(PermissionUtils.isDrawOverlaysPermissionGranted(context));
+        for (int mode : new int[]{AppOpsManager.MODE_ERRORED, AppOpsManager.MODE_IGNORED}) {
+            shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(), mode);
+            assertFalse(PermissionUtils.isDrawOverlaysPermissionGranted(context));
+        }
+    }
+
+    @Test
     public void overlayPermissionRequestFallsBackToApplicationDetailsSettings() {
         List<Intent> started = new ArrayList<>();
         Context wrapper = new ContextWrapper(RuntimeEnvironment.getApplication()) {
@@ -184,10 +263,11 @@ public class MainActivityTest {
                 }
             }
         };
-        PermissionUtils.requestDrawOverlaysPermission(wrapper);
+        assertTrue(PermissionUtils.requestDrawOverlaysPermission(wrapper));
         assertEquals(3, started.size());
         assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, started.get(2).getAction());
         assertEquals(Uri.parse("package:" + wrapper.getPackageName()), started.get(2).getData());
+        assertNotEquals(0, started.get(2).getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK);
     }
 
     @Test
@@ -202,9 +282,37 @@ public class MainActivityTest {
                 }
             }
         };
-        PermissionUtils.requestDrawOverlaysPermission(wrapper);
+        assertTrue(PermissionUtils.requestDrawOverlaysPermission(wrapper));
         assertEquals(3, started.size());
         assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, started.get(2).getAction());
+    }
+
+    public static class SettingsBlockedActivity extends MainActivity {
+        @Override
+        public void startActivity(Intent intent) {
+            throw new ActivityNotFoundException();
+        }
+    }
+
+    @Test
+    public void unavailableOverlaySettingsDoNotLeaveAPendingSelection() {
+        try (ActivityController<SettingsBlockedActivity> controller = Robolectric
+                .buildActivity(SettingsBlockedActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            activity.findViewById(R.id.tv_orientation_landscape).performClick();
+            assertNull(ReflectionHelpers.getField(activity, "pendingOrientation"));
+            assertTrue(activity.findViewById(R.id.tv_orientation_default).isSelected());
+        }
+    }
+
+    @Test
+    public void overlaySettingsLaunchedByTheActivityStayOnItsBackStack() {
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            assertTrue(PermissionUtils.requestDrawOverlaysPermission(controller.get()));
+            Intent launched = shadowOf(controller.get()).getNextStartedActivity();
+            assertEquals(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, launched.getAction());
+            assertEquals(0, launched.getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK);
+        }
     }
 
     @Test
@@ -226,6 +334,49 @@ public class MainActivityTest {
             AlertDialog dialog = ReflectionHelpers.getField(recreated.get(), "rationaleDialog");
             assertNotNull(dialog);
             assertTrue(dialog.isShowing());
+        }
+    }
+
+    @Test
+    @Config(sdk = 34)
+    public void interruptedRequestAfterRationaleCanBeRetried() {
+        preferences.setNotificationPermissionRequested(true);
+        shadowOf(RuntimeEnvironment.getApplication().getPackageManager())
+                .setShouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS, true);
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            AlertDialog dialog = ReflectionHelpers.getField(activity, "rationaleDialog");
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            shadowOf(Looper.getMainLooper()).idle();
+            assertNotNull(shadowOf(activity).getLastRequestedPermission());
+            activity.onRequestPermissionsResult(100, new String[0], new int[0]);
+            assertFalse(preferences.isNotificationRationaleShown());
+        }
+        try (ActivityController<MainActivity> next = Robolectric.buildActivity(MainActivity.class).setup()) {
+            AlertDialog dialog = ReflectionHelpers.getField(next.get(), "rationaleDialog");
+            assertTrue(dialog.isShowing());
+        }
+    }
+
+    @Test
+    @Config(sdk = 34)
+    public void denialAfterRationaleIsRecordedAcrossRecreation() {
+        preferences.setNotificationPermissionRequested(true);
+        shadowOf(RuntimeEnvironment.getApplication().getPackageManager())
+                .setShouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS, true);
+        Bundle state = new Bundle();
+        try (ActivityController<MainActivity> first = Robolectric.buildActivity(MainActivity.class).setup()) {
+            AlertDialog dialog = ReflectionHelpers.getField(first.get(), "rationaleDialog");
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).performClick();
+            shadowOf(Looper.getMainLooper()).idle();
+            first.pause().saveInstanceState(state);
+        }
+        try (ActivityController<MainActivity> next = Robolectric.buildActivity(MainActivity.class)
+                .create(state).start().resume().visible()) {
+            assertNull(ReflectionHelpers.getField(next.get(), "rationaleDialog"));
+            next.get().onRequestPermissionsResult(100, new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    new int[]{PackageManager.PERMISSION_DENIED});
+            assertTrue(preferences.isNotificationRationaleShown());
         }
     }
 

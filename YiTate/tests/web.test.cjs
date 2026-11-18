@@ -16,6 +16,7 @@ function element() {
     setAttribute(name, value) { this.attributes[name] = String(value); },
     getAttribute(name) { return name in this.attributes ? this.attributes[name] : null; },
     focus() { this.focused = true; },
+    closest() { return null; },
     classList: {
       add(...names) { names.forEach(n => classes.add(n)); },
       remove(name) { classes.delete(name); },
@@ -58,26 +59,30 @@ function eventTarget() {
 
 function boot({
   saved = {}, blocked = false, observer = true, color = true,
-  reducedMotion = false, schemeDark = false, mediaApi = 'event', readyState = 'loading',
+  reducedMotion = false, schemeDark = false, mediaApi = 'event',
   scrollY = 0, visibilityState = 'visible', animationFrame = true
 } = {}) {
   const ids = new Map();
   const calls = [];
   const timeouts = [];
   const get = selector => {
-    if (!ids.has(selector)) ids.set(selector, element());
+    if (!ids.has(selector)) {
+      const node = element();
+      if (selector === '#themeBtn') node.setAttribute('aria-label', '深色模式');
+      node.hidden = selector === '#themeBtn' || selector === '#paletteControls';
+      ids.set(selector, node);
+    }
     return ids.get(selector);
   };
   const root = element();
   const reveals = [element(), element()];
   const storage = new Map(Object.entries(saved));
   const document = {
-    ...eventTarget(), readyState, visibilityState,
+    ...eventTarget(), visibilityState,
     documentElement: root,
     querySelector(selector) { calls.push('query:' + selector); return get(selector); },
     querySelectorAll: selector => selector === '.swatch' ? get('#swatches').children : reveals,
-    createElement: element,
-    fonts: { ready: Promise.resolve() }
+    createElement: element
   };
   const mediaListeners = [], motionListeners = [];
   const windowEvents = eventTarget();
@@ -89,7 +94,7 @@ function boot({
     },
     setTimeout(fn, delay) { timeouts.push({ fn, delay }); return timeouts.length; },
     clearTimeout(id) { if (timeouts[id - 1]) timeouts[id - 1].cancelled = true; },
-    performance: { now: () => 0 }, scrollY
+    scrollY
   };
   if (mediaApi !== 'none') {
     sandbox.matchMedia = query => {
@@ -195,6 +200,14 @@ test('palette stays inside narrow viewports', () => {
   const mobile = html.match(/@media \(max-width: 560px\)\s*\{([\s\S]*?)\n  \}/)[1];
   assert.match(mobile, /\.palette-wrap\s*\{\s*position:\s*static/);
   assert.match(mobile, /\.palette\s*\{[^}]*width:\s*min\(240px,\s*92vw\)/);
+});
+
+test('palette scrolls independently when the viewport is too short', () => {
+  const styles = html.match(/\.palette\s*\{([^}]*)\}/)[1];
+  assert.match(styles, /max-height:\s*calc\(100vh - var\(--appbar-height\) - 8px\)/);
+  assert.match(styles, /max-height:\s*calc\(100dvh - var\(--appbar-height\) - 8px\)/);
+  assert.match(styles, /overflow-y:\s*auto/);
+  assert.match(html, /\.palette > \*\s*\{\s*flex:\s*none/);
 });
 
 test('snackbar messages are announced to assistive technology and hidden when dismissed', () => {
@@ -309,42 +322,17 @@ test('hero screenshot declares its intrinsic size', () => {
     'width/height keep the phone frame from jumping while the image decodes');
 });
 
-test('splash stays hidden until JavaScript starts and printing never shows it', () => {
-  assert.match(html, /\.loading\s*\{[^}]*display:\s*none/, 'CSS hides the splash by default');
-  assert.match(html, /\.loading\.show\s*\{\s*display:\s*grid/);
-  assert.match(html, /<noscript>[\s\S]*?\.loading\s*\{\s*display:\s*none/, 'noscript hides the splash');
-  assert.match(html, /@media print\s*\{[\s\S]*?\.loading,\s*\.snack,\s*\.palette\s*\{\s*display:\s*none/,
-    'print media hides the splash, snackbar, and palette');
-  assert.match(html, /@media print\s*\{[\s\S]*?\.reveal\.pending:not\(\.in\)\s*\{[^}]*opacity:\s*1/,
-    'print media shows sections that were never scrolled into view');
-});
-
-test('splash failsafe is registered before widgets and the overlay is then enabled', () => {
+test('public content does not wait for the page load event or fonts', () => {
   const page = boot();
-  const load = page.calls.indexOf('window:load');
-  const firstQuery = page.calls.findIndex(call => call.startsWith('query:'));
-  assert.ok(load >= 0, 'the load handler is registered');
-  assert.ok(firstQuery >= 0, 'the script did query the DOM');
-  assert.ok(load < firstQuery, `load handler must come first, got ${page.calls.slice(0, 3).join(', ')}`);
-  assert.equal(page.get('#loading').classList.contains('show'), true);
+  assert.doesNotMatch(html, /id="loading"/);
+  assert.equal(page.window.listeners.load, undefined);
+  assert.equal(page.timeouts.length, 0, 'no timer is needed before the page can be used');
+  assert.match(html, /class="hero-cta"\s*>\s*<a[^>]+href="https:\/\/github.com\/lingyicute\/YiTate\/releases\/latest"/);
 });
 
-test('already-loaded documents dismiss the splash without waiting for the 8s failsafe', async () => {
-  const page = boot({ readyState: 'complete', reducedMotion: true });
-  await Promise.resolve();
-  const immediateHide = page.timeouts.find(t => t.delay === 0);
-  assert.ok(immediateHide, 'hideLoading is scheduled immediately once fonts resolve');
-  immediateHide.fn();
-  const loading = page.get('#loading');
-  assert.equal(loading.classList.contains('hide'), true);
-  const safety = page.timeouts.find(t => t.delay === 800);
-  loading.listeners.transitionend({ target: element() });
-  assert.equal(loading.removed, undefined, 'child transitions must not remove the splash early');
-  loading.listeners.transitionend({ target: loading });
-  assert.equal(loading.removed, true);
-  assert.equal(safety.cancelled, true, 'transitionend cancels the 800ms safety timer');
-  assert.equal(loading.listeners.transitionend, undefined);
-  assert.equal(loading.listeners.transitioncancel, undefined);
+test('printing hides popovers and shows unvisited content', () => {
+  assert.match(html, /@media print\s*\{[\s\S]*?\.snack,\s*\.palette\s*\{\s*display:\s*none/);
+  assert.match(html, /@media print\s*\{[\s\S]*?\.reveal\.pending:not\(\.in\)\s*\{[^}]*opacity:\s*1/);
 });
 
 test('missing matchMedia does not abort initialization', () => {
@@ -366,7 +354,7 @@ test('zero-degree hue survives reload', () => {
 });
 
 test('corrupt or out-of-range hue falls back to 290', () => {
-  for (const hue of ['NaN', 'Infinity', '-1', '361', '', ' ']) {
+  for (const hue of ['NaN', 'Infinity', '-1', '361', '25.5', '', ' ']) {
     assert.equal(Number(boot({ saved: { 'yt-hue': hue } }).get('#hueRange').value), 290);
   }
 });
@@ -383,15 +371,26 @@ test('reduced-motion preference avoids reveal animations and un-hides pending el
   assert.match(html, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?\.reveal\.pending:not\(\.in\)\s*\{\s*opacity:\s*1;\s*transform:\s*none;\s*\}/);
 });
 
-test('unsupported OKLCH uses CSS fallback instead of invalid palette values', () => {
+test('unsupported OKLCH keeps the theme toggle but does not offer an inert palette', () => {
   const page = boot({ color: false });
   assert.equal(page.root.style['--primary'], undefined);
-  assert.match(page.get('#swatches').children[0].style.background, /^hsl\(/);
+  assert.equal(page.get('#paletteControls').hidden, true);
+  assert.equal(page.get('#swatches').children.length, 0);
+  assert.equal(page.get('#themeBtn').hidden, false);
   assert.match(html, /\.appbar\s*\{[\s\S]*?background:\s*var\(--surface\);\s*background:\s*color-mix/);
   assert.match(html, /\.layer\.l3\s*\{[^}]*background:\s*var\(--primary\);\s*background:\s*color-mix/);
   assert.match(html, /\.download \.btn-outlined\s*\{[^}]*box-shadow:\s*inset 0 0 0 1\.5px var\(--on-primary\);\s*box-shadow:\s*inset 0 0 0 1\.5px color-mix/);
   page.get('#themeBtn').listeners.click();
   assert.equal(page.root.dataset.theme, 'dark');
+});
+
+test('theme enhancements become visible only after they initialize', () => {
+  assert.match(html, /id="themeBtn" hidden/);
+  assert.match(html, /id="paletteControls" hidden/);
+  assert.match(html, /\.nav \[hidden\]\s*\{\s*display:\s*none/);
+  const page = boot();
+  assert.equal(page.get('#themeBtn').hidden, false);
+  assert.equal(page.get('#paletteControls').hidden, false);
 });
 
 test('default system theme is not saved as an explicit user preference', () => {
@@ -443,6 +442,25 @@ test('the reveal stagger delay is dropped once the fade has run', () => {
   assert.equal(safety.cancelled, true, 'normal completion cancels the fallback');
   assert.equal(target.listeners.transitionend, undefined);
   assert.equal(target.listeners.transitioncancel, undefined);
+});
+
+test('keyboard focus immediately settles a pending reveal', () => {
+  assert.match(html, /\.reveal\.pending:not\(\.in\):not\(:focus-within\)\s*\{[^}]*opacity:\s*0/);
+  assert.match(html, /\.reveal:focus-within\s*\{\s*transition:\s*none/);
+  const page = boot(), [target] = page.reveals;
+  page.observers[0].fn([{ target, isIntersecting: true }]);
+  const child = element();
+  child.closest = selector => selector === '.reveal.pending' ? target : null;
+  page.document.listeners.focusin({ target: child });
+  assert.equal(target.classList.contains('pending'), false);
+  assert.equal(page.observers[0].unobserved, target);
+  assert.equal(page.timeouts.find(t => t.delay === 1200).cancelled, true);
+});
+
+test('the skip link and anchor navigation account for the sticky app bar', () => {
+  assert.match(html, /<a class="skip-link" href="#main">/);
+  assert.match(html, /<main id="main" tabindex="-1">/);
+  assert.match(html, /scroll-padding-top:\s*var\(--appbar-height\)/);
 });
 
 test('enabling reduced motion after load disconnects the observer and clears pending reveals', () => {

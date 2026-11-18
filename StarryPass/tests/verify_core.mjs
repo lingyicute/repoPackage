@@ -192,6 +192,61 @@ for(const provider of [null,{argon2id:async()=>{throw new Error(args.master);}},
     await e.wipeSession();
 }
 
+// A passed boot gate cannot guarantee that the WASM runtime will never trap.
+// Check the actual provider selection and unchanged costs on each execution lane.
+{
+    const kat = Uint8Array.from(Buffer.from('0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659', 'hex'));
+    for (const [worker, ErrorType] of [[null, WebAssembly.CompileError], [null, WebAssembly.LinkError],
+        [{ postMessage() {} }, WebAssembly.RuntimeError]]) {
+        const wasmCosts = [], nobleCosts = [], progress = [];
+        function noble(password, salt, opts) {
+            if (opts.m === 32) return argon2id(password, salt, opts);
+            nobleCosts.push([opts.m, opts.t, opts.p]);
+            opts.onProgress?.(1);
+            return new Uint8Array(32).fill(11);
+        }
+        const f = fixture({ provider: { async argon2id(opts) {
+            if (opts.memorySize === 32) return kat.slice();
+            wasmCosts.push([opts.memorySize, opts.iterations, opts.parallelism]);
+            throw new ErrorType(args.master);
+        } }, argon2id: noble, argon2idAsync: async (...values) => noble(...values) });
+        const request = { ...args, tier: 'paranoid' };
+        const control = fixture().spv2CoreFactory(null, true);
+        const expected = await control.derive(request);
+        await control.wipeSession();
+        const e = f.spv2CoreFactory(worker, false);
+        const first = await e.derive(request, value => progress.push(value));
+        check(first.password === expected.password && !first.cached, 'runtime fallback preserves the selected password');
+        assert.deepEqual(wasmCosts, [[262144, 4, 4]]);
+        assert.deepEqual(nobleCosts, wasmCosts, 'fallback preserves the selected Argon2 cost');
+        assert.deepEqual(progress, [1], 'fallback forwards progress');
+        check(e.provider() === 'noble-hashes', 'execution fault disables WASM after the KAT');
+        check(f.warnings.length === 1 && !f.warnings[0].includes(args.master), 'runtime diagnostic is once-only and nonsensitive');
+        check((await e.derive(request)).cached, 'session cache is usable after fallback');
+        await e.derive({ ...request, code: 'fresh after fallback' });
+        check(wasmCosts.length === 1 && nobleCosts.length === 2, 'next cache miss uses noble directly');
+        await e.wipeSession();
+    }
+
+    const entered = pause(), release = pause();
+    const f = fixture({ provider: { async argon2id(opts) {
+        if (opts.memorySize === 32) return kat.slice();
+        entered.resolve();
+        await release.promise;
+        throw new WebAssembly.RuntimeError('injected native fault');
+    } } });
+    const e = f.spv2CoreFactory(null, false);
+    const obsolete = e.derive(args);
+    await entered.promise;
+    const wiped = e.wipeSession();
+    release.resolve();
+    await reject(obsolete, /SESSION_WIPED/);
+    await wiped;
+    check(f.calls() === 0, 'wiped work does not start a second KDF');
+    check((await e.derive(args)).password.length === args.length && f.calls() === 1, 'next request can recover with noble');
+    await e.wipeSession();
+}
+
 // Failed boot HMAC must reset an already successful WASM cross-gate.
 {
     const kat=Uint8Array.from(Buffer.from('0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659','hex'));
@@ -363,6 +418,7 @@ for(const lane of ['wasm','noble-local','noble-worker']) {
             await e.derive(args);failing=true;
             await reject(e.derive({...args,master:'memory fault '+lane+label}),expected);
             check(f.state.encoded.every(zero),lane+' '+label+' KDF failure clears inputs');
+            if (lane === 'wasm') check(e.provider() === 'hash-wasm', 'non-WASM failures do not disable the fast path');
             failing=false;
             check((await e.derive(args)).cached===false,lane+' '+label+' recovers with a clean cache');
             await e.wipeSession();
@@ -631,6 +687,30 @@ for (const op of ['digest', 'sign']) {
     // First deriveBits is KAT (42*8=336); synthesis for 64 chars starts at 64*8=512, never 256.
     check(deriveLens[1] === 512, 'length=64 synthesis starts HKDF at 2 blocks (512 bits)');
     await e.wipeSession();
+}
+
+// Under repeated refill, Web Crypto calls grow logarithmically. Prove every
+// emitted byte against one native expansion, including the partial last batch.
+{
+    const f = fixture();
+    const bytes = 255 * 32, sk = new Uint8Array(32).fill(9), info = Uint8Array.of(1, 3, 7);
+    const stream = new f.HkdfStream(info);
+    await stream.init(sk);
+    const salt = new TextEncoder().encode('StarryPass-v2:hkdf-extract:v1');
+    const expected = new Uint8Array(await f.crypto.subtle.deriveBits(
+        { name: 'HKDF', hash: 'SHA-256', salt, info }, stream.ikmKey, 8 * bytes));
+    f.state.rawBlocks.length = 0;
+    const actual = new Uint8Array(bytes);
+    for (let i = 0; i < bytes; i++) actual[i] = await stream.nextByte();
+    assert.deepEqual(actual, expected, 'every byte across refill boundaries matches native HKDF');
+    check(f.state.rawBlocks.length === 9, '255 blocks need 9 native calls instead of 255');
+    check(f.state.rawBlocks.at(-1).length === bytes, 'last refill respects the 255-block ceiling');
+    await reject(stream.nextByte(), /HKDF_EXHAUSTED/);
+    check(f.state.rawBlocks.every(zero), 'each full native result is cleared');
+    const tail = stream.buf;
+    stream.dispose();
+    check(zero(tail) && zero(info), 'final batched suffix is cleared on dispose');
+    expected.fill(0); actual.fill(0); sk.fill(0);
 }
 
 console.log(`PASS production core: ${checks} cache, CSPRNG, cleanup, provider and async-wipe checks`);

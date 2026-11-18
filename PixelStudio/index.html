@@ -853,6 +853,7 @@
 
     .inspector-scroll {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 16px;
       display: flex;
@@ -1059,8 +1060,12 @@
       cursor: pointer;
       transition: all 0.16s var(--motion-spring);
     }
-    .m3-chip:hover {
+    .m3-chip:hover:not(:disabled) {
       background: var(--md-sys-color-surface-container-high);
+    }
+    .m3-chip:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
     }
     .m3-chip.active {
       background: var(--md-sys-color-secondary-container);
@@ -1329,6 +1334,7 @@
 
     /* Export Summary Footer inside Inspector */
     .export-sticky-footer {
+      flex-shrink: 0;
       padding: 14px 16px;
       background: var(--md-sys-color-surface-container);
       border-top: 1px solid var(--md-sys-color-outline-variant);
@@ -1345,6 +1351,7 @@
     }
 
     .size-metric {
+      flex: 1;
       display: flex;
       flex-direction: column;
       min-width: 0;
@@ -1357,6 +1364,8 @@
       white-space: nowrap;
     }
     .size-metric-val {
+      overflow: hidden;
+      text-overflow: ellipsis;
       font-family: var(--font-mono);
       font-size: 16px;
       font-weight: 700;
@@ -1365,7 +1374,9 @@
     }
 
     .delta-pill {
-      flex-shrink: 0;
+      max-width: 52%;
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
       font-family: var(--font-mono);
       font-size: 12px;
@@ -1686,6 +1697,25 @@
       }
     }
 
+    /* With very little vertical space (for example a docked on-screen keyboard),
+       prefer scrolling the whole workspace to clipping the stage or the entire inspector. */
+    @media (max-width: 559px) and (max-height: 300px) {
+      .workspace-body {
+        display: block;
+        overflow-y: auto;
+      }
+      .stage-area {
+        height: 200px;
+      }
+      .inspector-dock {
+        height: auto;
+        overflow: visible;
+      }
+      .inspector-scroll {
+        overflow: visible;
+      }
+    }
+
     /* Small phones in landscape are too narrow for the desktop layout, and the stacked mobile layout
        leaves the inspector only a sliver of height there: put the stage and the inspector side by side */
     @media (min-width: 560px) and (max-width: 767px) and (max-height: 480px) {
@@ -1750,6 +1780,21 @@
       .dropzone-features {
         display: none;
       }
+    }
+
+    /* At high zoom or in a short desktop window, keep all tools and the save button reachable. */
+    @media (min-width: 768px) and (max-height: 360px) {
+      .nav-rail {
+        padding-bottom: 8px;
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+      .nav-item { flex-shrink: 0; }
+      .export-sticky-footer {
+        padding: 8px 12px;
+        gap: 6px;
+      }
+      .export-sticky-footer .btn-lg { height: 36px; }
     }
 
     /* Landscape phones are wide enough for the desktop layout: keep it clear of the notch and home indicator */
@@ -1833,21 +1878,30 @@
     }
   </style>
   <script>
-    // Apply the saved (or system) theme before the first paint. The app script at the end of <body> only runs once
-    // the whole page is parsed, so dark-mode users first saw the light theme, which then faded to dark on every load.
-    // Mirrors applyTheme / applySeed / syncThemeColorMeta in bindEvents (same "pixelstudio.prefs" storage key).
-    (() => {
-      let prefs = {};
-      try { prefs = JSON.parse(localStorage.getItem("pixelstudio.prefs") || "{}") || {}; } catch { /* private mode */ }
+    // Apply validated preferences before first paint and reuse them even when storage is unavailable.
+    const pixelStudioPrefs = (() => {
+      const key = "pixelstudio.prefs";
+      const seeds = new Set(["teal", "violet", "azure", "forest", "terracotta"]);
+      const values = {};
+      try {
+        const saved = JSON.parse(localStorage.getItem(key) || "{}");
+        if (typeof saved?.dark === "boolean") values.dark = saved.dark;
+        if (seeds.has(saved?.seed)) values.seed = saved.seed;
+      } catch { /* invalid or unavailable storage */ }
       const root = document.documentElement;
-      const dark = typeof prefs.dark === "boolean"
-        ? prefs.dark
-        : Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      const dark = values.dark ?? Boolean(window.matchMedia?.("(prefers-color-scheme: dark)").matches);
       if (dark) root.setAttribute("data-theme", "dark");
-      if (/^(violet|azure|forest|terracotta)$/.test(prefs.seed)) root.setAttribute("data-seed", prefs.seed);
+      if (values.seed && values.seed !== "teal") root.setAttribute("data-seed", values.seed);
       const surface = getComputedStyle(root).getPropertyValue("--md-sys-color-surface").trim();
       const meta = document.querySelector('meta[name="theme-color"]');
       if (meta && surface) meta.setAttribute("content", surface);
+      return {
+        values,
+        save(patch) {
+          Object.assign(values, patch);
+          try { localStorage.setItem(key, JSON.stringify(values)); } catch { /* keep the session preference */ }
+        }
+      };
     })();
   </script>
 </head>
@@ -1882,17 +1936,8 @@
       </div>
 
       <div class="top-actions">
-        <!-- Dynamic Material You Seed Color Switcher -->
-        <div class="seed-picker" id="seedPicker" title="Material You 动态取色主题">
-          <button class="seed-dot active" data-seed="teal" style="background:#006A67" aria-label="青瓷碧"></button>
-          <button class="seed-dot" data-seed="violet" style="background:#6750A4" aria-label="暮山紫"></button>
-          <button class="seed-dot" data-seed="azure" style="background:#1B60A5" aria-label="晴空蓝"></button>
-          <button class="seed-dot" data-seed="forest" style="background:#296A47" aria-label="森屿绿"></button>
-          <button class="seed-dot" data-seed="terracotta" style="background:#984716" aria-label="陶土橙"></button>
-        </div>
-
         <!-- Mobile-only palette trigger: tap to pop up the seed color panel -->
-        <button id="btnSeedMobile" class="icon-btn" title="切换 Material You 动态主题色" aria-label="切换动态主题色">
+        <button id="btnSeedMobile" class="icon-btn" title="切换 Material You 动态主题色" aria-label="切换动态主题色" aria-controls="seedPicker" aria-expanded="false">
           <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 22a10 10 0 1 1 0-20c5.5 0 10 4.5 10 10 0 2.5-2 3-3.5 3H17a2 2 0 0 0-1.5 3.3c.6.7.5 3.7-3.5 3.7z"/>
             <circle cx="7.5" cy="10.5" r="1" fill="currentColor"/>
@@ -1901,7 +1946,16 @@
           </svg>
         </button>
 
-        <button id="btnToggleCompareTop" class="btn btn-tonal btn-sm" aria-pressed="false" disabled title="对比原图与压缩后画质">
+        <!-- Dynamic Material You Seed Color Switcher -->
+        <div class="seed-picker" id="seedPicker" role="group" aria-label="动态主题色" title="Material You 动态取色主题">
+          <button class="seed-dot active" data-seed="teal" style="background:#006A67" aria-label="青瓷碧"></button>
+          <button class="seed-dot" data-seed="violet" style="background:#6750A4" aria-label="暮山紫"></button>
+          <button class="seed-dot" data-seed="azure" style="background:#1B60A5" aria-label="晴空蓝"></button>
+          <button class="seed-dot" data-seed="forest" style="background:#296A47" aria-label="森屿绿"></button>
+          <button class="seed-dot" data-seed="terracotta" style="background:#984716" aria-label="陶土橙"></button>
+        </div>
+
+        <button id="btnToggleCompareTop" class="btn btn-tonal btn-sm" aria-pressed="false" disabled title="对比源图裁剪区与导出结果">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 3v18"/><path d="M5 12H2"/><path d="M22 12h-3"/><rect x="4" y="5" width="16" height="14" rx="2"/>
           </svg>
@@ -2021,7 +2075,7 @@
             <!-- Before / After Split Curtain Comparison -->
             <div class="compare-overlay" id="compareOverlay">
               <canvas id="compareAfterCanvas"></canvas>
-              <div class="compare-label left">原图未压缩</div>
+              <div class="compare-label left">源图裁剪区</div>
               <div class="compare-label right" id="compareRightLabel">输出预览</div>
               <div class="compare-divider" id="compareDivider" style="left:50%">
                 <div class="compare-handle">
@@ -2085,7 +2139,7 @@
                   </div>
                   <div>
                     <h2 class="card-title">无损像素裁剪</h2>
-                    <p class="card-subtitle">直接提取原始像素区域，无二次重采样损耗</p>
+                    <p class="card-subtitle">原尺寸裁剪不重新采样；导出编码可单独设置</p>
                   </div>
                 </div>
                 <button class="btn btn-text btn-sm" id="btnResetCrop">全图</button>
@@ -2111,19 +2165,19 @@
               <div class="field-grid-2">
                 <div class="m3-field">
                   <label for="inpCropX">起点 X (px)</label>
-                  <input type="number" id="inpCropX" min="0" step="1" value="0" />
+                  <input type="number" id="inpCropX" min="0" step="1" placeholder="—" />
                 </div>
                 <div class="m3-field">
                   <label for="inpCropY">起点 Y (px)</label>
-                  <input type="number" id="inpCropY" min="0" step="1" value="0" />
+                  <input type="number" id="inpCropY" min="0" step="1" placeholder="—" />
                 </div>
                 <div class="m3-field">
                   <label for="inpCropW">裁剪宽度 (px)</label>
-                  <input type="number" id="inpCropW" min="1" step="1" value="1600" />
+                  <input type="number" id="inpCropW" min="1" step="1" placeholder="—" />
                 </div>
                 <div class="m3-field">
                   <label for="inpCropH">裁剪高度 (px)</label>
-                  <input type="number" id="inpCropH" min="1" step="1" value="1066" />
+                  <input type="number" id="inpCropH" min="1" step="1" placeholder="—" />
                 </div>
               </div>
 
@@ -2146,7 +2200,7 @@
                   </div>
                   <div>
                     <h2 class="card-title">修改输出尺寸</h2>
-                    <p class="card-subtitle" id="resizeSourceInfo">当前裁剪区域: 1600 × 1066 px</p>
+                    <p class="card-subtitle" id="resizeSourceInfo">载入图片后可调整输出尺寸</p>
                   </div>
                 </div>
                 <button class="btn btn-text btn-sm" id="btnResetResize">1:1 原尺寸</button>
@@ -2156,7 +2210,7 @@
               <div class="resize-lock-row">
                 <div class="m3-field">
                   <label for="inpResizeW">目标宽度 (px)</label>
-                  <input type="number" id="inpResizeW" min="1" max="16383" step="1" value="1600" />
+                  <input type="number" id="inpResizeW" min="1" max="16383" step="1" placeholder="—" />
                 </div>
 
                 <button class="icon-btn active" id="btnLockAspect" aria-pressed="true" title="锁定/解锁宽高比" aria-label="锁定宽高比">
@@ -2170,7 +2224,7 @@
 
                 <div class="m3-field">
                   <label for="inpResizeH">目标高度 (px)</label>
-                  <input type="number" id="inpResizeH" min="1" max="16383" step="1" value="1066" />
+                  <input type="number" id="inpResizeH" min="1" max="16383" step="1" placeholder="—" />
                 </div>
               </div>
 
@@ -2180,7 +2234,8 @@
                   <span>按百分比缩放</span>
                   <span class="slider-value-pill" id="scalePercentBadge">100%</span>
                 </div>
-                <input type="range" class="m3-slider" id="sliderScalePercent" aria-label="按百分比缩放" min="10" max="200" step="1" value="100" />
+                <input type="range" class="m3-slider" id="sliderScalePercent" aria-label="按百分比缩放" aria-describedby="scaleLimitNote" min="10" max="200" step="1" value="100" />
+                <p id="scaleLimitNote" class="card-subtitle" hidden></p>
               </div>
 
               <!-- Quick Scale Presets -->
@@ -2203,8 +2258,8 @@
               <div class="m3-field">
                 <label for="selResample">重采样插值算法</label>
                 <select id="selResample">
-                  <option value="high" selected>高质量平滑 (Bicubic / Lanczos 适合照片)</option>
-                  <option value="medium">标准双线性 (Bilinear 均衡速度)</option>
+                  <option value="high" selected>高质量平滑（多级缩小，适合照片）</option>
+                  <option value="medium">标准平滑（浏览器插值）</option>
                   <option value="pixelated">最近邻硬边缘 (Nearest 适合像素画/二维码)</option>
                 </select>
               </div>
@@ -2223,7 +2278,7 @@
                   </div>
                   <div>
                     <h2 class="card-title">修改 EXIF 元数据</h2>
-                    <p class="card-subtitle" id="exifStatusSubtitle">支持读写 JPEG / PNG / WebP 的 EXIF 标签</p>
+                    <p class="card-subtitle" id="exifStatusSubtitle">载入后可读取 JPEG / PNG / WebP 的元数据</p>
                   </div>
                 </div>
               </div>
@@ -2295,7 +2350,7 @@
                 <div class="field-grid-2">
                   <div class="m3-field">
                     <label for="exifFNumber">光圈值 (FNumber, f/)</label>
-                    <input type="number" id="exifFNumber" step="0.01" min="0.7" max="64" placeholder="如 1.8" />
+                    <input type="number" id="exifFNumber" step="0.01" min="0.01" max="42949672.95" placeholder="如 1.8" />
                   </div>
                   <div class="m3-field">
                     <label for="exifExposure">快门速度 (秒, 支持 1/125)</label>
@@ -2303,11 +2358,11 @@
                   </div>
                   <div class="m3-field">
                     <label for="exifIso">ISO 感光度</label>
-                    <input type="number" id="exifIso" step="1" min="25" max="409600" placeholder="如 100" />
+                    <input type="number" id="exifIso" step="1" min="1" max="4294967295" placeholder="如 100" />
                   </div>
                   <div class="m3-field">
                     <label for="exifFocal">焦距 (FocalLength, mm)</label>
-                    <input type="number" id="exifFocal" step="0.01" min="1" max="2000" placeholder="如 24" />
+                    <input type="number" id="exifFocal" step="0.01" min="0.01" max="42949672.95" placeholder="如 24" />
                   </div>
                 </div>
 
@@ -2458,11 +2513,22 @@
          MODULE 1: BINARY EXIF PARSER & SERIALIZER (ZERO DEPENDENCIES)
          Reads & writes authentic TIFF/EXIF APP1 metadata in JPEG & PNG
          ====================================================================== */
+      const MAX_METADATA_TEXT_BYTES = 32 * 1024;
+      const PNG_TEXT_FIELDS = new Map([
+        ["Author", "artist"], ["Artist", "artist"], ["Software", "software"], ["Copyright", "copyright"],
+        ["Description", "description"], ["Comment", "description"], ["Creation Time", "dateTime"]
+      ]);
+
       const ExifEngine = {
-        // Parse EXIF from ArrayBuffer (supports JPEG APP1 and PNG eXIf/tEXt)
-        parse(arrayBuffer) {
-          const view = new DataView(arrayBuffer);
-          const result = {
+        detectFormat(view) {
+          if (view.byteLength >= 2 && view.getUint16(0) === 0xffd8) return "image/jpeg";
+          if (view.byteLength >= 8 && view.getUint32(0) === 0x89504e47 && view.getUint32(4) === 0x0d0a1a0a) return "image/png";
+          if (view.byteLength >= 12 && view.getUint32(0) === 0x52494646 && view.getUint32(8) === 0x57454250) return "image/webp";
+          return "";
+        },
+
+        emptyMetadata() {
+          return {
             hasExif: false,
             make: "",
             model: "",
@@ -2478,103 +2544,136 @@
             gpsLat: "",
             gpsLng: ""
           };
+        },
 
-          if (view.byteLength < 12) return result;
+        // Parse editable metadata from an ArrayBuffer (JPEG, PNG or WebP).
+        async parse(arrayBuffer) {
+          const view = new DataView(arrayBuffer);
+          const result = this.emptyMetadata();
+          const format = this.detectFormat(view);
 
           // Check JPEG SOI: 0xFFD8
-          if (view.getUint16(0, false) === 0xffd8) {
-            let offset = 2;
-            while (offset + 4 <= view.byteLength) {
-              if (view.getUint8(offset) !== 0xff) break;
-              const m2 = view.getUint8(offset + 1);
-              if (m2 === 0xff) { offset += 1; continue; } // fill byte preceding a marker
-              if (m2 === 0xda || m2 === 0xd9 || m2 === 0x00) break; // SOS, EOI or stray data
-              if (m2 === 0x01 || (m2 >= 0xd0 && m2 <= 0xd7)) { offset += 2; continue; } // standalone markers carry no length
-              const marker = 0xff00 | m2;
-              const segLen = view.getUint16(offset + 2, false);
-              if (segLen < 2) break; // corrupt segment length
-              if (marker === 0xffe1 && segLen >= 8 && offset + 10 <= view.byteLength) {
-                // Check "Exif\0\0"
-                if (
-                  view.getUint32(offset + 4, false) === 0x45786966 &&
-                  view.getUint16(offset + 8, false) === 0x0000
-                ) {
-                  this._parseTiff(view, offset + 10, segLen - 8, result);
-                  break;
+          if (format === "image/jpeg") {
+            try {
+              for (const part of this._jpegParts(new Uint8Array(arrayBuffer))) {
+                const { type, data, end } = part;
+                if (type !== 0xe1 || end - data < 6) continue;
+                if (view.getUint32(data) === 0x45786966 && view.getUint16(data + 4) === 0) {
+                  this._parseTiff(view, data + 6, end - data - 6, result);
+                  if (result.hasExif) break; // Skip a bad APP1 if a valid EXIF segment follows it.
                 }
               }
-              offset += 2 + segLen;
-            }
+            } catch { /* ignore damaged framing when importing optional metadata */ }
           }
           // Check PNG Signature: 89 50 4E 47 0D 0A 1A 0A
-          else if (view.getUint32(0, false) === 0x89504e47 && view.getUint32(4, false) === 0x0d0a1a0a) {
-            let offset = 8;
-            const textMeta = [];
-            while (offset + 12 <= view.byteLength) {
-              const length = view.getUint32(offset, false);
-              const type = view.getUint32(offset + 4, false);
-              if (offset + 12 + length > view.byteLength) break;
-              if (type === 0x65584966) { // 'eXIf'
-                // Some writers keep the "Exif\0\0" prefix in this chunk too: tolerate it as the WebP path does
-                const prefixed = length >= 6 && view.getUint32(offset + 8, false) === 0x45786966 && view.getUint16(offset + 12, false) === 0;
-                this._parseTiff(view, offset + 8 + (prefixed ? 6 : 0), length - (prefixed ? 6 : 0), result);
-              } else if (type === 0x74455874) { // 'tEXt'
-                const chunkBytes = new Uint8Array(arrayBuffer, offset + 8, length);
-                const nullIdx = chunkBytes.indexOf(0);
-                if (nullIdx > 0) {
-                  const key = this._decodeText(chunkBytes.subarray(0, nullIdx));
-                  const val = this._decodeText(chunkBytes.subarray(nullIdx + 1)).trim();
-                  textMeta.push([key, val]);
-                }
-              } else if (type === 0x69545874) { // 'iTXt' (uncompressed UTF-8 text)
-                const chunkBytes = new Uint8Array(arrayBuffer, offset + 8, length);
-                const nullIdx = chunkBytes.indexOf(0);
-                if (nullIdx > 0 && nullIdx + 4 <= chunkBytes.length && chunkBytes[nullIdx + 1] === 0) {
-                  const langEnd = chunkBytes.indexOf(0, nullIdx + 3);
-                  const transEnd = langEnd >= 0 ? chunkBytes.indexOf(0, langEnd + 1) : -1;
-                  if (transEnd >= 0) {
-                    const key = this._decodeText(chunkBytes.subarray(0, nullIdx));
-                    const val = this._decodeText(chunkBytes.subarray(transEnd + 1)).trim();
-                    textMeta.push([key, val]);
-                  }
-                }
-              } else if (type === 0x49454e44) { // 'IEND'
-                break;
-              }
-              offset += 12 + length;
-            }
-            // Apply text chunks after eXIf so structured EXIF always wins regardless of chunk order
-            for (const [key, val] of textMeta) this._applyTextMeta(key, val, result);
+          else if (format === "image/png") {
+            await this._readPngMetadata(view, result);
           }
           // Check WebP: RIFF....WEBP, EXIF chunk
-          else if (view.byteLength >= 20 && view.getUint32(0, false) === 0x52494646 && view.getUint32(8, false) === 0x57454250) {
-            let offset = 12;
-            while (offset + 8 <= view.byteLength) {
-              const type = view.getUint32(offset, false);
-              const size = view.getUint32(offset + 4, true);
-              if (offset + 8 + size > view.byteLength) break;
-              if (type === 0x45584946) { // 'EXIF'
-                let start = offset + 8;
-                // Some writers prefix the payload with "Exif\0\0"
-                if (size >= 6 && view.getUint32(start, false) === 0x45786966 && view.getUint16(start + 4, false) === 0) start += 6;
-                this._parseTiff(view, start, size - (start - (offset + 8)), result);
+          else if (format === "image/webp") {
+            try {
+              const { chunks } = this._webpChunks(view);
+              const exif = chunks.find(({ fourcc }) => fourcc === "EXIF");
+              if (exif) {
+                const { start, payload } = exif;
+                // Some writers prefix the TIFF payload with "Exif\0\0".
+                const prefix = payload.length >= 6 && view.getUint32(start) === 0x45786966 && view.getUint16(start + 4) === 0 ? 6 : 0;
+                this._parseTiff(view, start + prefix, payload.length - prefix, result);
               }
-              offset += 8 + size + (size & 1);
-            }
+            } catch { /* invalid RIFF framing: do not read optional metadata */ }
           }
           return result;
         },
 
-        _applyTextMeta(key, val, result) {
-          if (!val) return;
-          if ((key === "Author" || key === "Artist") && !result.artist) { result.artist = val; result.hasExif = true; }
-          else if (key === "Software" && !result.software) { result.software = val; result.hasExif = true; }
-          else if (key === "Copyright" && !result.copyright) { result.copyright = val; result.hasExif = true; }
-          else if ((key === "Description" || key === "Comment") && !result.description) { result.description = val; result.hasExif = true; }
-          else if (key === "Creation Time" && !result.dateTime) {
-            const dt = this.normalizeDate(val);
-            if (dt) { result.dateTime = dt; result.hasExif = true; }
+        async _readPngMetadata(view, result) {
+          const textEntries = [];
+          for (let offset = 8; offset + 12 <= view.byteLength;) {
+            const length = view.getUint32(offset);
+            const type = view.getUint32(offset + 4);
+            const dataStart = offset + 8;
+            const end = dataStart + length;
+            if (end + 4 > view.byteLength || type === 0x49454e44) break; // IEND
+            const slice = (start, limit) => new Uint8Array(view.buffer, view.byteOffset + start, limit - start);
+            const validCrc = () => this._crc32(slice(offset + 4, end)) === view.getUint32(end);
+            if (type === 0x65584966 && validCrc()) { // eXIf
+              // Tolerate writers that include the JPEG-style "Exif\0\0" prefix.
+              const prefix = length >= 6 && view.getUint32(dataStart) === 0x45786966 && view.getUint16(dataStart + 4) === 0 ? 6 : 0;
+              this._parseTiff(view, dataStart + prefix, length - prefix, result);
+            } else if ((type === 0x74455874 || type === 0x7a545874 || type === 0x69545874) &&
+                       length <= MAX_METADATA_TEXT_BYTES && textEntries.length < 64) { // tEXt, zTXt, iTXt
+              const bytes = slice(dataStart, end);
+              const separator = bytes.subarray(0, 80).indexOf(0); // PNG keywords are 1–79 bytes.
+              const field = separator > 0 && PNG_TEXT_FIELDS.get(this._decodeLatin1(bytes.subarray(0, separator)));
+              if (field && validCrc()) textEntries.push({ field, type, bytes, separator });
+            }
+            offset = end + 4;
           }
+          // Structured EXIF wins, irrespective of chunk order. Only decode the fallback fields we use.
+          for (const { field, type, bytes, separator } of textEntries) {
+            if (result[field]) continue;
+            const text = await this._readPngText(type, bytes, separator);
+            const value = field === "dateTime" ? this.normalizeDate(text) : text;
+            if (value) {
+              result[field] = value;
+              result.hasExif = true;
+            }
+          }
+        },
+
+        async _readPngText(type, bytes, separator) {
+          let start = separator + 1;
+          let compressed = false;
+          const utf8 = type === 0x69545874;
+          if (utf8) {
+            const flag = bytes[start++];
+            const method = bytes[start++];
+            if (flag !== 0 && (flag !== 1 || method !== 0)) return "";
+            compressed = flag === 1;
+            const languageEnd = bytes.indexOf(0, start);
+            if (languageEnd < 0) return "";
+            const translatedEnd = bytes.indexOf(0, languageEnd + 1);
+            if (translatedEnd < 0) return "";
+            start = translatedEnd + 1;
+          } else if (type === 0x7a545874) {
+            if (bytes[start++] !== 0) return "";
+            compressed = true;
+          }
+          let value = bytes.subarray(start);
+          try {
+            if (compressed) {
+              if (typeof DecompressionStream !== "function") return "";
+              value = await this._inflatePngText(value);
+            }
+            if (!value || value.includes(0)) return "";
+            return (utf8 ? new TextDecoder("utf-8", { fatal: true }).decode(value) : this._decodeLatin1(value)).trim();
+          } catch {
+            return ""; // Malformed optional text must not prevent the picture from opening.
+          }
+        },
+
+        async _inflatePngText(bytes) {
+          const reader = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate")).getReader();
+          const output = new Uint8Array(MAX_METADATA_TEXT_BYTES);
+          let length = 0;
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) return output.subarray(0, length);
+              if (value.byteLength > output.length - length) return null;
+              output.set(value, length);
+              length += value.byteLength;
+            }
+          } finally {
+            try { await reader.cancel(); } catch { /* the stream may already be errored */ }
+            reader.releaseLock();
+          }
+        },
+
+        _decodeLatin1(bytes) {
+          // The WHATWG TextDecoder alias for ISO-8859-1 actually decodes Windows-1252.
+          let text = "";
+          for (let i = 0; i < bytes.length; i += 4096) text += String.fromCharCode(...bytes.subarray(i, i + 4096));
+          return text;
         },
 
         // A corrupt entry must not throw away what was already read from the same block
@@ -2714,46 +2813,36 @@
           }
 
           if (group === "GPS" && gpsStatus !== "V") {
-            if (gpsLatArr && gpsLatArr.every((v) => v >= 0)) {
-              let deg = gpsLatArr[0] + gpsLatArr[1] / 60 + gpsLatArr[2] / 3600;
-              if (deg !== 0 || /^[NS]/.test(gpsLatRef || "")) {
-                if ((gpsLatRef || "N").startsWith("S")) deg = -deg;
-                if (Number.isFinite(deg) && Math.abs(deg) <= 90) out.gpsLat = String(Number(deg.toFixed(6)));
-              }
-            }
-            if (gpsLngArr && gpsLngArr.every((v) => v >= 0)) {
-              let deg = gpsLngArr[0] + gpsLngArr[1] / 60 + gpsLngArr[2] / 3600;
-              if (deg !== 0 || /^[EW]/.test(gpsLngRef || "")) {
-                if ((gpsLngRef || "E").startsWith("W")) deg = -deg;
-                if (Number.isFinite(deg) && Math.abs(deg) <= 180) out.gpsLng = String(Number(deg.toFixed(6)));
-              }
-            }
+            const lat = this._gpsDegrees(gpsLatArr, gpsLatRef, "N", "S", 90);
+            const lng = this._gpsDegrees(gpsLngArr, gpsLngRef, "E", "W", 180);
+            if (lat !== "") out.gpsLat = lat;
+            if (lng !== "") out.gpsLng = lng;
           }
 
           return ptrs;
         },
 
-        _readAscii(view, offset, len) {
-          const end = Math.min(view.byteLength, offset + len);
-          const bytes = new Uint8Array(Math.max(0, end - offset));
-          let n = 0;
-          for (let i = offset; i < end; i++) {
-            const b = view.getUint8(i);
-            if (b === 0) break;
-            bytes[n++] = b;
-          }
-          return this._decodeText(bytes.subarray(0, n)).trim();
+        _gpsDegrees(dms, ref, positive, negative, limit) {
+          if (!dms || (ref !== positive && ref !== negative) || !dms.every((part) => Number.isFinite(part) && part >= 0)) return "";
+          const [degrees, minutes, seconds] = dms;
+          if (minutes >= 60 || seconds >= 60) return "";
+          const value = degrees + minutes / 60 + seconds / 3600;
+          if (value > limit) return "";
+          return String(Number((ref === negative ? -value : value).toFixed(6)));
         },
 
-        // Prefer UTF-8, but many cameras / older tools write Latin-1; a non-fatal UTF-8 decode would
-        // silently turn those bytes into U+FFFD, so fall back to a byte-per-char decode instead.
-        _decodeText(bytes) {
+        _readAscii(view, offset, len) {
+          const length = Math.min(view.byteLength - offset, len, MAX_METADATA_TEXT_BYTES);
+          const bytes = new Uint8Array(view.buffer, view.byteOffset + offset, length);
+          const end = bytes.indexOf(0);
+          // Don't allocate based on an arbitrary TIFF entry count, or decode a partial character.
+          if (end < 0 && length !== len) return "";
+          const text = bytes.subarray(0, end < 0 ? length : end);
           try {
-            return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            // Some cameras use UTF-8 in EXIF ASCII fields; older ones use Latin-1.
+            return new TextDecoder("utf-8", { fatal: true }).decode(text).trim();
           } catch {
-            let s = "";
-            for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-            return s;
+            return this._decodeLatin1(text).trim();
           }
         },
 
@@ -2836,13 +2925,13 @@
         },
 
         // Positive 2-decimal number (FNumber / FocalLength, stored at scale = 100 within uint32 RATIONAL)
-        parsePositiveFixed(raw, maxVal = 42949672) {
+        parsePositiveFixed(raw) {
           const s = String(raw == null ? "" : raw).trim();
           if (!s) return 0;
           const v = Number(s);
           if (!Number.isFinite(v)) return 0;
-          const rounded = Math.round(v * 100) / 100;
-          return rounded >= 0.01 && rounded <= maxVal ? rounded : 0;
+          const hundredths = Math.round(v * 100);
+          return hundredths >= 1 && hundredths <= 0xffffffff ? hundredths / 100 : 0;
         },
 
         parseGpsCoord(raw, limit) {
@@ -3078,49 +3167,68 @@
           return outBuf;
         },
 
-        // Inject or strip APP1 EXIF segment in a JPEG Uint8Array
-        processJpegBytes(jpegBytes, stripExif, meta, dims) {
-          if (jpegBytes.length < 4 || jpegBytes[0] !== 0xff || jpegBytes[1] !== 0xd8) {
-            throw new Error("无法读取 JPEG 容器");
-          }
-          // Drop any existing APP1 (0xFFE1) segments (EXIF / XMP) after SOI
-          const chunks = [new Uint8Array([0xff, 0xd8])];
+        // Walk JPEG markers all the way to EOI, including segments between progressive scans.
+        *_jpegParts(bytes) {
+          if (bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new Error("无法读取 JPEG 容器");
+          const restart = (type) => type >= 0xd0 && type <= 0xd7;
           let pos = 2;
-          let removedAny = false;
-          while (pos + 4 <= jpegBytes.length) {
-            const m1 = jpegBytes[pos];
-            const m2 = jpegBytes[pos + 1];
-            if (m1 !== 0xff) throw new Error("JPEG 段标记无效");
-            if (m2 === 0xff) {
-              chunks.push(jpegBytes.subarray(pos, pos + 1));
-              pos += 1;
+          let inScan = false;
+          while (pos < bytes.length) {
+            if (inScan) {
+              const scanStart = pos;
+              // FF 00 is stuffed data; restart markers (and marker fill bytes) remain in the scan.
+              while (true) {
+                const marker = bytes.indexOf(0xff, pos);
+                if (marker < 0) throw new Error("JPEG 扫描区不完整");
+                pos = marker + 1;
+                while (bytes[pos] === 0xff) pos++;
+                const type = bytes[pos];
+                if (type === undefined) throw new Error("JPEG 扫描区不完整");
+                if (type === 0 || restart(type)) { pos++; continue; }
+                if (marker > scanStart) yield { start: scanStart, end: marker };
+                pos = marker;
+                break;
+              }
+            }
+            const start = pos;
+            if (bytes[pos++] !== 0xff) throw new Error("JPEG 段标记无效");
+            while (bytes[pos] === 0xff) pos++;
+            const type = bytes[pos++];
+            if (type === 0xd9) {
+              yield { type, start, end: pos };
+              return;
+            }
+            if (type === undefined || type === 0 || type === 0xd8) throw new Error("JPEG 段标记无效");
+            inScan = type === 0xda; // Start of Scan has a length-bearing header.
+            if (type === 1 || restart(type)) {
+              yield { type, start, end: pos };
               continue;
             }
-            if (m2 === 0xda || m2 === 0xd9 || m2 === 0x00) {
-              chunks.push(jpegBytes.subarray(pos));
-              pos = jpegBytes.length;
-              break;
-            }
-            if (m2 === 0x01 || (m2 >= 0xd0 && m2 <= 0xd7)) {
-              chunks.push(jpegBytes.subarray(pos, pos + 2));
-              pos += 2;
-              continue;
-            }
-            const segLen = (jpegBytes[pos + 2] << 8) | jpegBytes[pos + 3];
-            const nextPos = pos + 2 + segLen;
-            if (segLen < 2 || nextPos > jpegBytes.length) throw new Error("JPEG 段长度无效");
-            // Skip existing APP1 (0xE1) if we are stripping or replacing EXIF
-            if (m2 !== 0xe1) {
-              chunks.push(jpegBytes.subarray(pos, nextPos));
-            } else {
-              removedAny = true;
-            }
-            pos = nextPos;
+            if (pos + 2 > bytes.length) throw new Error("JPEG 段长度缺失");
+            const length = (bytes[pos] << 8) | bytes[pos + 1];
+            const end = pos + length;
+            if (length < 2 || end > bytes.length) throw new Error("JPEG 段长度无效");
+            yield { type, start, end, data: pos + 2 };
+            pos = end;
           }
-          if (pos < jpegBytes.length) {
-            chunks.push(jpegBytes.subarray(pos));
+          throw new Error("JPEG 缺少结束标记");
+        },
+
+        // Strip or replace APP1 (EXIF / XMP). A privacy export also drops IPTC/comment segments.
+        processJpegBytes(jpegBytes, stripExif, meta, dims) {
+          const chunks = [jpegBytes.subarray(0, 2)];
+          let insertAt = 1;
+          let end = 2;
+          let removed = false;
+          for (const part of this._jpegParts(jpegBytes)) {
+            const { type, start } = part;
+            end = part.end;
+            if (type === 0xe0 && start === 2) insertAt = 2; // Keep the initial JFIF APP0 first.
+            if (type === 0xe1 || (stripExif && (type === 0xed || type === 0xfe))) removed = true;
+            else chunks.push(jpegBytes.subarray(start, end));
           }
-          if (stripExif && !removedAny) return jpegBytes;
+          // Bytes after EOI are not image data and must not leak into the processed result.
+          if (stripExif && !removed) return end === jpegBytes.length ? jpegBytes : jpegBytes.subarray(0, end);
 
           if (!stripExif) {
             const tiffBytes = this.buildTiffBuffer(meta, dims, true);
@@ -3137,9 +3245,7 @@
             // "Exif\0\0"
             app1Seg.set([0x45, 0x78, 0x69, 0x66, 0x00, 0x00], 4);
             app1Seg.set(tiffBytes, 10);
-            // Keep JFIF APP0 first (required by the JFIF spec), EXIF directly after it
-            const hasApp0 = chunks.length > 1 && chunks[1][0] === 0xff && chunks[1][1] === 0xe0;
-            chunks.splice(hasApp0 ? 2 : 1, 0, app1Seg);
+            chunks.splice(insertAt, 0, app1Seg);
           }
 
           const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
@@ -3213,66 +3319,67 @@
           return out;
         },
 
-        // Inject or strip EXIF chunk in a RIFF/WebP container (upgrades simple VP8/VP8L files to VP8X extended format)
-        injectWebpExif(webpBytes, stripExif, meta, canvasW, canvasH) {
-          if (webpBytes.length < 20) return webpBytes;
-          const tag = (off) => String.fromCharCode(webpBytes[off], webpBytes[off + 1], webpBytes[off + 2], webpBytes[off + 3]);
-          if (tag(0) !== "RIFF" || tag(8) !== "WEBP") return webpBytes;
-
-          // Walk existing chunks
+        // RFC 9649: chunk bounds include the zero padding byte, and trailing bytes are not part of RIFF.
+        _webpChunks(view) {
+          if (this.detectFormat(view) !== "image/webp") throw new Error("无法读取 WebP 容器");
+          const end = 8 + view.getUint32(4, true);
+          if (end < 20 || end > view.byteLength || end % 2 !== 0) throw new Error("WebP 容器长度无效");
           const chunks = [];
-          let pos = 12;
-          while (pos + 8 <= webpBytes.length) {
-            const fourcc = tag(pos);
-            const size = (webpBytes[pos + 4] | (webpBytes[pos + 5] << 8) | (webpBytes[pos + 6] << 16) | (webpBytes[pos + 7] << 24)) >>> 0;
-            const padded = size + (size & 1);
-            if (pos + 8 + size > webpBytes.length) break;
-            chunks.push({ fourcc, payload: webpBytes.subarray(pos + 8, pos + 8 + size) });
-            pos += 8 + padded;
+          for (let pos = 12; pos < end;) {
+            if (pos + 8 > end) throw new Error("WebP 块头不完整");
+            const size = view.getUint32(pos + 4, true);
+            const start = pos + 8;
+            const padding = size & 1;
+            const next = start + size + padding;
+            if (next > end || (padding && view.getUint8(next - 1) !== 0)) throw new Error("WebP 块长度或填充无效");
+            const fourcc = String.fromCharCode(view.getUint8(pos), view.getUint8(pos + 1), view.getUint8(pos + 2), view.getUint8(pos + 3));
+            if (fourcc === "VP8X" && (pos !== 12 || size !== 10)) throw new Error("WebP 扩展头无效");
+            chunks.push({ fourcc, start, payload: new Uint8Array(view.buffer, view.byteOffset + start, size) });
+            pos = next;
           }
-          if (chunks.length === 0) return webpBytes;
+          return { end, chunks };
+        },
 
-          let vp8x = chunks.find((c) => c.fourcc === "VP8X");
-          const body = chunks.filter((c) => c.fourcc !== "VP8X" && c.fourcc !== "EXIF" && (!stripExif || c.fourcc !== "XMP "));
-          let ordered;
+        // Add EXIF (upgrading simple VP8/VP8L to VP8X) or strip all EXIF/XMP chunks.
+        injectWebpExif(webpBytes, stripExif, meta, canvasW, canvasH) {
+          const view = new DataView(webpBytes.buffer, webpBytes.byteOffset, webpBytes.byteLength);
+          const { chunks, end } = this._webpChunks(view);
+          const vp8x = chunks[0]?.fourcc === "VP8X" ? chunks[0].payload : null;
+          if (!chunks.some(({ fourcc }) => fourcc === "VP8 " || fourcc === "VP8L" || (vp8x && fourcc === "ANMF"))) {
+            throw new Error("WebP 缺少图像块");
+          }
+          const body = chunks.filter(({ fourcc }) => fourcc !== "VP8X" && fourcc !== "EXIF" && (!stripExif || fourcc !== "XMP "));
+          let ordered = body;
           if (stripExif) {
-            if (!chunks.some((c) => c.fourcc === "EXIF" || c.fourcc === "XMP ")) return webpBytes;
-            if (vp8x && vp8x.payload.length >= 10) {
-              const p = new Uint8Array(vp8x.payload);
-              p[0] &= ~(0x08 | 0x04); // Clear EXIF & XMP flags
-              const isSimple = p[0] === 0 && body.length === 1 && (body[0].fourcc === "VP8 " || body[0].fourcc === "VP8L");
-              ordered = isSimple ? body : [{ fourcc: "VP8X", payload: p }, ...body];
-            } else {
-              ordered = body;
+            if (chunks.length === body.length + (vp8x ? 1 : 0) && !(vp8x?.[0] & 0x0c)) {
+              return end === webpBytes.length ? webpBytes : webpBytes.subarray(0, end);
+            }
+            if (vp8x) {
+              const header = new Uint8Array(vp8x);
+              header[0] &= ~0x0c; // Clear EXIF and XMP flags.
+              const simple = header[0] === 0 && body.length === 1 && (body[0].fourcc === "VP8 " || body[0].fourcc === "VP8L");
+              if (!simple) ordered = [{ fourcc: "VP8X", payload: header }, ...body];
             }
           } else {
-            // Build / update VP8X header with the EXIF flag
-            if (vp8x && vp8x.payload.length >= 10) {
-              const p = new Uint8Array(vp8x.payload);
-              p[0] |= 0x08; // E (EXIF) flag
-              vp8x = { fourcc: "VP8X", payload: p };
-            } else {
-              let hasAlpha = false;
-              const vp8l = chunks.find((c) => c.fourcc === "VP8L");
-              if (vp8l && vp8l.payload.length >= 5 && vp8l.payload[0] === 0x2f) {
-                const bits = vp8l.payload[1] | (vp8l.payload[2] << 8) | (vp8l.payload[3] << 16) | (vp8l.payload[4] << 24);
-                hasAlpha = ((bits >>> 28) & 1) === 1;
-              }
-              if (chunks.some((c) => c.fourcc === "ALPH")) hasAlpha = true;
-              const p = new Uint8Array(10);
-              p[0] = 0x08 | (hasAlpha ? 0x10 : 0);
-              const w = Math.max(1, canvasW) - 1;
-              const h = Math.max(1, canvasH) - 1;
-              p[4] = w & 0xff; p[5] = (w >> 8) & 0xff; p[6] = (w >> 16) & 0xff;
-              p[7] = h & 0xff; p[8] = (h >> 8) & 0xff; p[9] = (h >> 16) & 0xff;
-              vp8x = { fourcc: "VP8X", payload: p };
+            const header = vp8x ? new Uint8Array(vp8x) : new Uint8Array(10);
+            if (!vp8x) {
+              const vp8l = body.find(({ fourcc }) => fourcc === "VP8L")?.payload;
+              // The VP8L alpha hint is bit 28 of the four bytes after its 0x2f signature.
+              if ((vp8l?.[0] === 0x2f && (vp8l[4] & 0x10)) || body.some(({ fourcc }) => fourcc === "ALPH")) header[0] |= 0x10;
+              if (body.some(({ fourcc }) => fourcc === "ICCP")) header[0] |= 0x20;
+              const w = canvasW - 1;
+              const h = canvasH - 1;
+              header[4] = w & 0xff; header[5] = (w >> 8) & 0xff; header[6] = (w >> 16) & 0xff;
+              header[7] = h & 0xff; header[8] = (h >> 8) & 0xff; header[9] = (h >> 16) & 0xff;
             }
-            const exifChunk = { fourcc: "EXIF", payload: this.buildTiffBuffer(meta, { w: canvasW, h: canvasH }) };
-            // RFC 9649 requires the EXIF chunk to precede any XMP chunk
-            const xmpIdx = body.findIndex((c) => c.fourcc === "XMP ");
-            ordered = xmpIdx >= 0
-              ? [vp8x, ...body.slice(0, xmpIdx), exifChunk, ...body.slice(xmpIdx)]
-              : [vp8x, ...body, exifChunk];
+            header[0] |= 0x08;
+            const xmpIndex = body.findIndex(({ fourcc }) => fourcc === "XMP ");
+            if (xmpIndex >= 0) header[0] |= 0x04;
+            else header[0] &= ~0x04;
+            body.splice(xmpIndex >= 0 ? xmpIndex : body.length, 0, {
+              fourcc: "EXIF", payload: this.buildTiffBuffer(meta, { w: canvasW, h: canvasH })
+            });
+            ordered = [{ fourcc: "VP8X", payload: header }, ...body];
           }
 
           let total = 12;
@@ -3455,10 +3562,8 @@
         matteColor: "#ffffff",
         compressionMode: "lossy", // 'lossy' | 'lossless'
         compressionQuality: 80,   // Encoder setting, not a promised file-size reduction
-        modeBeforeBmp: null,      // Compression mode to restore when leaving BMP
-        formatTouched: false,     // The user picked an output format themselves
-        modeTouched: false,       // The user picked lossy / lossless themselves
-        autoLosslessForPng: false, // Lossless was switched on automatically for a PNG input (undone when leaving PNG)
+        compressionPreference: null, // Explicit user choice; otherwise use the format default.
+        formatTouched: false,     // The user picked an output format themselves.
 
         // Live Output Cache
         outputBlob: null,
@@ -3505,6 +3610,7 @@
         iconLockOpen: $("iconLockOpen"),
         sliderScalePercent: $("sliderScalePercent"),
         scalePercentBadge: $("scalePercentBadge"),
+        scaleLimitNote: $("scaleLimitNote"),
         selResample: $("selResample"),
 
         // EXIF inputs
@@ -3674,71 +3780,82 @@
 
       let loadToken = 0; // Only the most recently requested image may initialise the workspace
 
-      async function loadImageFromFile(file, onLoaded) {
-        const looksLikeImage = file && (
-          (file.type && file.type.startsWith("image/")) ||
-          /\.(jpe?g|a?png|webp|gif|bmp|avif|svg|ico|cur|heic|heif|tiff?)$/i.test(file.name || "")
-        );
-        if (!looksLikeImage) {
-          showToast("请选择有效的图片文件 (JPEG / PNG / WebP / BMP / GIF)");
-          return;
-        }
-        const token = ++loadToken;
+      async function decodeLocalImage(blob) {
+        const url = URL.createObjectURL(blob);
         try {
-          const arrayBuffer = await file.arrayBuffer();
-          if (token !== loadToken) return;
-          let parsedExif;
-          try {
-            parsedExif = ExifEngine.parse(arrayBuffer);
-          } catch (parseErr) {
-            // A malformed EXIF block must never prevent the image itself from loading
-            console.warn("EXIF 解析失败，已忽略", parseErr);
-            parsedExif = ExifEngine.parse(new ArrayBuffer(0));
-          }
-          const blobUrl = URL.createObjectURL(file);
-
           const img = new Image();
-          img.onload = () => {
-            URL.revokeObjectURL(blobUrl);
-            if (token !== loadToken) return;
-            if (!img.naturalWidth || !img.naturalHeight) {
-              showToast("无法获取图片尺寸（可能是无固有尺寸的 SVG），请换一张图片");
-              return;
-            }
-            // Runs before init so that a downscale warning raised by init is not overwritten
-            if (typeof onLoaded === "function") onLoaded();
-            try {
-              const fallbackExt = ((file.type || "").split("/")[1] || "png").replace("jpeg", "jpg").replace("+xml", "");
-              initWorkspaceWithImage(img, {
-                fileName: (file.name || "").trim() || `clipboard.${fallbackExt}`,
-                fileSize: file.size,
-                mimeType: file.type,
-                exif: parsedExif
-              });
-            } catch (initErr) {
-              console.error(initErr);
-              showToast("图片载入失败：" + ((initErr && initErr.message) || "内存不足，请换一张较小的图片"));
-            }
-          };
-          img.onerror = () => {
-            URL.revokeObjectURL(blobUrl);
-            if (token !== loadToken) return;
-            showToast("图片解码失败，请尝试其他图片格式");
-          };
-          img.src = blobUrl;
-        } catch (err) {
-          showToast("读取图片出错：" + err.message);
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => reject(new Error("图片解码失败，请尝试其他图片格式"));
+            img.src = url;
+          });
+          if (!img.naturalWidth || !img.naturalHeight) throw new Error("无法获取图片尺寸，请换一张图片");
+          return img;
+        } finally {
+          URL.revokeObjectURL(url);
         }
       }
 
-      // Generate a rich, photographic 1600x1066 sample image with realistic EXIF
-      function loadDemoImage() {
-        const w = 1600, h = 1066;
-        const c = document.createElement("canvas");
-        c.width = w;
-        c.height = h;
-        const ctx = c.getContext("2d");
+      function isAvifHeader(view) {
+        if (view.byteLength < 16 || view.getUint32(4) !== 0x66747970) return false; // ftyp
+        const isAvifBrand = (offset) => {
+          const brand = view.getUint32(offset);
+          return brand === 0x61766966 || brand === 0x61766973; // avif / avis
+        };
+        if (isAvifBrand(8)) return true;
+        const end = Math.min(view.byteLength, view.getUint32(0));
+        for (let offset = 16; offset + 4 <= end; offset += 4) {
+          if (isAvifBrand(offset)) return true;
+        }
+        return false;
+      }
 
+      async function loadImageFromFile(file, onLoaded) {
+        const token = ++loadToken; // An invalid selection also supersedes a previous in-flight load.
+        try {
+          const header = new DataView(await file.slice(0, 256).arrayBuffer());
+          if (token !== loadToken) return;
+          const exifFormat = ExifEngine.detectFormat(header);
+          const sourceFormat = exifFormat || (isAvifHeader(header) ? "image/avif" : "");
+          const ext = (file.name || "").split(".").pop().toLowerCase();
+          if (!sourceFormat && !file.type.startsWith("image/") && !/^(jpe?g|a?png|webp|gif|bmp|avif|svg|ico|cur|heic|heif|tiff?)$/.test(ext)) {
+            showToast("请选择有效的图片文件 (JPEG / PNG / WebP / BMP / GIF)");
+            return;
+          }
+          let exif = ExifEngine.emptyMetadata();
+          let metadataStatus = exifFormat ? "read" : "unsupported";
+          if (exifFormat) {
+            try {
+              const bytes = await file.arrayBuffer();
+              if (token !== loadToken) return;
+              exif = await ExifEngine.parse(bytes);
+            } catch (err) {
+              if (token !== loadToken) return;
+              metadataStatus = "failed";
+              console.warn("EXIF 读取失败，继续解码图片", err);
+            }
+          }
+          if (token !== loadToken) return;
+          // Use the probed format for decoding even when the file name or reported type is wrong.
+          const mime = sourceFormat || (ext === "svg" && !file.type.startsWith("image/") ? "image/svg+xml" : file.type);
+          const img = await decodeLocalImage(mime === file.type ? file : file.slice(0, file.size, mime));
+          if (token !== loadToken) return;
+          const fallbackExt = ((mime || "").split("/")[1] || "png").replace("jpeg", "jpg").replace("+xml", "");
+          const downscaled = initWorkspaceWithImage(img, {
+            fileName: (file.name || "").trim() || `clipboard.${fallbackExt}`,
+            fileSize: file.size,
+            sourceFormat,
+            metadataStatus,
+            exif
+          });
+          if (!downscaled) onLoaded?.();
+        } catch (err) {
+          if (token === loadToken) showToast("图片载入失败：" + (err?.message || "请换一张较小的图片"));
+        }
+      }
+
+      // Draw a photographic 1600×1066 fixture without downloading an external asset.
+      function drawDemoImage(ctx, w, h) {
         // Vibrant sunset / alpine studio backdrop
         const sky = ctx.createLinearGradient(0, 0, w, h);
         sky.addColorStop(0, "#0f2942");
@@ -3794,50 +3911,56 @@
         ctx.fillStyle = "#9cf1ed";
         ctx.fillText("f/1.8  ·  1/250s  ·  ISO 100  ·  24mm", 116, 238);
 
+      }
+
+      async function loadDemoImage() {
         const token = ++loadToken;
-        c.toBlob((blob) => {
-          releaseCanvas(c); // The encoded bytes are all that is needed from the demo canvas
-          if (!blob) {
-            showToast("无法生成示例图片，请改为选择本地图片");
-            return;
+        const w = 1600, h = 1066;
+        const canvas = document.createElement("canvas");
+        try {
+          let blob;
+          try {
+            sizeCanvas(canvas, w, h);
+            const ctx = canvas.getContext("2d");
+            if (!ctx) throw new Error("无法分配示例画布");
+            drawDemoImage(ctx, w, h);
+            blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.95));
+          } finally {
+            releaseCanvas(canvas);
           }
-          const url = URL.createObjectURL(blob);
-          const img = new Image();
-          img.onerror = () => {
-            URL.revokeObjectURL(url);
-            if (token === loadToken) showToast("示例图片解码失败");
-          };
-          img.onload = () => {
-            URL.revokeObjectURL(url);
-            if (token !== loadToken) return;
-            initWorkspaceWithImage(img, {
-              fileName: "alpine_sunset_demo.jpg",
-              fileSize: blob.size,
-              mimeType: "image/jpeg",
-              exif: {
-                hasExif: true,
-                make: "SONY",
-                model: "ILCE-7M4",
-                artist: "PixelStudio Photographer",
-                software: "PixelStudio H5 Engine",
-                dateTime: getNowExifDate(),
-                copyright: `© ${new Date().getFullYear()} PixelStudio`,
-                description: "Alpine Sunset Sample Photo",
-                fNumber: "1.8",
-                exposureTime: "1/250",
-                iso: "100",
-                focalLength: "24",
-                gpsLat: "31.230416",
-                gpsLng: "121.473701"
-              }
-            });
-            showToast("已加载内置高分辨率示例图与 EXIF 参数");
-          };
-          img.src = url;
-        }, "image/jpeg", 0.95);
+          if (token !== loadToken) return;
+          if (!blob) throw new Error("无法生成示例图片");
+          const img = await decodeLocalImage(blob);
+          if (token !== loadToken) return;
+          initWorkspaceWithImage(img, {
+            fileName: "alpine_sunset_demo.jpg",
+            fileSize: blob.size,
+            sourceFormat: "image/jpeg",
+            exif: {
+              hasExif: true,
+              make: "SONY",
+              model: "ILCE-7M4",
+              artist: "PixelStudio Photographer",
+              software: "PixelStudio H5 Engine",
+              dateTime: getNowExifDate(),
+              copyright: `© ${new Date().getFullYear()} PixelStudio`,
+              description: "Alpine Sunset Sample Photo",
+              fNumber: "1.8",
+              exposureTime: "1/250",
+              iso: "100",
+              focalLength: "24",
+              gpsLat: "31.230416",
+              gpsLng: "121.473701"
+            }
+          });
+          showToast("已加载内置高分辨率示例图与 EXIF 参数");
+        } catch (err) {
+          if (token === loadToken) showToast("示例图片载入失败：" + (err?.message || "请改为选择本地图片"));
+        }
       }
 
       function initWorkspaceWithImage(img, meta) {
+        const focusFromPicker = els.dropzoneCard.contains(document.activeElement);
         const safe = ensureSafeSource(img);
         // Free the previous working canvases right away: big canvases are scarce on mobile browsers
         if (state.transformedSource !== state.sourceImg) releaseCanvas(state.transformedSource);
@@ -3858,7 +3981,8 @@
         lastScheduledEncodeKey = null;
         lastCompletedEncodeKey = null;
         outputGeometryKey = null;
-        outputCompareLabel = "";
+        outputDetails = null;
+        encodeFailure = "";
         isEncodePending = false;
         state.hasImage = true;
         state.sourceImg = safe.source;
@@ -3892,12 +4016,6 @@
         els.btnLockAspect.setAttribute("aria-pressed", "true");
         els.iconLockClosed.style.display = "block";
         els.iconLockOpen.style.display = "none";
-        els.estimatedSizeLabel.textContent = "-- KB";
-        // The previous picture's spec (or the "no image" placeholder) must not linger while the first encode runs
-        els.exportSpecSummary.textContent = "--";
-        els.sizeDeltaPill.textContent = "等待编码";
-        els.sizeDeltaPill.classList.remove("increase");
-
         if (safe.downscaled) {
           showToast(`原图 ${img.naturalWidth}×${img.naturalHeight} 超出浏览器画布像素上限，已安全缩放至 ${safe.w}×${safe.h} 进行处理`);
         }
@@ -3920,9 +4038,10 @@
         };
         syncExifToInputs();
 
-        els.exifStatusSubtitle.textContent = meta.exif.hasExif
-          ? "已从原图读取到 EXIF 标签，可直接编辑或清空"
-          : "原图无 EXIF 数据，可在此写入新的相机参数";
+        els.exifStatusSubtitle.textContent = meta.exif.hasExif ? "已从原图读取到元数据，可直接编辑或清空"
+          : meta.metadataStatus === "unsupported" ? "本工具不读取此输入格式的元数据，可填写新的相机参数"
+          : meta.metadataStatus === "failed" ? "无法读取原图的元数据，仍可填写新的相机参数"
+          : "未读到可编辑的元数据，可填写新的相机参数";
 
         // Set default output filename without extension
         const baseName = meta.fileName.replace(/\.[^/.]+$/, "") || "image";
@@ -3937,7 +4056,7 @@
         els.fileNameLabel.textContent = meta.fileName;
         els.fileMetaLabel.textContent = `${img.naturalWidth}×${img.naturalHeight} · ${formatBytes(meta.fileSize)}`;
         els.btnToggleCompareTop.disabled = false;
-        els.btnDownloadExport.disabled = false;
+        setGeometryToolsAvailable(true);
 
         // Reset active ratio chip
         document.querySelectorAll("#cropRatioChips .m3-chip").forEach((ch) => {
@@ -3949,27 +4068,20 @@
         applyDefaultOutputFormat(meta);
         state.hasImage = true;
         rebuildTransformedSource(true);
+        // The picker is now hidden. Keep keyboard users on a usable control instead of losing focus.
+        if (focusFromPicker) els.cropBox.focus({ preventScroll: true });
+        return safe.downscaled;
       }
 
-      // Export in the format the picture came in (unless the user already chose one manually):
-      // a PNG / WebP with transparency would otherwise silently be flattened onto a JPEG matte.
-      // PNG is also switched to lossless, because its "lossy" mode quantizes the colours.
-      function applyDefaultOutputFormat(meta) {
+      // Preserve alpha by default even for unknown inputs; only actual JPEG defaults to JPEG.
+      function applyDefaultOutputFormat({ sourceFormat }) {
         if (state.formatTouched) return;
-        const ext = ((meta.fileName || "").match(/\.([a-z0-9]+)$/i) || [])[1];
-        const webpTarget = $("btnFormatWebp").style.display !== "none" ? "image/webp" : "image/png";
-        const avifTarget = $("btnFormatAvif").style.display !== "none" ? "image/avif" : "image/png";
-        // Icons and animated PNGs carry transparency too: they must not fall through to the JPEG default
-        const byMime = { "image/jpeg": "image/jpeg", "image/png": "image/png", "image/apng": "image/png", "image/webp": webpTarget, "image/avif": avifTarget, "image/gif": "image/png", "image/svg+xml": "image/png", "image/bmp": "image/png", "image/x-icon": "image/png", "image/vnd.microsoft.icon": "image/png" };
-        const byExt = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", apng: "image/png", webp: webpTarget, avif: avifTarget, gif: "image/png", svg: "image/png", bmp: "image/png", ico: "image/png", cur: "image/png" };
-        const target = byMime[meta.mimeType] || byExt[(ext || "").toLowerCase()] || "image/jpeg";
-        if (target !== state.outputFormat) {
-          const btn = document.querySelector(`#formatSegmented .segmented-btn[data-format="${target}"]`);
-          if (btn) btn.click();
-        }
-        if (target === "image/png" && !state.modeTouched && state.compressionMode !== "lossless") {
-          state.autoLosslessForPng = true;
-          document.querySelector('#compressionModeSegmented .segmented-btn[data-mode="lossless"]').click();
+        if (sourceFormat === "image/jpeg" ||
+            (sourceFormat === "image/webp" && $("btnFormatWebp").style.display !== "none") ||
+            (sourceFormat === "image/avif" && $("btnFormatAvif").style.display !== "none")) {
+          setOutputFormat(sourceFormat);
+        } else {
+          setOutputFormat("image/png");
         }
       }
 
@@ -4043,8 +4155,7 @@
           compareBeforeKey = null;
           releaseCanvas(els.previewCanvas);
           els.cropOverlay.classList.remove("visible");
-          clearOutput();
-          setEncodePending(false);
+          clearOutput("无法创建变换画布，请重置图像或尝试较小的图片");
           return;
         }
         if (state.compareMode) renderCompareView();
@@ -4144,37 +4255,34 @@
       function syncResizeInputs(skipInput = null) {
         if (skipInput !== els.inpResizeW) els.inpResizeW.value = state.targetW;
         if (skipInput !== els.inpResizeH) els.inpResizeH.value = state.targetH;
-        const pct = state.resizeScale * state.resizeLimit * 100;
-        const label = (n) => n < 1 ? "<1%" : `${Math.round(n)}%`;
-        els.sliderScalePercent.value = Math.round(pct);
-        const sy = state.resizeScaleY;
-        els.scalePercentBadge.textContent = sy === null || sy === state.resizeScale
-          ? label(pct) : `${label(pct)} × ${label(sy * state.resizeLimit * 100)}`;
+        const sx = state.resizeScale;
+        const sy = state.resizeScaleY ?? sx;
+        const limit = state.resizeLimit;
+        const percentage = (scale) => scale < 0.01 ? "<1%" : `${Math.round(scale * 100)}%`;
+        const describeScale = (ratio) => sx === sy ? percentage(sx * ratio) : `${percentage(sx * ratio)} × ${percentage(sy * ratio)}`;
+        const requested = Math.round(sx * 100);
+        // Use the requested value so keyboard steps don't get forced back to the same cap.
+        els.sliderScalePercent.value = requested;
+        els.sliderScalePercent.setAttribute("aria-valuetext", `${els.sliderScalePercent.value}%`);
+        els.scalePercentBadge.textContent = describeScale(limit);
+        let note = "";
+        if (limit < 1) note = `请求 ${describeScale(1)}；因画布上限，实际采用 ${describeScale(limit)}。`;
+        else if (requested < Number(els.sliderScalePercent.min) || requested > Number(els.sliderScalePercent.max)) {
+          note = "当前缩放超出滑块的 10%–200% 范围；可继续手动调整目标尺寸。";
+        }
+        els.scaleLimitNote.hidden = !note;
+        els.scaleLimitNote.textContent = note;
         syncResizePresetChips();
       }
 
-      // Highlight the preset chip that matches the current scale / width (if any)
+      // Match the request, not coincidentally identical rounded sizes on tiny selections.
       function syncResizePresetChips() {
-        const cw = Math.max(1, Math.round(state.cropW));
-        const ch = Math.max(1, Math.round(state.cropH));
-        const tw = Math.round(state.targetW);
-        const th = Math.round(state.targetH);
-        const scaleX = state.targetW / cw;
-        const scaleY = state.targetH / ch;
-        document.querySelectorAll("#resizePresetChips .m3-chip").forEach((c) => {
-          let match = false;
-          if (c.dataset.scale) {
-            const rawS = parseFloat(c.dataset.scale);
-            const expectedW = Math.max(1, Math.round(cw * rawS));
-            const expectedH = Math.max(1, Math.round(ch * rawS));
-            match = (Math.abs(rawS - scaleX) < 0.005 && Math.abs(rawS - scaleY) < 0.005) ||
-              (tw === expectedW && th === expectedH);
-          } else if (c.dataset.maxw) {
-            const mw = parseInt(c.dataset.maxw, 10);
-            const expectedH = Math.max(1, Math.round(ch * (mw / cw)));
-            match = tw === mw && th === expectedH;
-          }
-          c.classList.toggle("active", match);
+        const sx = state.resizeScale;
+        const sy = state.resizeScaleY ?? sx;
+        const cropW = Math.max(1, state.cropW);
+        document.querySelectorAll("#resizePresetChips .m3-chip").forEach((chip) => {
+          const scale = chip.dataset.scale ? Number(chip.dataset.scale) : Number(chip.dataset.maxw) / cropW;
+          chip.classList.toggle("active", Math.abs(scale - sx) < 1e-9 && Math.abs(scale - sy) < 1e-9);
         });
       }
 
@@ -4531,7 +4639,8 @@
       let lastScheduledEncodeKey = null;
       let lastCompletedEncodeKey = null;
       let outputGeometryKey = null;
-      let outputCompareLabel = "";
+      let outputDetails = null;
+      let encodeFailure = "";
       let encodeWorkerActive = false;
       let encodeQueued = false;
       let isEncodePending = false;
@@ -4583,9 +4692,9 @@
         } catch (err) {
           if (seq === encodeSeq) {
             console.error(err);
-            showToast("编码失败：" + (err?.message || "内存不足，请降低目标尺寸"));
-            clearOutput();
-            setEncodePending(false);
+            const message = err?.message || "内存不足，请降低目标尺寸";
+            showToast("编码失败：" + message);
+            clearOutput(message);
           }
         } finally {
           encodeWorkerActive = false;
@@ -4596,7 +4705,7 @@
       }
 
       // Drop the last encoded result so a failed encode can never export a stale file
-      function clearOutput() {
+      function clearOutput(reason) {
         cancelScheduledEncode();
         if (state.outputUrl) URL.revokeObjectURL(state.outputUrl);
         state.outputUrl = null;
@@ -4604,26 +4713,36 @@
         lastScheduledEncodeKey = null;
         lastCompletedEncodeKey = null;
         outputGeometryKey = null;
-        outputCompareLabel = "";
-        isEncodePending = false;
+        outputDetails = null;
+        encodeFailure = reason;
         compareAfterCache = null;
-        els.estimatedSizeLabel.textContent = "-- KB";
-        els.sizeDeltaPill.textContent = "编码失败";
-        els.sizeDeltaPill.classList.remove("increase");
-        els.exportSpecSummary.textContent = "--";
+        setEncodePending(false);
         if (state.compareMode) renderCompareView();
+      }
+
+      function setTextIfChanged(element, text) {
+        if (element.textContent !== text) element.textContent = text;
       }
 
       function setEncodePending(pending) {
         isEncodePending = pending;
+        if (pending) encodeFailure = "";
+        const info = pending ? null : outputDetails;
+        const spec = pending ? "正在编码当前设置…" : (info?.spec || encodeFailure || "等待编码");
+        const size = info?.size || "—";
+        const delta = info?.delta || "";
+        setTextIfChanged(els.exportSpecSummary, spec);
+        setTextIfChanged(els.estimatedSizeLabel, size);
+        setTextIfChanged(els.sizeDeltaPill, delta);
+        if (els.exportSpecSummary.title !== spec) els.exportSpecSummary.title = spec;
+        if (els.sizeDeltaPill.title !== delta) els.sizeDeltaPill.title = delta;
+        els.sizeDeltaPill.classList.toggle("increase", Boolean(info?.increase));
         els.estimatedSizeLabel.classList.toggle("pending", pending);
         els.btnDownloadExport.disabled = pending || !state.hasImage || !state.outputBlob;
-        // Crop drags call this on every pointer move: only write the label when it really changes
-        const label = pending ? "编码中…" : "导出保存图片";
-        if (els.btnDownloadText.textContent !== label) els.btnDownloadText.textContent = label;
+        setTextIfChanged(els.btnDownloadText, pending ? "编码中…" : "导出保存图片");
         if (pending && state.compareMode) {
           clearCompareAfter();
-          if (els.compareRightLabel.textContent !== "编码中…") els.compareRightLabel.textContent = "编码中…";
+          setTextIfChanged(els.compareRightLabel, "编码中…");
         }
       }
 
@@ -4805,11 +4924,7 @@
           if (requestedFormat === "image/avif") $("btnFormatAvif").style.display = "none";
           if (requestedFormat === "image/webp") $("btnFormatWebp").style.display = "none";
           // Encode again: the PNG fallback must not inherit the JPEG matte or skip PNG quantization.
-          document.querySelector('#formatSegmented .segmented-btn[data-format="image/png"]').click();
-          if (!state.modeTouched && state.compressionMode !== "lossless") {
-            state.autoLosslessForPng = true;
-            document.querySelector('#compressionModeSegmented .segmented-btn[data-mode="lossless"]').click();
-          }
+          setOutputFormat("image/png");
           return;
         }
         rawEncodeCache = { key: pixelKey, blob: rawBlob };
@@ -4845,20 +4960,18 @@
             const buf = await rawBlob.arrayBuffer();
             if (seq !== encodeSeq) return;
             const bytes = new Uint8Array(buf);
-            if (state.compressionMode === "lossless") {
-              for (const { type } of ExifEngine._webpChunks(new DataView(buf))) {
-                if (type === 0x5650384c) webpLossless = true; // VP8L, not lossy VP8.
-              }
-            }
             const processed = ExifEngine.injectWebpExif(bytes, state.stripExif, state.exif, outW, outH);
             if (processed !== bytes) finalBlob = new Blob([processed], { type: "image/webp" });
+            if (state.compressionMode === "lossless") {
+              const view = new DataView(processed.buffer, processed.byteOffset, processed.byteLength);
+              webpLossless = ExifEngine._webpChunks(view).chunks.some(({ fourcc }) => fourcc === "VP8L");
+            }
           }
         } catch (err) {
           if (seq !== encodeSeq) return;
-          // Never fall back to unverified bytes when the user explicitly requested privacy stripping.
-          if (state.stripExif) throw new Error("无法确认 EXIF 已清除，未导出图片", { cause: err });
-          console.warn("EXIF 写入失败，已保留编码器原始结果", err);
-          showToast("EXIF 写入失败，导出文件未包含编辑后的元数据：" + (err?.message || err));
+          // A download must match the requested edits, not the unverified encoder output.
+          const message = state.stripExif ? "无法确认 EXIF 已清除，未导出图片" : "无法写入 EXIF，未导出图片";
+          throw new Error(message, { cause: err });
         }
 
         if (seq !== encodeSeq) return;
@@ -4875,34 +4988,19 @@
         const modeText = blob.type === "image/bmp" ? "未压缩" : state.compressionMode === "lossy"
           ? `质量 ${state.compressionQuality}/100` : blob.type === "image/png" || webpLossless
             ? "无损" : "最高画质（非无损）";
-        outputCompareLabel = `${modeText} (${formatBytes(blob.size)})`;
-        compareAfterCache = null; // Stale decoded copy of the previous output
-        setEncodePending(false);
-
-        const fmtExtMap = {
-          "image/jpeg": "JPEG",
-          "image/png": "PNG",
-          "image/webp": "WebP",
-          "image/bmp": "BMP",
-          "image/avif": "AVIF"
+        const fmtName = {
+          "image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WebP", "image/bmp": "BMP", "image/avif": "AVIF"
+        }[blob.type] || "IMG";
+        const size = formatBytes(blob.size);
+        const diffPct = state.originalBytes > 0 ? (blob.size - state.originalBytes) * 100 / state.originalBytes : null;
+        const increase = diffPct > 0;
+        const delta = diffPct === null ? "" : increase ? `+${diffPct.toFixed(1)}%` : `节省 ${Math.abs(diffPct).toFixed(1)}%`;
+        outputDetails = {
+          spec: `${outW}×${outH} · ${fmtName} (${modeText})`, size, delta, increase,
+          compare: `${modeText} (${size})`
         };
-        const fmtName = fmtExtMap[state.outputFormat] || "IMG";
-        els.exportSpecSummary.textContent = `${outW}×${outH} · ${fmtName} (${modeText})`;
-        els.estimatedSizeLabel.textContent = formatBytes(blob.size);
-
-        if (state.originalBytes > 0) {
-          const diffPct = ((blob.size - state.originalBytes) / state.originalBytes) * 100;
-          if (diffPct <= 0) {
-            els.sizeDeltaPill.textContent = `节省 ${Math.abs(diffPct).toFixed(1)}%`;
-            els.sizeDeltaPill.classList.remove("increase");
-          } else {
-            els.sizeDeltaPill.textContent = `+${diffPct.toFixed(1)}%`;
-            els.sizeDeltaPill.classList.add("increase");
-          }
-        } else {
-          els.sizeDeltaPill.textContent = "";
-          els.sizeDeltaPill.classList.remove("increase");
-        }
+        compareAfterCache = null; // Stale decoded copy of the previous output.
+        setEncodePending(false);
 
         if (state.compareMode) {
           renderCompareView();
@@ -4945,7 +5043,7 @@
         const url = state.outputUrl;
         if (!isCurrentCompareOutput(url)) {
           clearCompareAfter();
-          els.compareRightLabel.textContent = isEncodePending ? "编码中…" : "输出预览";
+          els.compareRightLabel.textContent = isEncodePending ? "编码中…" : encodeFailure ? "编码失败" : "输出预览";
           return;
         }
 
@@ -4971,7 +5069,7 @@
         }
         try {
           if (entry.ready && paintCompareAfter(entry.img)) {
-            els.compareRightLabel.textContent = outputCompareLabel || "输出预览";
+            els.compareRightLabel.textContent = outputDetails?.compare || "输出预览";
             return;
           }
         } catch (err) {
@@ -4992,7 +5090,7 @@
       // Keyboard access for the before/after divider (Left/Right = 2%, Shift = 10%, Home/End = edges)
       els.compareDivider.setAttribute("role", "slider");
       els.compareDivider.setAttribute("tabindex", "0");
-      els.compareDivider.setAttribute("aria-label", "原图与输出对比分隔线，左右方向键移动");
+      els.compareDivider.setAttribute("aria-label", "源图裁剪区与输出对比分隔线，左右方向键移动");
       els.compareDivider.setAttribute("aria-valuemin", "2");
       els.compareDivider.setAttribute("aria-valuemax", "98");
       els.compareDivider.setAttribute("aria-orientation", "horizontal");
@@ -5048,13 +5146,17 @@
       /* ======================================================================
          MODULE 10: EXIF FORM SYNC HELPERS
          ====================================================================== */
-      // pointer-events alone still lets keyboard users tab into (and edit) fields that are being
-      // ignored, so also make the whole block inert while "clear all EXIF" is on
+      function setGeometryToolsAvailable(available) {
+        for (const id of ["panel-crop", "panel-resize"]) {
+          $(id).querySelectorAll("button, input, select").forEach((control) => { control.disabled = !available; });
+        }
+      }
+
       function applyStripExifUi() {
-        els.exifFormFields.style.opacity = state.stripExif ? "0.45" : "1";
-        els.exifFormFields.style.pointerEvents = state.stripExif ? "none" : "auto";
-        els.exifFormFields.inert = state.stripExif;
-        els.exifFormFields.setAttribute("aria-disabled", String(state.stripExif));
+        const unavailable = state.stripExif || !state.hasImage;
+        els.exifFormFields.style.opacity = unavailable ? "0.45" : "1";
+        els.exifFormFields.inert = unavailable;
+        els.exifFormFields.querySelectorAll("button, input, textarea").forEach((control) => { control.disabled = unavailable; });
       }
 
       function syncExifToInputs() {
@@ -5093,24 +5195,63 @@
         state.exif.gpsLng = els.exifGpsLng.value;
       }
 
+      function setOutputFormat(format) {
+        state.outputFormat = format;
+        document.querySelectorAll("#formatSegmented .segmented-btn").forEach((button) => {
+          const selected = button.dataset.format === format;
+          button.classList.toggle("active", selected);
+          if (selected && !state.sourceImg) els.exportSpecSummary.textContent = `未加载图片 · ${button.textContent.trim()}`;
+        });
+        els.jpegMatteRow.style.display = format === "image/jpeg" || format === "image/bmp" ? "flex" : "none";
+        syncCompressionMode();
+        const unsupported = format === "image/bmp" || format === "image/avif";
+        els.exifFormatNote.style.display = unsupported ? "flex" : "none";
+        if (unsupported) {
+          const name = format === "image/bmp" ? "BMP" : "AVIF";
+          els.exifFormatNoteText.textContent = `本工具不会向 ${name} 写入 EXIF；如需保存下方修改，请将导出格式改为 JPEG / PNG / WebP。`;
+        }
+        scheduleOutputEncode();
+      }
+
+      function syncCompressionMode() {
+        const format = state.outputFormat;
+        const bmp = format === "image/bmp";
+        const mode = bmp ? "lossless" : (state.compressionPreference ?? (format === "image/png" ? "lossless" : "lossy"));
+        state.compressionMode = mode;
+        document.querySelectorAll("#compressionModeSegmented .segmented-btn").forEach((button) => {
+          button.classList.toggle("active", button.dataset.mode === mode);
+          button.disabled = bmp;
+        });
+        els.lossyControlsBlock.style.display = mode === "lossy" ? "flex" : "none";
+        els.losslessBanner.style.display = mode === "lossless" ? "flex" : "none";
+        if (mode !== "lossless") return;
+        els.losslessBanner.classList.toggle("warning", format !== "image/png" && !bmp);
+        if (bmp) {
+          els.losslessBannerText.textContent = "BMP 以未压缩的 24 位 RGB 保存；透明区域将使用所选背景色填充。";
+        } else if (format === "image/png") {
+          els.losslessBannerText.textContent = "PNG 无损编码：不对当前画布的像素做有损量化。";
+        } else if (format === "image/webp") {
+          els.losslessBannerText.textContent = "向浏览器请求最高画质；输出确为无损 WebP 时才会标注无损。如需保证无损，请选择 PNG。";
+        } else {
+          const name = format === "image/avif" ? "AVIF" : "JPEG";
+          els.losslessBannerText.textContent = `以浏览器的最高画质参数编码 ${name}，不保证无损。如需无损请选择 PNG。`;
+        }
+      }
+
       /* ======================================================================
          MODULE 11: UI EVENT LISTENERS & NAVIGATION BINDING
          ====================================================================== */
       function bindEvents() {
+        setGeometryToolsAvailable(false);
+        applyStripExifUi();
         // 1. Theme & Material You Seed Switcher (persisted; follows system until the user overrides)
-        const PREF_KEY = "pixelstudio.prefs";
-        const readPrefs = () => {
-          try { return JSON.parse(localStorage.getItem(PREF_KEY) || "{}"); } catch { return {}; }
-        };
-        const writePrefs = (patch) => {
-          try { localStorage.setItem(PREF_KEY, JSON.stringify({ ...readPrefs(), ...patch })); } catch { /* private mode */ }
-        };
-        const SEED_HEX = { teal: "#006A67", violet: "#6750A4", azure: "#1B60A5", forest: "#296A47", terracotta: "#984716" };
-        const darkMql = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+        const { values: prefs, save: writePrefs } = pixelStudioPrefs;
+        const darkMql = window.matchMedia?.("(prefers-color-scheme: dark)");
 
         function applyTheme(isDark) {
           if (isDark) document.documentElement.setAttribute("data-theme", "dark");
           else document.documentElement.removeAttribute("data-theme");
+          $("btnThemeToggle").setAttribute("aria-pressed", String(isDark));
           syncThemeColorMeta();
         }
 
@@ -5130,19 +5271,16 @@
           const meta = document.querySelector('meta[name="theme-color"]');
           if (!meta) return;
           const surface = getComputedStyle(document.documentElement).getPropertyValue("--md-sys-color-surface").trim();
-          meta.setAttribute("content", surface || SEED_HEX.teal);
+          meta.setAttribute("content", surface || "#006A67");
         }
 
-        const prefs = readPrefs();
-        applyTheme(typeof prefs.dark === "boolean" ? prefs.dark : Boolean(darkMql && darkMql.matches));
-        applySeed(prefs.seed && SEED_HEX[prefs.seed] ? prefs.seed : "teal");
+        applyTheme(prefs.dark ?? Boolean(darkMql?.matches));
+        applySeed(prefs.seed || "teal");
 
-        // React to OS theme changes while the user has not chosen manually
-        if (darkMql && typeof darkMql.addEventListener === "function") {
-          darkMql.addEventListener("change", (e) => {
-            if (typeof readPrefs().dark !== "boolean") applyTheme(e.matches);
-          });
-        }
+        // React to OS theme changes while the user has not chosen manually.
+        const updateSystemTheme = (e) => { if (typeof prefs.dark !== "boolean") applyTheme(e.matches); };
+        if (darkMql?.addEventListener) darkMql.addEventListener("change", updateSystemTheme);
+        else darkMql?.addListener?.(updateSystemTheme);
 
         $("btnThemeToggle").addEventListener("click", () => {
           const isDark = document.documentElement.getAttribute("data-theme") === "dark";
@@ -5153,46 +5291,52 @@
         const seedPicker = $("seedPicker");
         const btnSeedMobile = $("btnSeedMobile");
 
-        function seedPickerClose() {
+        function seedPickerClose(restoreFocus = false) {
           seedPicker.classList.remove("open");
           btnSeedMobile.classList.remove("active");
           btnSeedMobile.setAttribute("aria-expanded", "false");
+          if (restoreFocus) btnSeedMobile.focus();
         }
 
-        // Mobile palette popup toggle
-        btnSeedMobile.setAttribute("aria-expanded", "false");
-        btnSeedMobile.addEventListener("click", (e) => {
-          e.stopPropagation();
-          const open = !seedPicker.classList.contains("open");
-          seedPicker.classList.toggle("open", open);
-          btnSeedMobile.classList.toggle("active", open);
-          btnSeedMobile.setAttribute("aria-expanded", String(open));
+        btnSeedMobile.addEventListener("click", () => {
+          if (seedPicker.classList.contains("open")) {
+            seedPickerClose(true);
+            return;
+          }
+          seedPicker.classList.add("open");
+          btnSeedMobile.classList.add("active");
+          btnSeedMobile.setAttribute("aria-expanded", "true");
+          seedPicker.querySelector(".seed-dot").focus();
         });
 
-        // Close the popup when tapping anywhere outside it, or pressing Escape
-        document.addEventListener("click", (e) => {
-          if (seedPicker.classList.contains("open") && !seedPicker.contains(e.target) && !btnSeedMobile.contains(e.target)) {
-            seedPickerClose();
-          }
-        });
+        const insidePalette = (element) => element === btnSeedMobile || seedPicker.contains(element) || btnSeedMobile.contains(element);
+        const closeOutside = (element) => {
+          if (seedPicker.classList.contains("open") && element && !insidePalette(element)) seedPickerClose();
+        };
+        document.addEventListener("click", (e) => closeOutside(e.target));
+        document.addEventListener("focusin", (e) => closeOutside(e.target));
         document.addEventListener("keydown", (e) => {
-          if (e.key === "Escape" && seedPicker.classList.contains("open")) seedPickerClose();
+          if (e.key === "Escape" && seedPicker.classList.contains("open")) {
+            e.preventDefault();
+            seedPickerClose(true);
+          }
         });
 
         document.querySelectorAll(".seed-dot").forEach((dot) => {
           dot.addEventListener("click", () => {
             applySeed(dot.dataset.seed);
             writePrefs({ seed: dot.dataset.seed });
-            // Auto-close the popup after choosing a color on narrow viewports
-            if (window.innerWidth < 768) seedPickerClose();
+            if (seedPicker.classList.contains("open")) seedPickerClose(true);
           });
         });
 
         // 2. Navigation Rail / Bottom Bar Tabs
+        const scrollableStack = window.matchMedia?.("(max-width: 559px) and (max-height: 300px)");
+        const inspectorScroll = $("inspectorScroll");
         document.querySelectorAll(".nav-item").forEach((btn) => {
           btn.addEventListener("click", () => {
             const tab = btn.dataset.tab;
-            if (state.activeTab !== tab) $("inspectorScroll").scrollTop = 0;
+            if (state.activeTab !== tab) inspectorScroll.scrollTop = 0;
             state.activeTab = tab;
 
             document.querySelectorAll(".nav-item").forEach((b) => {
@@ -5215,7 +5359,7 @@
                 panel.classList.toggle("active", panel.id === `panel-${tab}`);
               }
             });
-
+            if (scrollableStack?.matches) inspectorScroll.scrollIntoView({ block: "start" });
           });
         });
 
@@ -5699,74 +5843,24 @@
         });
 
         // 8. Format & Lossy/Lossless Compression Controls
-        // Encoding capabilities vary by browser version (decoding support does not imply encoding support).
-        let canEncodeWebp = false;
-        try {
-          const testWebp = document.createElement("canvas");
-          testWebp.width = 1;
-          testWebp.height = 1;
-          canEncodeWebp = testWebp.toDataURL("image/webp").startsWith("data:image/webp");
-          releaseCanvas(testWebp);
-        } catch {
-          canEncodeWebp = false;
+        // Probe both optional encoders before a user can import a file. Decoders alone do not suffice.
+        for (const [id, format] of [["btnFormatWebp", "image/webp"], ["btnFormatAvif", "image/avif"]]) {
+          const testCanvas = document.createElement("canvas");
+          let supported = false;
+          try {
+            sizeCanvas(testCanvas, 1, 1);
+            supported = testCanvas.toDataURL(format).startsWith(`data:${format};`);
+          } catch { /* unavailable encoder */ }
+          finally { releaseCanvas(testCanvas); }
+          $(id).style.display = supported ? "flex" : "none";
         }
-        if (!canEncodeWebp) {
-          $("btnFormatWebp").style.display = "none";
-        }
-        const testAvif = document.createElement("canvas");
-        testAvif.width = 2; testAvif.height = 2;
-        testAvif.toBlob((b) => {
-          releaseCanvas(testAvif);
-          if (b && b.type === "image/avif") {
-            $("btnFormatAvif").style.display = "flex";
-          }
-        }, "image/avif");
 
         document.querySelectorAll("#formatSegmented .segmented-btn").forEach((btn) => {
-          btn.addEventListener("click", (ev) => {
-            if (ev.isTrusted) state.formatTouched = true;
-            document.querySelectorAll("#formatSegmented .segmented-btn").forEach((b) => b.classList.remove("active"));
-            btn.classList.add("active");
-            const wasBmp = state.outputFormat === "image/bmp";
-            state.outputFormat = btn.dataset.format;
-            // Until a picture is opened the footer only names the target format: keep it in step with the choice
-            // (sourceImg, not hasImage: the latter is cleared on purpose while a new image picks its default format)
-            if (!state.sourceImg) els.exportSpecSummary.textContent = `未加载图片 · ${btn.textContent.trim()}`;
-
-            // Show background matte picker for formats without transparency
-            const needsMatte = state.outputFormat === "image/jpeg" || state.outputFormat === "image/bmp";
-            els.jpegMatteRow.style.display = needsMatte ? "flex" : "none";
-
-            // BMP is strictly lossless
-            if (state.outputFormat === "image/bmp") {
-              if (!wasBmp) state.modeBeforeBmp = state.compressionMode;
-              setCompressionMode("lossless");
-            } else if (wasBmp && state.modeBeforeBmp) {
-              // Leaving BMP: give the user back the mode that was forced off
-              setCompressionMode(state.modeBeforeBmp);
-              state.modeBeforeBmp = null;
-            }
-            // Lossless was only auto-selected for a PNG input: switching to JPEG / WebP must not keep
-            // exporting 100%-quality (huge) files the user never asked for
-            if (state.autoLosslessForPng && !state.modeTouched && state.outputFormat !== "image/png" && state.outputFormat !== "image/bmp") {
-              state.autoLosslessForPng = false;
-              setCompressionMode("lossy");
-            }
-            updateCompressionBannerText();
-            updateExifFormatNote();
-            scheduleOutputEncode();
+          btn.addEventListener("click", () => {
+            state.formatTouched = true;
+            setOutputFormat(btn.dataset.format);
           });
         });
-
-        // BMP and AVIF exports are written without any metadata: say so instead of dropping edits silently
-        function updateExifFormatNote() {
-          const unsupported = state.outputFormat === "image/bmp" || state.outputFormat === "image/avif";
-          els.exifFormatNote.style.display = unsupported ? "flex" : "none";
-          if (unsupported) {
-            const name = state.outputFormat === "image/bmp" ? "BMP" : "AVIF";
-            els.exifFormatNoteText.textContent = `当前导出格式 ${name} 无法写入 EXIF，下方修改不会出现在导出文件中；请在“格式压缩”中切换为 JPEG / PNG / WebP。`;
-          }
-        }
 
         document.querySelectorAll(".matte-swatch").forEach((sw) => {
           sw.addEventListener("click", () => {
@@ -5785,41 +5879,11 @@
           scheduleOutputEncode();
         });
 
-        function setCompressionMode(mode) {
-          state.compressionMode = mode;
-          document.querySelectorAll("#compressionModeSegmented .segmented-btn").forEach((b) => {
-            b.classList.toggle("active", b.dataset.mode === mode);
-          });
-          els.lossyControlsBlock.style.display = mode === "lossy" ? "flex" : "none";
-          els.losslessBanner.style.display = mode === "lossless" ? "flex" : "none";
-          updateCompressionBannerText();
-        }
-
-        function updateCompressionBannerText() {
-          if (state.compressionMode !== "lossless") return;
-          const format = state.outputFormat;
-          els.losslessBanner.classList.toggle("warning", format !== "image/png" && format !== "image/bmp");
-          if (format === "image/bmp") {
-            els.losslessBannerText.textContent = "BMP 以未压缩的 24 位 RGB 保存；透明区域将使用所选背景色填充。";
-          } else if (format === "image/png") {
-            els.losslessBannerText.textContent = "PNG 无损编码：不对当前画布的像素做有损量化。";
-          } else if (format === "image/webp") {
-            els.losslessBannerText.textContent = "向浏览器请求最高画质；输出确为无损 WebP 时才会标注无损。如需保证无损，请选择 PNG。";
-          } else {
-            const name = format === "image/avif" ? "AVIF" : "JPEG";
-            els.losslessBannerText.textContent = `以浏览器的最高画质参数编码 ${name}，不保证无损。如需无损请选择 PNG。`;
-          }
-        }
-
         document.querySelectorAll("#compressionModeSegmented .segmented-btn").forEach((btn) => {
-          btn.addEventListener("click", (ev) => {
-            if (state.outputFormat === "image/bmp" && btn.dataset.mode === "lossy") {
-              showToast("BMP 格式仅支持无损导出，如需有损压缩请选择 JPEG / WebP");
-              return;
-            }
-            // A rejected click is no manual choice: it must not pin the lossless mode BMP forced on
-            if (ev.isTrusted) state.modeTouched = true;
-            setCompressionMode(btn.dataset.mode);
+          btn.addEventListener("click", () => {
+            if (state.outputFormat === "image/bmp") return;
+            state.compressionPreference = btn.dataset.mode;
+            syncCompressionMode();
             scheduleOutputEncode();
           });
         });

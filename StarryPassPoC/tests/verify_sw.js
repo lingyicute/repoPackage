@@ -66,7 +66,8 @@ const context = vm.createContext({ URL, Request, Response, Promise, caches, Abor
         skipWaiting: async () => {}, clients: { claim: async () => {} } },
     fetch: (request, options) => { networkCalls++; return fetchImpl(request, options); }
 });
-vm.runInContext(fs.readFileSync(path.join(__dirname, '../service-worker.js'), 'utf8'), context);
+const workerSource = fs.readFileSync(path.join(__dirname, '../service-worker.js'), 'utf8');
+vm.runInContext(workerSource, context);
 const names = vm.runInContext('({ VERSION, RUNTIME, CACHE_PREFIX, SHELL_URL })', context);
 function event(type, request) {
     const waits = [];
@@ -82,7 +83,9 @@ function event(type, request) {
     closed = true;
     return { waits, response };
 }
-const req = (url = 'index.html', mode = 'navigate', method = 'GET') => ({ url: new URL(url, base).href, mode, method });
+const req = (url = 'index.html', mode = 'navigate', method = 'GET', headers = {}) => ({
+    url: new URL(url, base).href, mode, method, headers: new Headers(headers)
+});
 const offline = async () => { throw new TypeError('offline'); };
 async function responseText(e) { return (await e.response).text(); }
 async function finish(e) { await Promise.all(e.waits); }
@@ -159,6 +162,11 @@ async function checkText(e, expected) {
     const offlineCore = event('fetch', req('assets/js/spv2-core.js', 'cors'));
     await checkText(offlineCore, 'NEW CORE'); await finish(offlineCore);
 
+    // A cached whole asset must not be substituted for a byte-range request.
+    const range = event('fetch', req('assets/js/spv2-core.js', 'cors', 'GET', { range: 'bytes=0-2' }));
+    check(() => assert.equal(range.response, undefined));
+    check(() => assert.equal(range.waits.length, 0));
+
     fetchImpl = async () => {
         const resp = new Response('REDIRECTED SHELL');
         Object.defineProperty(resp, 'redirected', { value: true });
@@ -183,21 +191,15 @@ async function checkText(e, expected) {
     const missing = event('fetch', req());
     const missingResponse = await missing.response;
     check(() => assert.equal(missingResponse.status, 404)); await finish(missing);
-    fetchImpl = offline;
-    const missingAsset = event('fetch', req('missing.js', 'cors'));
-    const missingAssetResponse = await missingAsset.response;
-    check(() => assert.equal(missingAssetResponse.type, 'error')); await finish(missingAsset);
 
-    fetchImpl = async () => new Response('DYNAMIC');
-    for (const url of ['unlisted.txt', 'assets/js/spv2-core.js?unbounded=1']) {
-        const dynamic = event('fetch', req(url, 'cors'));
-        await checkText(dynamic, 'DYNAMIC'); await finish(dynamic);
-        fetchImpl = offline;
-        const uncached = event('fetch', req(url, 'cors'));
-        const response = await uncached.response;
-        check(() => assert.equal(response.type, 'error', 'unlisted/query resources are not accumulated'));
-        await finish(uncached);
-        fetchImpl = async () => new Response('DYNAMIC');
+    // Don't apply shell fallbacks, revalidation or deadlines to unowned routes.
+    for (const request of [req('wrong/path'), req('api/status'), req('missing.js', 'cors'),
+        req('assets/js/spv2-core.js?unbounded=1', 'cors'), req('index.html?query=1', 'cors')]) {
+        const before = networkCalls, e = event('fetch', request);
+        check(() => assert.equal(e.response, undefined, 'browser owns ' + request.url));
+        check(() => assert.equal(e.waits.length, 0));
+        await tick();
+        check(() => assert.equal(networkCalls, before));
     }
 
     let quotaCopyCanceled = false;
@@ -304,11 +306,16 @@ async function checkText(e, expected) {
 
     // 无缓存时返回网络错误，不能留下永不 settle 的响应或后台写入。
     fetchImpl = () => new Promise(() => {});
-    const noCache = event('fetch', req('missing.js', 'cors'));
+    const favicon = new URL('favicon.ico', base).href;
+    const precached = stores.get(names.VERSION);
+    const savedFavicon = precached.get(favicon);
+    precached.delete(favicon);
+    const noCache = event('fetch', req(favicon, 'cors'));
     await tick(); expireNetwork();
     const noCacheResponse = await noCache.response;
     check(() => assert.equal(noCacheResponse.type, 'error'));
     await finish(noCache);
+    precached.set(favicon, savedFavicon);
 
     // 快速网络照常胜出；预读正文不能破坏响应 URL/类型/状态/头部及缓存副本。
     fetchImpl = async () => new Response('FAST CORE', { headers: { 'X-Review': 'preserved' } });
@@ -379,6 +386,25 @@ async function checkText(e, expected) {
     const onlineStorageFailure = event('fetch', req());
     await checkText(onlineStorageFailure, 'ONLINE DESPITE STORAGE FAILURE'); await finish(onlineStorageFailure);
     openError = null; matchError = null;
+
+    // A deployed revision gets fresh stores even if an older runtime cache is warm.
+    const previousRuntime = stores.get(names.RUNTIME);
+    previousRuntime.set(names.SHELL_URL, new Response('STALE PREVIOUS REVISION'));
+    const revision = 'a'.repeat(40);
+    const nextContext = vm.createContext({ ...context });
+    const nextSource = workerSource.replace(/^const CACHE_REVISION = .*;$/m, `const CACHE_REVISION = "${revision}";`);
+    assert.notEqual(nextSource, workerSource);
+    vm.runInContext(nextSource, nextContext);
+    const nextNames = vm.runInContext('({ VERSION, RUNTIME })', nextContext);
+    check(() => assert.notEqual(nextNames.RUNTIME, names.RUNTIME));
+    await finish(event('install'));
+    check(() => assert.ok(stores.has(names.RUNTIME), 'installation leaves the old runtime intact until activation'));
+    await finish(event('activate'));
+    check(() => assert.ok(!stores.has(names.VERSION) && !stores.has(names.RUNTIME)));
+    check(() => assert.ok(stores.has(nextNames.VERSION) && stores.has('other-app')));
+    fetchImpl = offline;
+    const upgraded = event('fetch', req());
+    await checkText(upgraded, 'INSTALLED ' + names.SHELL_URL); await finish(upgraded);
 
     console.log(`PASS service worker: ${checks} scope, update, offline, deadline and lifetime checks`);
 })().catch((err) => { console.error(err); process.exitCode = 1; });

@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.graphics.drawable.Drawable;
@@ -11,6 +12,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.Manifest;
+import android.util.Log;
 import android.util.SparseIntArray;
 import android.view.View;
 import android.widget.LinearLayout;
@@ -29,10 +31,17 @@ public class MainActivity extends Activity implements View.OnClickListener {
 
     private PreferenceManager preferenceManager;
     private AlertDialog rationaleDialog;
-    private int currentOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+    private boolean requestingFromRationale;
+    private int displayedOrientation = Integer.MIN_VALUE;
+    private final SharedPreferences.OnSharedPreferenceChangeListener selectionListener = (store, key) -> {
+        if (PreferenceManager.KEY_ORIENTATION.equals(key)) {
+            showSelection(preferenceManager.getOrientation());
+        }
+    };
     private Integer pendingOrientation;
     private static final String STATE_PENDING_ORIENTATION = "pending_orientation";
     private static final String STATE_SHOWING_RATIONALE = "showing_rationale";
+    private static final String STATE_REQUESTING_FROM_RATIONALE = "requesting_from_rationale";
     private final SparseIntArray orientationMap = new SparseIntArray();
 
     @Override
@@ -41,11 +50,6 @@ public class MainActivity extends Activity implements View.OnClickListener {
         setContentView(R.layout.main);
         initView();
         preferenceManager = PreferenceManager.getInstance(this);
-
-        if ((savedInstanceState == null || savedInstanceState.getBoolean(STATE_SHOWING_RATIONALE))
-                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            checkNotificationPermission();
-        }
 
         orientationMap.put(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, R.id.tv_orientation_default);
         orientationMap.put(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR, R.id.tv_orientation_full_sensor);
@@ -56,9 +60,28 @@ public class MainActivity extends Activity implements View.OnClickListener {
         orientationMap.put(ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT, R.id.tv_orientation_reverse_portrait);
         orientationMap.put(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT, R.id.tv_orientation_sensor_portrait);
 
-        if (savedInstanceState != null && savedInstanceState.containsKey(STATE_PENDING_ORIENTATION)) {
-            pendingOrientation = savedInstanceState.getInt(STATE_PENDING_ORIENTATION);
+        if (savedInstanceState != null) {
+            if (savedInstanceState.containsKey(STATE_PENDING_ORIENTATION)) {
+                pendingOrientation = savedInstanceState.getInt(STATE_PENDING_ORIENTATION);
+            }
+            requestingFromRationale = savedInstanceState.getBoolean(STATE_REQUESTING_FROM_RATIONALE);
         }
+        if (!requestingFromRationale && (savedInstanceState == null
+                || savedInstanceState.getBoolean(STATE_SHOWING_RATIONALE))) {
+            checkNotificationPermission();
+        }
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        preferenceManager.registerListener(selectionListener);
+    }
+
+    @Override
+    protected void onStop() {
+        preferenceManager.unregisterListener(selectionListener);
+        super.onStop();
     }
 
     @Override
@@ -80,12 +103,13 @@ public class MainActivity extends Activity implements View.OnClickListener {
         if (pendingOrientation != null && granted) orientation = pendingOrientation;
         pendingOrientation = null;
         // Reconcile permission revocation and complete the selection after Settings returns.
-        setOrientation(orientation);
+        applySelection(orientation);
     }
 
     @Override
     protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state);
+        state.putBoolean(STATE_REQUESTING_FROM_RATIONALE, requestingFromRationale);
         if (pendingOrientation != null) state.putInt(STATE_PENDING_ORIENTATION, pendingOrientation);
         if (rationaleDialog != null && rationaleDialog.isShowing()) {
             state.putBoolean(STATE_SHOWING_RATIONALE, true);
@@ -123,7 +147,7 @@ public class MainActivity extends Activity implements View.OnClickListener {
                         .setTitle(R.string.notification_permission_title)
                         .setMessage(R.string.notification_permission_message)
                         .setPositiveButton(R.string.allow, (dialog, which) -> {
-                            preferenceManager.setNotificationRationaleShown(true);
+                            requestingFromRationale = true;
                             requestPermissions(
                                     new String[]{Manifest.permission.POST_NOTIFICATIONS},
                                     NOTIFICATION_PERMISSION_REQUEST_CODE);
@@ -145,68 +169,55 @@ public class MainActivity extends Activity implements View.OnClickListener {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != NOTIFICATION_PERMISSION_REQUEST_CODE || grantResults.length == 0) {
-            return;
-        }
+        if (requestCode != NOTIFICATION_PERMISSION_REQUEST_CODE) return;
+        boolean fromRationale = requestingFromRationale;
+        requestingFromRationale = false;
+        if (grantResults.length != 1 || permissions.length != 1
+                || !Manifest.permission.POST_NOTIFICATIONS.equals(permissions[0])) return;
         if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             preferenceManager.setNotificationPermissionRequested(false);
             preferenceManager.setNotificationRationaleShown(false);
-            // With the overlay permission gone, re-applying would jump to its settings page right
-            // after the user answered this prompt; onResume reconciles the revocation instead.
-            if (currentOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                    && PermissionUtils.isDrawOverlaysPermissionGranted(this)) {
-                setOrientation(currentOrientation);
-            }
+            // onResume reconciles the service and overlay permission after the prompt.
         } else {
             // Only a real answer counts; an interrupted request returns no results.
             preferenceManager.setNotificationPermissionRequested(true);
+            if (fromRationale) preferenceManager.setNotificationRationaleShown(true);
             // Notification permission is NOT a prerequisite for a foreground service.
             Toast.makeText(this, R.string.notification_permission_denied, Toast.LENGTH_LONG).show();
         }
     }
 
-    private void setOrientation(int orientation) {
-        if (!OrientationUtils.isSupported(orientation)) orientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
-        SimpleLog.d(TAG, "select orientation: " + orientation);
-        if (orientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
-            if (!PermissionUtils.isDrawOverlaysPermissionGranted(this)) {
-                if (currentOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                        || preferenceManager.getOrientation() != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
-                    setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-                }
-                pendingOrientation = orientation;
-                PermissionUtils.requestDrawOverlaysPermission(this);
-                Toast.makeText(this, R.string.permission_required, Toast.LENGTH_SHORT).show();
+    private void applySelection(int orientation) {
+        preferenceManager.setOrientation(orientation);
+        showSelection(orientation);
+        if (orientation == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) return;
+        Intent intent = new Intent(this, YiTateService.class).setAction(YiTateService.ACTION_SYNC_ORIENTATION);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (startForegroundService(intent) != null) return;
+            } else if (startService(intent) != null) {
                 return;
             }
+        } catch (IllegalStateException | SecurityException e) {
+            Log.w(TAG, "Unable to start orientation service", e);
         }
-        pendingOrientation = null;
-        preferenceManager.setOrientation(orientation);
-        int lastViewId = orientationMap.get(currentOrientation, View.NO_ID);
-        int viewId = orientationMap.get(orientation, View.NO_ID);
-        if (lastViewId != View.NO_ID && lastViewId != viewId) {
+        applySelection(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        Toast.makeText(this, R.string.orientation_failed, Toast.LENGTH_LONG).show();
+    }
+
+    private void showSelection(int orientation) {
+        if (displayedOrientation == orientation) return;
+        int lastViewId = orientationMap.get(displayedOrientation, View.NO_ID);
+        if (lastViewId != View.NO_ID) {
             View lastView = findViewById(lastViewId);
-            lastView.setBackgroundResource(R.drawable.bg_button);
             lastView.setSelected(false);
         }
+        int viewId = orientationMap.get(orientation, View.NO_ID);
         if (viewId != View.NO_ID) {
             View currentView = findViewById(viewId);
-            currentView.setBackgroundResource(R.drawable.bg_selected);
             currentView.setSelected(true);
         }
-        Intent intent = new Intent(this, YiTateService.class);
-        intent.setAction(YiTateService.ACTION_SET_ORIENTATION);
-        intent.putExtra(YiTateService.KEY_ORIENTATION, orientation);
-        if (orientation == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
-            stopService(intent);
-        } else {
-            if (Build.VERSION.SDK_INT >= 26) {
-                startForegroundService(intent);
-            } else {
-                startService(intent);
-            }
-        }
-        currentOrientation = orientation;
+        displayedOrientation = orientation;
     }
 
     private void initView() {
@@ -249,6 +260,20 @@ public class MainActivity extends Activity implements View.OnClickListener {
             return;
         }
         int orientation = orientationMap.keyAt(index);
-        setOrientation(orientation);
+        pendingOrientation = null;
+        SimpleLog.d(TAG, "select orientation: " + orientation);
+        if (orientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                && !PermissionUtils.isDrawOverlaysPermissionGranted(this)) {
+            applySelection(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            pendingOrientation = orientation;
+            if (PermissionUtils.requestDrawOverlaysPermission(this)) {
+                Toast.makeText(this, R.string.permission_required, Toast.LENGTH_SHORT).show();
+            } else {
+                pendingOrientation = null;
+                Toast.makeText(this, R.string.overlay_settings_unavailable, Toast.LENGTH_LONG).show();
+            }
+        } else {
+            applySelection(orientation);
+        }
     }
 }

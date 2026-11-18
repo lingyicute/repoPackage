@@ -107,25 +107,12 @@ section { scroll-margin-top: 88px; }
 }
 @keyframes ripple { to { transform: scale(1); opacity: 0; } }
 
-/* 滚动进场 */
-.reveal { opacity: 0; transform: translateY(26px); transition: opacity .7s ease, transform .7s cubic-bezier(.2,.7,.2,1); transition-delay: var(--d, 0s); }
-.reveal.in { opacity: 1; transform: none; }
-
-/* ---------- 2.5 加载遮罩层 ---------- */
-#loader {
-  position: fixed; inset: 0; z-index: 200;
-  background: var(--surface);
-  display: flex; align-items: center; justify-content: center;
-  transition: opacity .45s ease, visibility .45s ease;
+/* 只有启用了滚动观察的元素才在进入视口前隐藏。 */
+@media (prefers-reduced-motion: no-preference) {
+  .reveal { transition: opacity .7s ease, transform .7s cubic-bezier(.2,.7,.2,1); transition-delay: var(--d, 0s); }
+  .reveal.pending:not(:focus-within) { opacity: 0; transform: translateY(26px); }
+  .reveal:focus-within { transition: none; }
 }
-#loader.hide { opacity: 0; visibility: hidden; pointer-events: none; }
-#loader .spinner {
-  width: 48px; height: 48px; border-radius: 50%;
-  border: 4px solid var(--surface-container-highest);
-  border-top-color: var(--primary);
-  animation: loader-spin .8s linear infinite;
-}
-@keyframes loader-spin { to { transform: rotate(360deg); } }
 
 /* ---------- 3. 顶部应用栏 ---------- */
 .topbar {
@@ -165,7 +152,6 @@ section { scroll-margin-top: 88px; }
   background: var(--surface-container); border-radius: 14px;
   box-shadow: var(--shadow-3); padding: 8px; display: none; z-index: 70;
 }
-.menu-drop.open { display: block; animation: menuIn .18s ease; }
 @keyframes menuIn { from { opacity: 0; transform: translateY(-6px); } }
 .menu-drop a {
   display: block; padding: 11px 16px; border-radius: 10px;
@@ -550,9 +536,10 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
   background: var(--primary-container); color: var(--on-primary-container);
   display: flex; align-items: center; justify-content: center;
   box-shadow: var(--shadow-3);
-  transform: translateY(110px); transition: transform .4s cubic-bezier(.2,.9,.3,1.1), background-color .35s ease;
+  visibility: hidden; transform: translateY(110px);
+  transition: transform .4s cubic-bezier(.2,.9,.3,1.1), background-color .35s ease;
 }
-.fab.show { transform: translateY(0); }
+.fab.show { visibility: visible; transform: translateY(0); }
 .fab:hover { filter: brightness(1.05); }
 .fab svg { width: 24px; height: 24px; }
 
@@ -563,10 +550,12 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
   .board-strip { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 860px) {
-  .bar-inner { grid-template-columns: 1fr auto; }
-  .nav-links { display: none; }
-  .bar-actions { grid-column: 2; }
-  .menu-toggle { display: inline-flex; }
+  .bar-inner { grid-template-columns: 1fr auto; height: auto; min-height: 64px; }
+  .nav-links { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; }
+  .bar-actions { grid-column: 2; grid-row: 1; }
+  .menu-ready .nav-links { display: none; }
+  .menu-ready .menu-toggle { display: inline-flex; }
+  .menu-drop.open { display: block; animation: menuIn .18s ease; }
 }
 @media (max-width: 900px) {
   .hero-grid { grid-template-columns: 1fr; gap: 52px; }
@@ -592,7 +581,6 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
-  .reveal { opacity: 1; transform: none; }
 }
 </style>
 <style>
@@ -607,52 +595,15 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
 <script>
 /* 首屏前应用主题，避免闪烁 */
 (function () {
-  try {
-    var t = localStorage.getItem("yi-theme");
-    if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    document.documentElement.setAttribute("data-theme", t);
-  } catch (e) { /* ignore */ }
+  var theme;
+  try { theme = localStorage.getItem('yi-theme'); } catch (e) { /* storage can be unavailable */ }
+  if (theme !== 'dark' && theme !== 'light') theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', theme);
 })();
 </script>
+<noscript><style>#themeToggle, .copy-btn { display: none; }</style></noscript>
 </head>
 <body id="top">
-
-<!-- ======= 加载遮罩层：等待字体加载完毕后隐藏 ======= -->
-<div id="loader" role="status" aria-label="正在加载">
-  <div class="spinner" aria-hidden="true"></div>
-</div>
-<script>
-/* 字体加载完毕后隐藏遮罩层（含兜底超时，避免字体失败时无限遮挡） */
-(function () {
-  var done = false;
-  function hideLoader() {
-    if (done) return;
-    done = true;
-    var loader = document.getElementById('loader');
-    if (!loader) return;
-    loader.classList.add('hide');
-    setTimeout(function () { loader.remove(); }, 600);
-  }
-  // 兜底：最多遮挡 4 秒
-  setTimeout(hideLoader, 4000);
-  // 页面完全加载后兜底
-  window.addEventListener('load', function () { setTimeout(hideLoader, 100); });
-  try {
-    if (document.fonts && document.fonts.load) {
-      // 主动触发 Nebulove 加载并等待
-      Promise.all([
-        document.fonts.load('400 16px Nebulove'),
-        document.fonts.load('700 16px Nebulove'),
-        document.fonts.load('800 16px Nebulove')
-      ]).then(hideLoader).catch(hideLoader);
-      // 额外保险：所有初始字体就绪
-      document.fonts.ready.then(function () { setTimeout(hideLoader, 50); });
-    } else {
-      document.addEventListener('DOMContentLoaded', function () { setTimeout(hideLoader, 100); });
-    }
-  } catch (e) { setTimeout(hideLoader, 100); }
-})();
-</script>
 
 <!-- ======= 顶部应用栏 ======= -->
 <header class="topbar" id="topbar">
@@ -683,19 +634,19 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
       <a class="icon-btn" data-ripple href="https://github.com/lingyicute/YiPuzzles" target="_blank" rel="noopener" aria-label="GitHub 仓库" title="GitHub 仓库">
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
-      <button class="icon-btn menu-toggle" id="menuBtn" data-ripple aria-label="打开菜单" aria-expanded="false">
+      <button class="icon-btn menu-toggle" id="menuBtn" data-ripple aria-label="页面导航" aria-expanded="false" aria-controls="menuDrop">
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 7h16v2H4zm0 4h16v2H4zm0 4h16v2H4z"/></svg>
       </button>
     </div>
   </div>
-  <div class="menu-drop" id="menuDrop">
+  <nav class="menu-drop" id="menuDrop" aria-label="移动端页面导航">
     <a href="#features">✨ 特性</a>
     <a href="#theme">🎨 动态主题</a>
     <a href="#privacy">🔒 隐私</a>
     <a href="#download">📥 下载</a>
     <a href="#web">🌐 网页版</a>
     <a href="#build">🔨 构建</a>
-  </div>
+  </nav>
 </header>
 
 <main>
@@ -922,7 +873,7 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
       <div class="dl-panel reveal">
         <div>
           <h2>现在下载，<br>安装即玩 🚀</h2>
-          <p class="dl-sub">GitHub Releases 上有梨构建的稳定版本，也有每次推送自动构建的 nightly 版本供你选择。</p>
+          <p class="dl-sub">GitHub Releases 提供稳定版，以及默认分支通过检查后发布的 Nightly，可与正式版并存。</p>
           <div class="dl-btns">
             <a class="btn btn-filled" data-ripple href="https://github.com/lingyicute/YiPuzzles/releases" target="_blank" rel="noopener">
               <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
@@ -930,7 +881,7 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
             </a>
             <a class="btn btn-tonal" data-ripple href="https://github.com/lingyicute/YiPuzzles/releases/tag/nightly" target="_blank" rel="noopener">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11z"/></svg>
-              Nightly 每日构建
+              Nightly 预览版
             </a>
           </div>
         </div>
@@ -982,7 +933,7 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
           </div>
           <div class="req-item">
             <span class="rk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2.6"/><path d="M6.4 10h.01M9.7 10h.01M13 10h.01M16.3 10h.01M8.2 13.8h7.6"/></svg></span>
-            <div><b>键盘 + 触屏</b><span>方向键 / WASD 移动，Z 撤销，R 重新开始；手机上直接滑动屏幕</span></div>
+            <div><b>键盘 + 触屏</b><span>聚焦棋盘后用方向键 / WASD 移动、Z 撤销、R 重新开始；触屏可滑动棋盘</span></div>
           </div>
           <div class="req-item">
             <span class="rk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 0 0 0 18h1.6a2.4 2.4 0 0 0 0-4.8h-.9a2 2 0 0 1 0-4h2.8A5.5 5.5 0 0 0 21 6.7C21 4.5 17 3 12 3z"/><path d="M7.6 11.4h.01M10.4 7.6h.01M14.6 7.6h.01"/></svg></span>
@@ -1040,7 +991,7 @@ cd YiPuzzles</pre>
           <pre id="cmd3">./gradlew assembleRelease</pre>
         </div>
       </div>
-      <p class="build-note reveal">构建产物位于 <code>app/build/outputs/apk/</code>，文件名形如 <code>yipuzzles-&lt;variant&gt;-v&lt;version&gt;.apk</code>。提交代码前请确保 <code>./gradlew test</code> 全部通过。</p>
+      <p class="build-note reveal">构建产物位于 <code>app/build/outputs/apk/</code>，文件名形如 <code>yipuzzles-&lt;variant&gt;-v&lt;version&gt;.apk</code>。本地 Release APK 未签名，测试时可安装 Debug APK。提交代码前请确保 <code>./gradlew test</code> 全部通过。</p>
     </div>
   </section>
 
@@ -1220,16 +1171,21 @@ cd YiPuzzles</pre>
     { name: '山茶粉', hex: '#C93A63' },
     { name: '橄榄绿', hex: '#5C6620' }
   ];
-  var state = { seed: SEEDS[0].hex, theme: 'light' };
+  var root = document.documentElement;
+  var schemeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+  var state = { seed: SEEDS[0].hex, theme: root.getAttribute('data-theme'), followsSystem: true };
   try {
     var savedSeed = localStorage.getItem('yi-seed');
     if (savedSeed && /^#[0-9a-fA-F]{6}$/.test(savedSeed)) state.seed = savedSeed;
     var savedTheme = localStorage.getItem('yi-theme');
-    if (savedTheme === 'dark' || savedTheme === 'light') state.theme = savedTheme;
-    else state.theme = document.documentElement.getAttribute('data-theme') || 'light';
-  } catch (e) { /* ignore */ }
-
-  var root = document.documentElement;
+    state.followsSystem = savedTheme !== 'dark' && savedTheme !== 'light';
+  } catch (e) { /* storage can be unavailable */ }
+  if (schemeMedia.addEventListener) schemeMedia.addEventListener('change', function (e) {
+    if (state.followsSystem) {
+      state.theme = e.matches ? 'dark' : 'light';
+      applyTheme();
+    }
+  });
   var metaTheme = document.getElementById('metaTheme');
 
   function applyTheme() {
@@ -1252,10 +1208,10 @@ cd YiPuzzles</pre>
     Array.prototype.forEach.call(sws, function (el) {
       el.setAttribute('aria-pressed', el.dataset.seed.toLowerCase() === state.seed.toLowerCase() ? 'true' : 'false');
     });
-    try {
-      localStorage.setItem('yi-seed', state.seed);
-      localStorage.setItem('yi-theme', state.theme);
-    } catch (e) { /* ignore */ }
+  }
+
+  function setPreference(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* storage can be unavailable */ }
   }
 
   /* ============ 4. 种子色色板 ============ */
@@ -1272,6 +1228,7 @@ cd YiPuzzles</pre>
       b.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>';
       b.addEventListener('click', function () {
         state.seed = s.hex;
+        setPreference('yi-seed', s.hex);
         applyTheme();
         snack('主题已切换：' + s.name);
       });
@@ -1286,6 +1243,7 @@ cd YiPuzzles</pre>
     dice.addEventListener('click', function () {
       var hex = hslToHex(Math.random() * 360, 45 + Math.random() * 30, 34 + Math.random() * 14);
       state.seed = hex;
+      setPreference('yi-seed', hex);
       applyTheme();
       snack('随机主题色：' + hex.toUpperCase());
     });
@@ -1297,6 +1255,8 @@ cd YiPuzzles</pre>
   if (themeToggle) {
     themeToggle.addEventListener('click', function () {
       state.theme = state.theme === 'dark' ? 'light' : 'dark';
+      state.followsSystem = false;
+      setPreference('yi-theme', state.theme);
       applyTheme();
       snack(state.theme === 'dark' ? '已切换到深色模式 🌙' : '已切换到浅色模式 ☀️');
     });
@@ -1305,12 +1265,14 @@ cd YiPuzzles</pre>
   /* ============ 6. 窄屏菜单 ============ */
   var menuBtn = document.getElementById('menuBtn');
   var menuDrop = document.getElementById('menuDrop');
-  function closeMenu() {
-    if (!menuDrop) return;
+  function closeMenu(restoreFocus) {
+    if (!menuDrop.classList.contains('open')) return;
     menuDrop.classList.remove('open');
-    if (menuBtn) menuBtn.setAttribute('aria-expanded', 'false');
+    menuBtn.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) menuBtn.focus();
   }
   if (menuBtn && menuDrop) {
+    document.getElementById('topbar').classList.add('menu-ready');
     menuBtn.addEventListener('click', function (e) {
       e.stopPropagation();
       var open = menuDrop.classList.toggle('open');
@@ -1320,25 +1282,44 @@ cd YiPuzzles</pre>
       if (!menuDrop.contains(e.target) && e.target !== menuBtn) closeMenu();
     });
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeMenu();
+      if (e.key === 'Escape') closeMenu(menuDrop.contains(document.activeElement) || document.activeElement === menuBtn);
+    });
+    var narrow = window.matchMedia('(max-width: 860px)');
+    if (narrow.addEventListener) narrow.addEventListener('change', function () { closeMenu(); });
+    menuDrop.addEventListener('focusout', function (e) {
+      if (e.relatedTarget && e.relatedTarget !== menuBtn && !menuDrop.contains(e.relatedTarget)) closeMenu();
     });
     menuDrop.addEventListener('click', function (e) {
-      if (e.target.tagName === 'A') closeMenu();
+      var link = e.target.closest('a');
+      if (!link) return;
+      var target = document.getElementById(link.hash.slice(1));
+      closeMenu(!target);
+      if (target) {
+        target.setAttribute('tabindex', '-1');
+        target.focus({ preventScroll: true });
+      }
     });
   }
 
   /* ============ 7. 顶栏阴影 / FAB ============ */
   var topbar = document.getElementById('topbar');
   var fab = document.getElementById('fab');
-  window.addEventListener('scroll', function () {
+  function updateScrolled() {
     var y = window.scrollY || document.documentElement.scrollTop;
     if (topbar) topbar.classList.toggle('scrolled', y > 12);
     if (fab) fab.classList.toggle('show', y > 460);
-  }, { passive: true });
+  }
+  window.addEventListener('scroll', updateScrolled, { passive: true });
+  window.addEventListener('pageshow', updateScrolled);
+  updateScrolled();
   if (fab) {
     fab.addEventListener('click', function () {
       var t = document.getElementById('download');
-      if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      if (t) {
+        t.setAttribute('tabindex', '-1');
+        t.focus({ preventScroll: true });
+        t.scrollIntoView({ block: 'start' });
+      }
     });
   }
 
@@ -1347,12 +1328,13 @@ cd YiPuzzles</pre>
   if ('IntersectionObserver' in window) {
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (en) {
-        if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); }
+        if (en.isIntersecting) { en.target.classList.remove('pending'); io.unobserve(en.target); }
       });
-    }, { threshold: 0.12, rootMargin: '0px 0px -30px 0px' });
-    Array.prototype.forEach.call(revealEls, function (el) { io.observe(el); });
-  } else {
-    Array.prototype.forEach.call(revealEls, function (el) { el.classList.add('in'); });
+    }, { threshold: 0.12 });
+    Array.prototype.forEach.call(revealEls, function (el) {
+      io.observe(el);
+      el.classList.add('pending');
+    });
   }
 
   /* ============ 9. 涟漪 ============ */
@@ -1380,29 +1362,37 @@ cd YiPuzzles</pre>
     clearTimeout(snackTimer);
     snackTimer = setTimeout(function () { snackbar.classList.remove('show'); }, 2400);
   }
-  function copyText(text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return fallbackCopy(text); });
-    }
-    return Promise.resolve(fallbackCopy(text));
-  }
-  function fallbackCopy(text) {
+  async function copyText(text) {
     try {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.position = 'fixed'; ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
-      return true;
-    } catch (e) { return false; }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (e) { /* try the legacy path on denied permission */ }
+
+    var focus = document.activeElement;
+    var textarea = document.createElement('textarea');
+    try {
+      textarea.value = text;
+      textarea.readOnly = true;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      return document.execCommand('copy');
+    } catch (e) {
+      return false;
+    } finally {
+      textarea.remove();
+      if (focus) focus.focus({ preventScroll: true });
+    }
   }
   Array.prototype.forEach.call(document.querySelectorAll('.copy-btn'), function (btn) {
-    btn.addEventListener('click', function () {
+    btn.addEventListener('click', async function () {
       var target = document.getElementById(btn.dataset.copy);
       if (!target) return;
-      copyText(target.textContent).then(function () { snack('已复制到剪贴板 📋'); });
+      var copied = await copyText(target.textContent);
+      snack(copied ? '已复制到剪贴板 📋' : '无法访问剪贴板，请手动选择并复制命令。');
     });
   });
 
@@ -1436,8 +1426,10 @@ cd YiPuzzles</pre>
     }
     var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (!reduced) {
-      setInterval(function () {
-        if (document.hidden) return;
+      var remaining = 2;
+      var demoTimer = setInterval(function () {
+        if (--remaining === 0) clearInterval(demoTimer);
+        if (document.hidden || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
         var occupied = [];
         var empty = [];
         cells.forEach(function (c, idx) { (c.dataset.v ? occupied : empty).push(idx); });

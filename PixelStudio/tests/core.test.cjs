@@ -6,9 +6,11 @@ const { runInNewContext } = require('node:vm');
 const { deflateSync } = require('node:zlib');
 
 // Exercise the deployed inline code without adding exports or dependencies to index.html.
-const source = readFileSync(join(__dirname, '../index.html'), 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
 const init = 'bindEvents();\n      bindPressedState();';
-assert.ok(source.includes(init));
+const html = readFileSync(join(__dirname, '../index.html'), 'utf8');
+const source = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g), ([, script]) => script)
+  .find((script) => script.includes(init));
+assert.ok(source, 'The application script must contain the initialization hook');
 const el = { addEventListener() {}, setAttribute() {} };
 const { ExifEngine: exif, CodecHelper: codecs, fitResizeScales, makeDownloadFilename } = runInNewContext(
   source.replace(init, 'return { ExifEngine, CodecHelper, fitResizeScales, makeDownloadFilename };'),
@@ -95,6 +97,17 @@ test('JPEG skips a bad EXIF header, but never reads past a truncated segment', a
   assert.equal((await parse(exif.processJpegBytes(good, true))).hasExif, false);
 });
 
+test('JPEG stripping keeps scan bytes and requires a complete end marker', async () => {
+  const scan = Buffer.from('ffda0008010100003f0040ff0020ffd041', 'hex');
+  const tagged = exif.processJpegBytes(jpeg(), false, { artist: 'Test artist' });
+  const app1 = tagged.subarray(2, -2);
+  const comment = Buffer.from('fffe00047478', 'hex');
+  const multi = Buffer.concat([jpeg(scan, comment, app1, scan), ascii('trailing data')]);
+  assert.equal((await parse(multi)).artist, 'Test artist');
+  assert.deepEqual(Buffer.from(exif.processJpegBytes(multi, true)), jpeg(scan, scan));
+  assert.throws(() => exif.processJpegBytes(jpeg(scan).subarray(0, -2), true), /JPEG/);
+});
+
 test('WebP bounds EXIF by the RIFF size and cleans feature flags on strip', async () => {
   const base = webp(riffChunk('VP8L', Buffer.from([0x2f, 0, 0, 0, 0])));
   const added = Buffer.from(exif.injectWebpExif(base, false, { artist: 'Camera' }, 1, 1));
@@ -106,6 +119,24 @@ test('WebP bounds EXIF by the RIFF size and cleans feature flags on strip', asyn
   assert.equal((await parse(outsideRiff)).hasExif, false);
   assert.deepEqual(Buffer.from(exif.injectWebpExif(outsideRiff, true)), base);
   assert.throws(() => exif.injectWebpExif(added.subarray(0, -1), true), /WebP/);
+});
+
+test('WebP inserts EXIF before XMP, keeps alpha, and validates padding', () => {
+  const header = Buffer.from([0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  const image = riffChunk('VP8L', Buffer.from([0x2f, 0, 0, 0, 0x10]));
+  const xmp = riffChunk('XMP ', ascii('original'));
+  const source = webp(riffChunk('VP8X', header), image, xmp);
+  const added = Buffer.from(exif.injectWebpExif(source, false, { make: 'Camera' }, 1, 1));
+  const chunks = exif._webpChunks(new DataView(arrayBuffer(added))).chunks;
+  assert.equal(added[20], 0x1c);
+  assert.equal(chunks.map((item) => item.fourcc).join(','), 'VP8X,VP8L,EXIF,XMP ');
+  assert.equal(Buffer.from(chunks[3].payload).toString(), 'original');
+  const stripped = Buffer.from(exif.injectWebpExif(added, true));
+  assert.equal(stripped[20], 0x10);
+  assert.deepEqual(stripped.subarray(30), image);
+  const badPadding = Buffer.from(image);
+  badPadding[badPadding.length - 1] = 1;
+  assert.throws(() => exif.injectWebpExif(webp(badPadding), true), /WebP/);
 });
 
 test('PNG stripping removes text, EXIF and trailing data, but rejects a missing IEND', async () => {
@@ -132,6 +163,17 @@ test('GPS uses explicit valid hemispheres and well-formed DMS', async () => {
   assert.equal((await parse(png(pngChunk('eXIf', zero)))).gpsLat, '0');
 });
 
+test('TIFF text reads only a bounded, complete field', async () => {
+  const long = Buffer.alloc(40000, 65);
+  assert.equal(exif._readAscii(new DataView(arrayBuffer(long)), 0, long.length), '');
+  Buffer.from('像素\0').copy(long);
+  assert.equal(exif._readAscii(new DataView(arrayBuffer(long)), 0, long.length), '像素');
+  const metadata = { artist: '林', description: '像素🙂' };
+  const result = await parse(png(pngChunk('eXIf', exif.buildTiffBuffer(metadata))));
+  assert.equal(result.artist, metadata.artist);
+  assert.equal(result.description, metadata.description);
+});
+
 test('DateTimeDigitized outranks modification time if DateTimeOriginal is absent', async () => {
   const tiff = Buffer.from(exif.buildTiffBuffer({ dateTime: '2021:03:04 05:06:07' }));
   const sub = ifdPointer(tiff, 8, 0x8769);
@@ -155,6 +197,15 @@ test('Shutter values close to a unit fraction are not rounded to it', async () =
     assert.ok(Math.abs(exif.parseExposure(result.exposureTime) - seconds) < 1e-8);
     assert.equal(result.iso, '409600');
   }
+});
+
+test('EXIF sensitivity and fixed-point fields round trip at their declared limits', async () => {
+  const tiff = exif.buildTiffBuffer({ iso: '4294967295', fNumber: '0.01', focalLength: '42949672.95' });
+  const result = await parse(png(pngChunk('eXIf', tiff)));
+  assert.equal(result.iso, '4294967295');
+  assert.equal(result.fNumber, '0.01');
+  assert.equal(result.focalLength, '42949672.95');
+  assert.equal(exif.parsePositiveFixed('42949672.96'), 0);
 });
 
 test('Rounded resize dimensions obey both browser limits', () => {
