@@ -35,6 +35,15 @@ class TestMalformedManifest(unittest.TestCase):
     def test_json_that_is_not_an_object(self):
         self._refused(b"[]")
 
+    def test_missing_layers_is_not_an_empty_image(self):
+        self._refused(b'{"schemaVersion": 2}')
+        self.assertEqual(_registry(b'{"layers": []}').resolve("latest", light=True)["layers"], [])
+
+    def test_byte_counts_cannot_be_strings_or_fractional_numbers(self):
+        for size in ("33", 0.75, 2 ** 63):
+            with self.subTest(size=size):
+                self._refused(json.dumps({"layers": [_layer(size=size)]}).encode())
+
     def test_a_layer_without_a_size(self):
         self.assertIn("KeyError", self._refused(json.dumps({"layers": [_layer()]}).encode()))
 

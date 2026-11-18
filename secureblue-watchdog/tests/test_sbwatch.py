@@ -590,7 +590,7 @@ class TestBodhiCache(unittest.TestCase):
             b = S.Bodhi(cache_dir=d, max_calls=0)
             cf = b._cf("rpm-F44")
             with open(cf, "w") as fh:
-                json.dump([{"alias": "FEDORA-2026-1"}], fh)
+                json.dump([{"alias": "FEDORA-2026-1", "nvrs": [], "cves": [], "build_epochs": {}}], fh)
             self.assertIsNone(b._read_cache_entry(cf))
             self.assertEqual(b.updates_for_src("rpm", "F44"), [])
             self.assertEqual(b.skipped, 1)
@@ -602,9 +602,10 @@ class TestBodhiCache(unittest.TestCase):
             with open(cf, "w") as fh:
                 json.dump({"cache_version": S.BODHI_CACHE_VERSION, "total": 1,
                            "truncated": False,
-                           "updates": [{"alias": "FEDORA-2026-1"}]}, fh)
+                           "updates": [{"alias": "FEDORA-2026-1", "nvrs": [], "cves": [],
+                                        "build_epochs": {}}]}, fh)
             self.assertEqual(b.updates_for_src("rpm", "F44"),
-                             [{"alias": "FEDORA-2026-1"}])
+                             [{"alias": "FEDORA-2026-1", "nvrs": [], "cves": [], "build_epochs": {}}])
             self.assertEqual(b.truncated_src, set())
 
     def test_cache_without_the_version_marker_is_refetched_not_trusted(self):
@@ -641,7 +642,7 @@ class TestBodhiCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             b = S.Bodhi(cache_dir=d, max_calls=0)      # 0 calls => provably offline
             cf = b._cf("kernel-F44")
-            payload = [{"alias": "FEDORA-2026-1"}]
+            payload = [{"alias": "FEDORA-2026-1", "nvrs": [], "cves": [], "build_epochs": {}}]
             with open(cf, "w") as fh:
                 json.dump({"cache_version": S.BODHI_CACHE_VERSION, "total": 1,
                            "truncated": False, "updates": payload}, fh)
@@ -1947,7 +1948,7 @@ class TestFixesThatUsedToBeSilent(unittest.TestCase):
         bad_tags = (_struct.pack(">II", 2, 12)
                     + _struct.pack(">IIII", 1003, 4, 0, 0)
                     + _struct.pack(">IIII", 1001, 6, 0, 2)
-                    + b"1.0\02.0\0\0\0\0\0")
+                    + b"1.0\x002.0\0\0\0\0\0")
         stats = {}
         self.assertEqual(S.read_header(bad_tags, stats), {})
         self.assertEqual(stats.get("fields_skipped"), 2)
@@ -2255,12 +2256,13 @@ class TestWorkflowHygiene(unittest.TestCase):
                 ln, r"^[A-Z_]+: \$\{\{ steps\.check\.outputs\.(fail_reason|summary) \}\}$")
 
     def test_an_unchanged_cache_is_not_saved_again(self):
-        # a `no-update` run writes nothing into ~/.cache/sbwatch; a failed run
-        # (empty verdict) must still save what it has
+        # A no-update run has nothing new to save. Failed publication must retry.
         wf = self._workflow()
         step = wf.split("- name: Save sbwatch cache")[1].split("- name:")[0]
         cond = re.search(r"^\s*if: (.*)$", step, re.M).group(1)
-        self.assertEqual(cond, "always() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'")
+        self.assertEqual(cond, "success() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'")
+        self.assertLess(wf.index("- name: Comment on (or open)"), wf.index("- name: Save sbwatch cache"))
+        self.assertLess(wf.index("- name: Save sbwatch cache"), wf.index("- name: Red run when"))
 
     def test_an_inconclusive_run_is_not_green(self):
         wf = self._workflow()

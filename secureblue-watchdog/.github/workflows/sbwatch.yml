@@ -94,11 +94,6 @@ jobs:
       contents: read
       issues: write   # sticky issue comment
       actions: write  # pruning old caches via the API
-    # Job-level, so the Telegram step's `if: env.X != ''` sees them without
-    # exposing secrets to the `test` job's `pip install`.
-    env:
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -185,56 +180,6 @@ jobs:
           PY
           fi
 
-      - name: Save sbwatch cache
-        # Not after a `no-update` run: that path writes nothing into the cache
-        # directory, so each of those runs (nearly all of them) uploaded an
-        # identical copy under a new key and left it for the prune step below.
-        # The restore above already counts as access, so the entry does not age out.
-        if: always() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ~/.cache/sbwatch
-          key: sbwatch-${{ steps.ns.outputs.ns }}-${{ env.SB_ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Prune old sbwatch caches
-        if: always() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        env:
-          NS: ${{ steps.ns.outputs.ns }}
-        with:
-          script: |
-            // Must be the SAME prefix the cache keys actually start with:
-            // sbwatch-<ns>-<arch>-<run_id>-<run_attempt>. The previous
-            // `sbwatch-${SB_ARCH}` never matched any key (the image namespace
-            // sits between), so this step silently pruned nothing while still
-            // reporting success.
-            const prefix = `sbwatch-${process.env.NS}-${process.env.SB_ARCH}-`;
-            const keep = 7;                                  // newest entries to keep
-            // One page holds at most 100 caches; at ~24 runs/day x 7 kept, the
-            // interesting entries are always on the first page, but paging keeps
-            // this correct if the retention window is ever raised.
-            let page = 1;
-            const all = [];
-            while (true) {
-              const res = await github.rest.actions.getActionsCacheList({
-                owner: context.repo.owner, repo: context.repo.repo,
-                per_page: 100, page, key: prefix,
-                sort: 'last_accessed_at', direction: 'desc',
-              });
-              const batch = res.data.actions_caches || [];
-              all.push(...batch);
-              if (batch.length < 100) break;
-              page += 1;
-            }
-            const caches = all.slice(keep);
-            for (const c of caches) {
-              await github.rest.actions.deleteActionsCacheById({
-                owner: context.repo.owner, repo: context.repo.repo, cache_id: c.id,
-              });
-              core.info(`deleted cache ${c.id} (${c.key})`);
-            }
-            core.info(`pruned ${caches.length} old cache entr(ies) of ${all.length}, kept ${keep}`);
-
       - name: Append build history (several pushes a day share one version string)
         if: steps.check.outputs.verdict != 'no-update' && steps.check.outputs.verdict != 'no-change' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'unknown'
         run: |
@@ -253,16 +198,19 @@ jobs:
       # 'unknown' run red on the promise that its report was uploaded first.
       - name: Upload report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always() && steps.check.outputs.verdict != 'no-update' && steps.check.outputs.verdict != ''
+        if: ${{ !cancelled() && steps.check.outputs.verdict != 'no-update' && steps.check.outputs.verdict != '' }}
         with:
-          name: update-watch-${{ github.run_number }}
+          name: update-watch-${{ github.run_number }}-${{ github.run_attempt }}
           path: |
             report.md
             report.md.json
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 7
 
       - name: Should we notify?
+        # Cache pruning/history/artifact failures should not suppress a report
+        # produced by a successful check.
+        if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         id: notify
         env:
           VERDICT: ${{ steps.check.outputs.verdict }}
@@ -279,7 +227,7 @@ jobs:
           echo "verdict=$verdict post=$post post_skip=$POST_SKIP_VERDICT fail_on_security=$FAIL_ON_SECURITY"
 
       - name: Comment on (or open) a sticky issue
-        if: steps.notify.outputs.post == 'true'
+        if: ${{ !cancelled() && steps.notify.outputs.post == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERDICT: ${{ steps.notify.outputs.verdict }}
@@ -320,11 +268,13 @@ jobs:
           fi
 
       - name: Push to Telegram
-        # env.TELEGRAM_BOT_TOKEN is defined at *job* level, so it is visible here.
-        if: always() && steps.notify.outputs.post == 'true' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        if: ${{ !cancelled() && steps.notify.outputs.post == 'true' }}
         env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SUMMARY: ${{ steps.check.outputs.summary }}
         run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then exit 0; fi
           python3 - <<'PY'
           import json, os, urllib.error, urllib.request, sys
           try:
@@ -362,6 +312,58 @@ jobs:
           except Exception as e:
               print(f"Telegram push failed (non-fatal): {type(e).__name__}", file=sys.stderr)
           PY
+
+      - name: Save sbwatch cache
+        # Persist the checkpoint only after required report consumers succeed.
+        # An issue-posting failure must be retryable on the next scheduled run.
+        # Not after a `no-update` run: that path writes nothing into the cache
+        # directory, so each of those runs (nearly all of them) uploaded an
+        # identical copy under a new key and left it for the prune step below.
+        # The restore above already counts as access, so the entry does not age out.
+        if: success() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/sbwatch
+          key: sbwatch-${{ steps.ns.outputs.ns }}-${{ env.SB_ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Prune old sbwatch caches
+        if: success() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          NS: ${{ steps.ns.outputs.ns }}
+        with:
+          script: |
+            // Must be the SAME prefix the cache keys actually start with:
+            // sbwatch-<ns>-<arch>-<run_id>-<run_attempt>. The previous
+            // `sbwatch-${SB_ARCH}` never matched any key (the image namespace
+            // sits between), so this step silently pruned nothing while still
+            // reporting success.
+            const prefix = `sbwatch-${process.env.NS}-${process.env.SB_ARCH}-`;
+            const keep = 7;                                  // newest entries to keep
+            // One page holds at most 100 caches; at ~24 runs/day x 7 kept, the
+            // interesting entries are always on the first page, but paging keeps
+            // this correct if the retention window is ever raised.
+            let page = 1;
+            const all = [];
+            while (true) {
+              const res = await github.rest.actions.getActionsCacheList({
+                owner: context.repo.owner, repo: context.repo.repo,
+                per_page: 100, page, key: prefix,
+                sort: 'last_accessed_at', direction: 'desc',
+              });
+              const batch = res.data.actions_caches || [];
+              all.push(...batch);
+              if (batch.length < 100) break;
+              page += 1;
+            }
+            const caches = all.slice(keep);
+            for (const c of caches) {
+              await github.rest.actions.deleteActionsCacheById({
+                owner: context.repo.owner, repo: context.repo.repo, cache_id: c.id,
+              });
+              core.info(`deleted cache ${c.id} (${c.key})`);
+            }
+            core.info(`pruned ${caches.length} old cache entr(ies) of ${all.length}, kept ${keep}`);
 
       - name: Red run when security fixes are waiting
         if: always() && env.FAIL_ON_SECURITY == 'true' && steps.check.outputs.fail_on_security == 'true'

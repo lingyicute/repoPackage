@@ -262,8 +262,8 @@ manifest-only 模式只读 manifest，**没有任何软件包版本被读过**�
 
 ### `check --fast` 与 manifest-only
 
-`check` 默认带 `--fast`：当**两个镜像的 rpmdb chunk digest 相同**时，跳过 33MB 拉取、
-自动降级为 manifest-only。这是安全的——rpmdb.sqlite 逐字节相同 ⟹ 包集合必然没变。
+`check` 默认带 `--fast`：当**两个镜像的 rpmdb chunk digest 相同**且不需要 backlog 审计时，跳过 33MB 拉取、
+自动降级为 manifest-only。默认开启 backlog 审计时只读取一次共享包表：相同的 rpmdb 并不代表 Fedora 没有新发布的勘误。这是安全的——rpmdb.sqlite 逐字节相同 ⟹ 包集合必然没变。
 
 > [!important]
 > 早期版本用 `rpmostree.inputhash` 相同作为跳过依据，那是错的（见上文）。实测最近
@@ -282,7 +282,7 @@ stdout 或 `--json-out` 的 `verdict.level` 读取）；非零退出码只表示
 
 ## 测试
 
-`tests/` 包含 **498 项离线回归测试**，不需要网络、不访问 registry
+`tests/` 包含离线回归测试（实际数量以本次运行的 `Ran … tests` 为准），不需要网络、不访问 registry
 或 Bodhi，也不依赖 `rpm` 二进制或 python `rpm` 模块：
 
 ```bash
@@ -379,7 +379,7 @@ CI 中由 `test` 作业运行；`watch` 作业**不**依赖 `test`（两者并�
 
 ## GitHub Action
 
-仓库自带 `.github/workflows/sbwatch.yml`，由 [worker-cron](https://github.com/lingyicute/worker-cron) 驱动，每半小时就会跑一次：
+仓库自带 `.github/workflows/sbwatch.yml`。其内置计划是每小时 UTC 第 20 分钟（`20 * * * *`）；外部调度器也可通过 `workflow_dispatch` 额外触发，实际频率取决于外部配置：
 
 - cache `~/.cache/sbwatch` (pkglist + Bodhi + state.json)，按 image+arch 分命名空间，
   并有一个 prune 步骤只保留最近 7 份（否则 `state.json` 会被 LRU 挤掉，`check` 就失去基线）；

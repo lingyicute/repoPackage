@@ -126,10 +126,8 @@ BASELINE_LABEL_CAP = 80  # characters of a baseline label read back from the sta
 #                          whole digest (71), which shortref() then abbreviates. The
 #                          former 26 cut check's own label and appended a 40-character
 #                          marker to it - once more on every --force run.
-PKGLIST_CACHE_VERSION = 4  # source_epoch is derived from the matching installed main RPM
-BODHI_CACHE_VERSION = 5  # v1 clipped bug titles (200) and notes (1500) BEFORE
-#                          extracting CVE ids from them, so a v1 cache can be
-#                          missing CVEs. A cache without this marker is refetched.
+PKGLIST_CACHE_VERSION = 6  # track all shadowed packages, even the same architecture
+BODHI_CACHE_VERSION = 6  # v5 could cache a repeated, apparently complete page
 OLD_LOG_CAP = 1000  # changelog entries (dropped by this build) scanned for lost fixes
 RETAINED_LOG_CAP = 1000  # unchanged entries that may still mention a purportedly gained/lost CVE
 TAG_LIST_RETRIES = 4                        # ghcr is flaky on tags/list pagination
@@ -279,10 +277,8 @@ def clip_hash(s, n: int) -> str:
 
 
 def ts_short(s) -> str:
-    """Timestamp to whole seconds. Fractional seconds carry nothing the report
-    compares on (builds are identified by digest), so only they are dropped -
-    everything else is kept, and no marker is needed for that one loss."""
-    return str(s or "")[:19]
+    """Whole seconds in UTC for the history column and state labels."""
+    return _ts_order(s)[:19]
 
 
 _RFC3339_RE = re.compile(
@@ -863,10 +859,14 @@ class Registry:
     @staticmethod
     def _validate_ref(ref: str) -> str:
         s = str(ref or "")
-        if not s or s in (".", "..") or re.search(r"[/\\?#%\s\x00-\x1f\x7f]", s):
-            raise RegistryError(T(f"invalid image tag or digest: {ref!r}",
-                                  f"无效的镜像 tag 或 digest：{ref!r}"))
-        return s
+        if ":" in s:
+            digest = _clean_sha256_header(s)
+            if digest and s == s.strip():
+                return digest
+        elif re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", s):
+            return s
+        raise RegistryError(T(f"invalid image tag or digest: {ref!r}",
+                              f"无效的镜像 tag 或 digest：{ref!r}"))
 
     def _open(self, path: str, accept: str, *, _refreshed: bool = False):
         url = f"https://{self.host}/v2/{self.repo}/{path.lstrip('/')}"
@@ -968,7 +968,7 @@ class Registry:
         # both the digest that was asked for and the one the registry announced
         # have to be the digest of the bytes that were read
         check_digest(actual, what, f"manifest {clip_hash(what, 19)}")
-        check_digest(actual, top_digest, f"manifest {what}")
+        check_digest(actual, top_digest, f"manifest {what}", required=bool(top_digest))
         top_digest = "sha256:" + actual
         man = json.loads(raw)
         if not isinstance(man, dict):
@@ -987,7 +987,9 @@ class Registry:
                 raise NoArchManifest(T(f"no {self.arch} manifest in {self.repo}:{what}",
                                        f"{self.repo}:{what} 中没有 {self.arch} 架构的 manifest"))
             ann.update(dict(pick.get("annotations") or {}))
-            pick_dig = pick.get("digest") or ""
+            pick_dig = _clean_sha256_header(pick.get("digest"))
+            if not pick_dig:
+                raise ValueError("platform descriptor requires a sha256 digest")
             raw = self.get(f"manifests/{pick_dig}", MANIFEST_ACCEPT)
             plat_hex = hashlib.sha256(raw).hexdigest()
             check_digest(plat_hex, pick_dig,
@@ -1002,7 +1004,9 @@ class Registry:
         out["manifest"] = man
         cfg = {}
         if not light:
-            cfg_dig = (man.get("config") or {}).get("digest") or ""
+            cfg_dig = _clean_sha256_header((man.get("config") or {}).get("digest"))
+            if not cfg_dig:
+                raise ValueError("config descriptor requires a sha256 digest")
             raw = self.get(f"blobs/{cfg_dig}",
                            "application/vnd.oci.image.config.v1+json")
             check_digest(hashlib.sha256(raw).hexdigest(), cfg_dig,
@@ -1027,7 +1031,7 @@ class Registry:
         out["created"] = rfc3339_seconds(cfg.get("created")
                                          or ann.get("org.opencontainers.image.created"))
         out["layers"] = []
-        layers_raw = man.get("layers", [])
+        layers_raw = man["layers"]
         if not isinstance(layers_raw, list):
             raise TypeError("manifest layers must be a list")
         for l in layers_raw:
@@ -1036,11 +1040,9 @@ class Registry:
             if not ldig:
                 raise ValueError(f"invalid layer digest {l['digest']!r}")
             raw_sz = l["size"]
-            if isinstance(raw_sz, bool):
-                raise TypeError("layer size must not be boolean")
-            sz = int(raw_sz)
-            if sz < 0:
-                raise ValueError(f"negative layer size {sz}")
+            if type(raw_sz) is not int or not 0 <= raw_sz < 2 ** 63:
+                raise ValueError("layer size must be a non-negative 64-bit integer")
+            sz = raw_sz
             stab_raw = la.get("org.chunkah.stability", 0)
             if isinstance(stab_raw, bool):
                 raise TypeError("layer stability must not be boolean")
@@ -1061,6 +1063,9 @@ class Registry:
         Nothing is ever held fully in memory: a chunk is read, decompressed and
         written 1 MiB at a time, and either cap aborts as soon as it is crossed.
         """
+        digest = _clean_sha256_header(digest)
+        if not digest:
+            raise RegistryError(T("layer requires a valid sha256 digest", "层需要有效的 sha256 摘要"))
         d = clip_hash(digest, 19)
         with self._open(f"blobs/{digest}", "application/octet-stream") as r:
             cl = r.headers.get("Content-Length")
@@ -1281,7 +1286,6 @@ RPMTAG = {
     1014: "license", 1022: "arch", 1044: "sourcerpm", 1080: "changelogtime",
     1081: "changelogname", 1082: "changelogtext",
 }
-STR_TYPES = {6, 8, 9}   # 6=STRING, 8=STRING_ARRAY, 9=I18NSTRING
 CHUNK_MATCH = "rpmdb.sqlite"
 # rpm pseudo-packages: they have no source rpm, no arch and no Fedora erratum, and
 # they churn on every keyring rotation, so they only add noise to a diff.
@@ -1340,14 +1344,13 @@ def read_header(blob: bytes, stats: dict | None = None) -> dict:
             return {}
         nindex, hlen = struct.unpack(">II", blob[:8])
         base = 8
-    # `base`, not a hard-coded 8: the legacy layout puts the index at offset 16.
-    # The index itself must fit, whatever slack the data store gets: the entry
-    # unpack below is not guarded, so a short index crashed the whole parse.
-    if base + 16 * nindex > len(blob) or base + 16 * nindex + hlen > len(blob) + 40:
+    # The index and the entire declared data store must fit. Salvaging a
+    # truncated store can hide missing tags (e.g. Epoch) without an error.
+    store = base + 16 * nindex
+    store_end = store + hlen
+    if store_end > len(blob):
         stats["headers_rejected"] = stats.get("headers_rejected", 0) + 1
         return {}
-    store = base + 16 * nindex
-    store_end = min(len(blob), store + hlen)
     out: dict = {}
     for i in range(nindex):
         tag, typ, off, cnt = struct.unpack(">IIII", blob[base + 16 * i: base + 16 * i + 16])
@@ -1364,31 +1367,27 @@ def read_header(blob: bytes, stats: dict | None = None) -> dict:
                 out[name] = list(struct.unpack(">%dI" % cnt, blob[p:p + 4 * cnt]))
                 continue
             if name == "epoch":
-                if typ != 4 or cnt < 1 or p + 4 > store_end:
-                    raise ValueError("epoch must be INT32 with count >= 1")
+                if typ != 4 or cnt != 1 or p + 4 > store_end:
+                    raise ValueError("epoch must be a single INT32")
                 out[name] = str(struct.unpack(">I", blob[p:p + 4])[0])
                 continue
-            if typ in STR_TYPES:
-                if name in ("changelogname", "changelogtext"):
-                    if cnt > store_end - p:
-                        raise ValueError("string array count exceeds remaining store")
-                    arr, q = [], p
-                    for _ in range(cnt):
-                        e = blob.index(b"\0", q, store_end)
-                        arr.append(blob[q:e].decode("utf-8", "replace"))
-                        q = e + 1
-                    out[name] = arr
-                else:
-                    # An I18NSTRING holds one string per locale, C locale first
-                    # (glfw, libraqm, usb_modeswitch ... translate their Summary),
-                    # so only a plain STRING has to be a single value. Rejecting
-                    # count > 1 outright reported 12 "undecodable" fields on the
-                    # live image - a parse warning in every single report.
-                    if cnt != 1 and not (typ == 9 and cnt > 1):
-                        raise ValueError("scalar string tag with count != 1")
-                    out[name] = blob[p:blob.index(b"\0", p, store_end)].decode("utf-8", "replace")
+            if name in ("changelogname", "changelogtext"):
+                if typ != 8 or cnt > store_end - p:
+                    raise ValueError("invalid RPM changelog string array")
+                arr, q = [], p
+                for _ in range(cnt):
+                    e = blob.index(b"\0", q, store_end)
+                    arr.append(blob[q:e].decode("utf-8", "replace"))
+                    q = e + 1
+                out[name] = arr
             else:
-                raise ValueError(f"unsupported RPM type {typ} for {name}")
+                # Only Summary and Description are translated; their first
+                # string is the C locale. Identity fields must be scalar.
+                translated = name in ("summary", "description") and typ == 9
+                if not (typ == 6 and cnt == 1 or translated and cnt > 0):
+                    raise ValueError(f"invalid scalar RPM tag {name}")
+                errors = "replace" if name in ("summary", "description") else "strict"
+                out[name] = blob[p:blob.index(b"\0", p, store_end)].decode("utf-8", errors)
         except (ValueError, struct.error):
             stats["fields_skipped"] = stats.get("fields_skipped", 0) + 1
             continue
@@ -1415,8 +1414,8 @@ def rpmdb_chunk(resolved: dict) -> dict | None:
 def table_put(pkgs: "PackageTable", e: dict) -> None:
     """Insert one binary package into the name-keyed table.
 
-    Same name, different architecture (multilib: `foo.i686` next to `foo.x86_64`)
-    is the one case where two entries compete for one key. The higher EVR wins -
+    Multilib and multiple installed builds of the same architecture can both
+    compete for one key. The higher EVR wins -
     that is what the rest of this file assumes - but the loser is *recorded*, so
     the report can say that a change to it would not be visible in the diff.
     """
@@ -1425,19 +1424,14 @@ def table_put(pkgs: "PackageTable", e: dict) -> None:
     if old is None:
         pkgs[name] = e
         return
-    if old.get("arch") != e.get("arch"):
-        cmp = evr_cmp(e, old)
-        take_new = cmp > 0 or (cmp == 0 and (e.get("arch") or "") > (old.get("arch") or ""))
-        winner, loser = (e, old) if take_new else (old, e)
-        kept_evr, shad_evr = _evr_pair(winner, loser)
-        pkgs.collisions.append({"name": name, "kept_arch": winner.get("arch"),
-                                "kept_evr": kept_evr,
-                                "shadowed_arch": loser.get("arch"),
-                                "shadowed_evr": shad_evr})
-        pkgs[name] = winner
-        return
-    if evr_cmp(e, old) > 0:
-        pkgs[name] = e
+    cmp = evr_cmp(e, old)
+    take_new = cmp > 0 or (cmp == 0 and (e.get("arch") or "") > (old.get("arch") or ""))
+    winner, loser = (e, old) if take_new else (old, e)
+    kept_evr, shad_evr = _evr_pair(winner, loser)
+    pkgs.collisions.append({"name": name, "kept_arch": winner.get("arch"),
+                            "kept_evr": kept_evr, "shadowed_arch": loser.get("arch"),
+                            "shadowed_evr": shad_evr})
+    pkgs[name] = winner
 
 
 def package_list(reg: Registry, resolved: dict) -> dict:
@@ -1486,6 +1480,8 @@ def package_list(reg: Registry, resolved: dict) -> dict:
                     texts = [texts]
                 if isinstance(names, str):
                     names = [names]
+                if len({len(times), len(names), len(texts)}) != 1:
+                    stats["fields_skipped"] = stats.get("fields_skipped", 0) + 1
                 chlog = [{"time": (times[i] if i < len(times) else 0),
                           "who": (names[i] if i < len(names) else ""),
                           "text": t} for i, t in enumerate(texts)]
@@ -1575,6 +1571,19 @@ class Bodhi:
                 # one request; trusting it costs a wrong verdict.
                 if data.get("cache_version") != BODHI_CACHE_VERSION:
                     return None
+                if type(data.get("truncated")) is not bool or any(
+                        not isinstance(u, dict) or not isinstance(u.get("nvrs"), list)
+                        or not isinstance(u.get("cves"), list)
+                        or not isinstance(u.get("build_epochs"), dict)
+                        or any(u.get(k) is not None and not isinstance(u[k], str)
+                               for k in ("alias", "type", "status", "severity", "title", "notes"))
+                        or not isinstance(u.get("bugs", []), list)
+                        or any(not isinstance(b, dict) or not isinstance(b.get("title"), str)
+                               for b in u.get("bugs", []))
+                        or any(n is not None and not isinstance(n, str) for n in u["nvrs"])
+                        or any(not isinstance(c, str) for c in u["cves"])
+                        for u in data["updates"]):
+                    return None
                 return data
             return None
         except Exception as e:
@@ -1586,7 +1595,7 @@ class Bodhi:
                 pass
             return None
 
-    def _fetch_page(self, url: str, src: str) -> tuple:
+    def _fetch_page(self, url: str, src: str, expected_page: int) -> tuple:
         """One page of /updates/ as (document, updates), validated.
 
         A failure out of the blue gets a second try. Bodhi takes 20 s for some
@@ -1608,16 +1617,23 @@ class Bodhi:
                     if len(raw) > MAX_JSON_BYTES:
                         raise ValueError(f"Bodhi response exceeds {human(MAX_JSON_BYTES)}")
                     data = json.loads(raw)
-                if not isinstance(data, dict):
-                    raise ValueError("Bodhi response is not a JSON object")
+                if not isinstance(data, dict) or data.get("error") or data.get("errors"):
+                    raise ValueError("Bodhi response is not a successful update collection")
+                for field in ("pages", "page", "total"):
+                    if field in data and (type(data[field]) is not int or data[field] < 0):
+                        raise ValueError(f"invalid Bodhi pagination field: {field}")
+                if data.get("page", expected_page) != expected_page:
+                    raise ValueError(f"Bodhi returned page {data['page']} instead of {expected_page}")
                 page_ups = data.get("updates")
                 if not isinstance(page_ups, list) or any(not isinstance(u, dict) for u in page_ups):
                     raise ValueError("Bodhi updates must be a list of JSON objects")
                 # Validate consumed fields inside the retry/error boundary. An
                 # error document is not a successful query with zero matches.
                 for u in page_ups:
+                    if not u:
+                        raise ValueError("empty Bodhi update record")
                     for k in ("alias", "updateid", "type", "status", "severity", "content_type",
-                              "title", "notes"):
+                              "title", "notes", "date_approved", "date_stable"):
                         if u.get(k) is not None and not isinstance(u[k], str):
                             raise ValueError(f"invalid Bodhi update field: {k}")
                     for k, fields in (("builds", ("nvr", "type")), ("bugs", ("title",))):
@@ -1657,7 +1673,11 @@ class Bodhi:
             ent = self._mem[key]
             return ent["updates"] if isinstance(ent, dict) else ent
         cf = self._cf(key)
-        if cf and os.path.exists(cf) and time.time() - os.path.getmtime(cf) < self.ttl:
+        try:
+            fresh = cf and time.time() - os.path.getmtime(cf) < self.ttl
+        except OSError:
+            fresh = False
+        if fresh:
             cached = self._read_cache_entry(cf)
             if cached is not None:
                 self._mem[key] = cached
@@ -1683,6 +1703,8 @@ class Bodhi:
         truncated = False
         budget_cut = False
         received = 0  # total counts all content types, not just the RPMs we keep
+        seen_aliases = set()
+        page_count = None
         inconsistent = False
         ok = False
         for page in range(1, MAX_BODHI_PAGES + 1):
@@ -1700,12 +1722,7 @@ class Bodhi:
                 {"packages": src, "releases": release,
                  "rows_per_page": str(BODHI_PAGE_SIZE), "page": str(page)})
             try:
-                data, page_ups = self._fetch_page(url, src)
-                for field in ("pages", "page", "total"):
-                    if field in data and (type(data[field]) is not int or data[field] < 0):
-                        raise ValueError(f"invalid Bodhi pagination field: {field}")
-                if data.get("page", page) != page:
-                    raise ValueError(f"Bodhi returned page {data['page']} instead of {page}")
+                data, page_ups = self._fetch_page(url, src, page)
             except Exception as ex:
                 self.failed += 1
                 log(T(f"  ! bodhi lookup failed for {src} (page {page}): {ex}",
@@ -1724,8 +1741,20 @@ class Bodhi:
                 break
             ok = True
             self._streak = 0
+            pages = data.get("pages")
+            if ((total is not None and data.get("total", total) != total)
+                    or (page_count is not None and pages is not None and pages != page_count)):
+                inconsistent = True
             total = data.get("total", total)
+            if pages is not None:
+                page_count = pages
             for u in page_ups:
+                alias = u.get("alias") or u.get("updateid")
+                if alias:
+                    if alias in seen_aliases:
+                        inconsistent = True
+                        continue
+                    seen_aliases.add(alias)
                 ctype = (u.get("content_type") or "").strip().lower()
                 if ctype and ctype != "rpm":
                     continue
@@ -1760,9 +1789,8 @@ class Bodhi:
                              and (b.get("type") or "rpm").lower() == "rpm"],
                 })
             received += len(page_ups)
-            pages = data.get("pages")
-            if pages is not None:
-                more = page < pages
+            if page_count is not None:
+                more = page < page_count
             elif total is not None:
                 more = received < total
             else:
@@ -1782,6 +1810,10 @@ class Bodhi:
                       f"（MAX_BODHI_PAGES={MAX_BODHI_PAGES}）——该包的审计不完整"))
                 break
             time.sleep(self.sleep)
+        if inconsistent and not truncated:
+            truncated = True
+            log(T(f"  ! Bodhi pagination shifted while reading {src}; audit is incomplete",
+                  f"  ！读取 {src} 时 Bodhi 分页发生变化，审计不完整"))
         if truncated:
             self.truncated_src.add(src)
         # never cache a failed query: an empty answer would blind later runs. A
@@ -1933,6 +1965,9 @@ def _passed_build(old: dict, new: dict, nvrs, epochs=None) -> str | None:
     """
     old_dist = _dist_tag(old.get("release"))
     new_dist = _dist_tag(new.get("release"))
+    # Numeric ordering is meaningful only within the same source lineage.
+    if old.get("src") != new.get("src") or old_dist != new_dist:
+        return None
     for b in nvrs or []:
         parts = (b or "").rsplit("-", 2)
         if len(parts) != 3:
@@ -1942,7 +1977,7 @@ def _passed_build(old: dict, new: dict, nvrs, epochs=None) -> str | None:
         if bn != new["name"] and bn != new.get("src"):
             continue
         # Packages like shim and fedora-release carry no .fcNN tag on any side.
-        if _dist_tag(br) != old_dist or (not old_dist and new_dist):
+        if _dist_tag(br) != old_dist:
             continue
         by_src = bn != new["name"]
         epoch = (epochs or {}).get(b)
@@ -2242,14 +2277,16 @@ def pkg_diff(pa: dict, pb: dict) -> dict:
     common = keys_a & keys_b
     for n in sorted(common):
         x, y = pa[n], pb[n]
-        if _evr_tuple(x) == _evr_tuple(y):
+        arch_changed = x.get("arch") != y.get("arch")
+        if _evr_tuple(x) == _evr_tuple(y) and not arch_changed:
             continue
         d = evr_cmp(x, y)
         # "rebuild" is now only reachable for equal-comparing but differently
         # spelled EVRs (e.g. 1.0 vs 1.00); with the tuple check above, identical
         # (epoch, version, release) never gets here at all.
         changed.append({"name": n, "old": x, "new": y, "src": y["src"],
-                        "dir": "downgrade" if d > 0 else "upgrade" if d < 0 else "rebuild"})
+                        "dir": ("downgrade" if d > 0 else "upgrade" if d < 0
+                                else "arch-change" if arch_changed else "rebuild")})
     return {
         "added": sorted(keys_b - keys_a),
         "removed": sorted(keys_a - keys_b),
@@ -2494,7 +2531,11 @@ def secureblue_notification(diff: dict, groups: list | None = None) -> dict:
     # Fedora advisory covering three source packages is one entry in .advisories,
     # while two advisories attached to one build are two entries.
     seen_adv: dict = {}
-    for idx, g in enumerate(groups):
+    # A rollback gains no fix, but its destination is still in
+    # ostree_modified_new. Keep that advisory out of the recommendation while
+    # preserving it for the desktop rule (rpmostreed-deployment-utils.cxx).
+    rollback_targets = [c.get("cls") or {} for c in changed if c.get("dir") == "downgrade"]
+    for idx, g in enumerate([*groups, *rollback_targets]):
         if not g.get("has_security_erratum"):
             continue
         advs = g.get("security_advisories")
@@ -2544,12 +2585,15 @@ def secureblue_notification(diff: dict, groups: list | None = None) -> dict:
             "kernel_updated": kernel_updated, "trivalent_updated": trivalent_updated,
             "security_advisory_count": len(sevs),
             "level_without_advisories": stock, "advisory_driven": stock != level,
-            "delivery": {"observed": False, "requires": "cached rpm-ostree update",
+            "delivery": {"observed": False,
+                         "requires": "cached rpm-ostree update for a staged OCI deployment",
+                         "stock_oci_without_staged_deployment": "none",
                          "suppress_if_notified_today": ["critical", "normal"] if level == "normal"
                          else ["critical"]},
-            "severity_basis": ("rpm-ostree .advisories: released security errata whose "
-                               "EVR matches a package in the new image exactly; errata "
-                               "matched only after stripping .secureblue.N are excluded"),
+            "severity_basis": ("Bodhi stable source-build candidates; a local rpm-md "
+                               "binary NEVRA match is required and is not verified. "
+                               "Matches requiring .secureblue.N stripping are excluded."),
+            "rpm_md_observed": False,
             "why": why, "why_zh": why_zh}
 
 
@@ -2599,7 +2643,7 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         en, zh = _evidence_pair(g)
         return f"{en} {zh}"
 
-    moved_names = {c["name"] for c in diff["changed"] if c.get("dir") != "downgrade"}
+    moved_names = {c["name"] for c in diff["changed"] if c.get("dir") not in ("downgrade", "arch-change")}
     kernel_downgraded = any(c["name"] == "kernel" and c.get("dir") == "downgrade"
                             for c in diff["changed"])
     kernel_in_diff = "kernel" in moved_names
@@ -2612,17 +2656,16 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                                       and not meta.get("kernel_pkg_unchanged")
                                       and not kernel_downgraded)
     sbn = secureblue_notification(diff, groups)
-    if diff.get("count_a") == "?" and not diff.get("same_rpmdb"):
-        # manifest-only mode (--exact 0): no rpmdb was read, so the package set
-        # is unknown and "no notification" would be an unfounded claim.
-        # Every input of the prediction is unknown as well: `False` / `none` for
-        # them read as "the kernel did not move, no advisory" - a claim.
-        sbn = dict(sbn, level="unknown", message=None, why=[], why_zh=[],
-                   kernel_updated=None, trivalent_updated=None,
+    if diff.get("count_a") == "?":
+        # Matching rpmdb digests prove there was no package delta, but do not
+        # identify which backend (rpm-ostree or bootc) the old image uses.
+        same_db = bool(diff.get("same_rpmdb"))
+        sbn = dict(sbn, level="unknown", message=None, why=[], why_zh=[], delivery=None,
+                   kernel_updated=False if same_db else None,
+                   trivalent_updated=False if same_db else None,
                    max_advisory_severity=None, security_advisory_count=None,
                    level_without_advisories="unknown", advisory_driven=False,
-                   note="package versions were not read (--exact 0), so the "
-                        "notification cannot be predicted")
+                   note="the booted image's notification backend was not read from the rpmdb")
     silent = xc.get("silent_rebuilds") or []
     # The whole list, not the first 60 entries: silent_rebuilds is sorted by chunk
     # size, and the packages that matter here (kernel, glibc, ...) are exactly the
@@ -2644,7 +2687,8 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
          "secureblue_notification": sbn, "silent_rebuilds": [n for n, _ in silent],
          "silent_important": silent_key, "non_package_bytes": xc.get("non_package_bytes", 0),
          "download_human": human(ldiff["download_bytes"]),
-         "backlog_count": len(backlog or [])}
+         "backlog_audited": backlog is not None,
+         "backlog_count": len(backlog) if backlog is not None else None}
     same_input = bool(meta.get("inputhash_a")) and meta["inputhash_a"] == meta.get("inputhash_b")
     same_commit = bool(meta.get("commit_a")) and meta["commit_a"] == meta.get("commit_b")
     v["same_inputhash"] = same_input
@@ -2789,7 +2833,12 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
     # counterpart, so no Bodhi match is possible by construction).
     # Not for the bootc branch's unconditional popup: it fires for every staged
     # update whatever it contains, so it says nothing about THIS one.
-    if (sbn["level"] == "major" and not sbn.get("unconditional")
+    # A critical advisory attached only to a rollback destination is not a
+    # reason to recommend installing that older build.
+    forward_major = sbn.get("trivalent_updated") or any(
+        g.get("has_security_erratum") and rpmostree_str2severity(g.get("erratum_severity")) == 4
+        for g in groups)
+    if (sbn["level"] == "major" and not sbn.get("unconditional") and forward_major
             and v["level"] not in ("update-now", "no-change")):
         was = v["level"]
         v["level"] = "update-now"
@@ -2822,11 +2871,11 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         if sbn.get("advisory_driven"):
             # the advisory arm needs rpm-md metadata: see secureblue_notification()
             kernel_only = sbn.get("level_without_advisories") == "normal"
-            v["headline"] += (" - only where rpm-ostree computes advisories, i.e. with "
+            v["headline"] += (" - conditional on a staged deployment and matching rpm-md with "
                               "layered packages; a stock system gets "
                               + ("the normal notification for the kernel alone"
                                  if kernel_only else "no notification"))
-            v["headline_zh"] += ("——仅限 rpm-ostree 会计算勘误的系统，即叠加了软件包的系统；默认安装"
+            v["headline_zh"] += ("——需要已暂存部署及本机叠加包使用的匹配 rpm-md；默认安装"
                                  + ("只因内核升级弹出普通通知" if kernel_only else "不弹通知"))
     if v["same_inputhash_but_packages_moved"]:
         n_moved = n_bin + len(diff["added"]) + len(diff["removed"])
@@ -2958,7 +3007,7 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         v["headline_zh"] = ("rpmdb 对比不完整（包头被拒、字段无法解码、同名包被遮蔽或包表为空）。"
                             "显示的变化仅为部分结果，不能据此断言无变化或给出可靠升级建议。")
         v["secureblue_notification"] = dict(
-            sbn, level="unknown", message=None, why=[], why_zh=[], kernel_updated=None,
+            sbn, level="unknown", message=None, why=[], why_zh=[], delivery=None, kernel_updated=None,
             trivalent_updated=None, max_advisory_severity=None, security_advisory_count=None,
             level_without_advisories="unknown", advisory_driven=False,
             note="rpmdb coverage is incomplete")
@@ -3082,6 +3131,9 @@ def group_by_src(changed: list) -> list:
         rep = min(g["pkgs"], key=lambda p: (p["name"] != g["src"], p["name"]))
         o, n = rep["old"], rep["new"]
         g["old_evr"], g["new_evr"] = _build_evr(o), _build_evr(n)
+        if o.get("arch") != n.get("arch"):
+            g["old_evr"] += f".{o.get('arch') or '?'}"
+            g["new_evr"] += f".{n.get('arch') or '?'}"
         if _epoch(o) != _epoch(n):
             # neither string carries the epoch: an epoch-only change read "1.2-3 → 1.2-3"
             g["old_evr"] = f"{_epoch(o)}:{g['old_evr']}"
@@ -3210,8 +3262,10 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             msg_str = (f" — \"{_sbn['message']}\"") if _sbn.get("message") else ""
             W(f"- 预测弹窗: {_badge}{msg_str}")
             if _sbn.get("delivery"):
-                W("- 仅预测触发条件：本机必须有已缓存或已暂存的更新；当天已有重大通知则不再提醒，"
-                  "普通通知也不会在当天重复。本报告未读取用户的通知记录。")
+                requirement = ("bootc 必须已有暂存部署" if _sbn.get("unconditional") else
+                               "rpm-ostree 必须有针对已暂存 OCI 部署的缓存更新（仅缓存 manifest 不会产生基础包差异）")
+                W(f"- 仅预测基础镜像的触发条件：{requirement}。当天已有重大通知则不再提醒，"
+                  "普通通知也不会在当天重复。本报告未读取通知记录，也未检查本机叠加包。")
             if _sbn.get("advisory_driven") and _lvl != "unknown":
                 W("- 未叠加软件包的系统（默认安装）: "
                   + ("普通 (normal)——仅因内核升级"
@@ -3226,23 +3280,10 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W(f"- 内核已升级: {k_up} · trivalent 已升级: {t_up} · "
               f"最高勘误等级 (rpm-ostree 体系): `{max_sev}`")
             W("")
-            W("> 这里的 severity 只取 *精确* EVR 命中：rpm-ostree 用 "
-              "`dnf_package_get_advisories(pkg, HY_EQ)` 填充 `.advisories`，"
-              "libdnf 只在 `pool_evrcmp(勘误 EVR, 包 EVR) == 0` 时才算命中。"
-              "因此 secureblue 自建包（如 `7.2.8-200.secureblue.1.fc44`）"
-              "即使对应着 Fedora 的 `7.2.8-200.fc44` 勘误，桌面也不会因此弹窗——"
-              "报告里会把它列为「对应 Fedora 勘误（归一化匹配）」。")
-            W("")
-            W("> `.advisories` 只在 rpm-ostree 持有本次更新的 rpm-md 元数据时才存在，而它只为"
-              "叠加了软件包（`rpm-ostree install`）的系统加载这些元数据。默认安装没有这份列表，"
-              "脚本读到的最高勘误等级恒为 none：那里只有 `kernel` / `trivalent` 升级会触发通知。")
-            W("")
-            W("> 依据 secureblue 的 `security-update-notification` 脚本：`trivalent` 升级 → 重大通知；"
-              "`kernel` 升级或最高勘误等级为 important/unknown → 普通通知。勘误等级取自 updateinfo 的 "
-              "`<severity>` 子元素（Bodhi 已映射为 RHEL 拼写：urgent→Critical、high→Important、"
-              "medium→Moderate、low→Low、unspecified→None），因此 `urgent` 级安全勘误同样会触发重大通知，"
-              "而 `medium`/`low` 级单独出现时不弹通知。")
-            W("")
+            if _sbn.get("delivery") and not _sbn.get("unconditional"):
+                W("> 勘误等级仅为 Bodhi stable 源构建候选。rpm-ostree 只有在持有本机 rpm-md 且找到"
+                  "精确二进制 NEVRA 时才会查勘误。旧记录可能已不在当前仓库；归一化匹配不计入预测。")
+                W("")
         else:
             _badge = {"major": "**MAJOR** (urgency=critical)",
                       "normal": "normal (urgency=normal)",
@@ -3252,9 +3293,12 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W("## secureblue Notification Prediction")
             if _sbn.get("delivery"):
                 W("")
-                W("Eligibility only: a cached or staged update must exist locally. A critical "
-                  "notification today suppresses all repeats; a normal one suppresses another "
-                  "normal notification today. This report did not observe the user's timestamps.")
+                requirement = ("bootc needs a staged deployment" if _sbn.get("unconditional") else
+                               "rpm-ostree needs a cached update for a staged OCI deployment "
+                               "(a cached manifest alone has no base RPM diff)")
+                W(f"Base-image eligibility only: {requirement}. A critical notification today "
+                  "suppresses all repeats; a normal one suppresses another normal notification today. "
+                  "This report did not inspect local layered packages or notification stamps.")
             W("")
             msg_str = (f" — \"{_sbn['message']}\"") if _sbn.get("message") else ""
             W(f"- predicted popup: {_badge}{msg_str}")
@@ -3271,24 +3315,11 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
               f"trivalent upgraded: {_yn_en(_sbn.get('trivalent_updated'))} · "
               f"max advisory severity (rpm-ostree scale): `{max_sev}`")
             W("")
-            W("> The severity used here only counts *exact* EVR hits: rpm-ostree fills "
-              "`.advisories` via `dnf_package_get_advisories(pkg, HY_EQ)`, and libdnf "
-              "accepts a hit only when `pool_evrcmp(advisory_evr, pkg_evr) == 0`. So a "
-              "secureblue-rebuilt package such as `7.2.8-200.secureblue.1.fc44` will not "
-              "pop a notification even though Fedora has an erratum for `7.2.8-200.fc44`; "
-              "the report lists those as \'corresponding Fedora erratum (normalised match)\'. ")
-            W("")
-            W("> `.advisories` only exists where rpm-ostree held rpm-md metadata for the update, "
-              "and it loads that only on a system with layered packages (`rpm-ostree install`). "
-              "A stock install has no such list and the script reads the maximum severity as "
-              "none: only a `kernel` / `trivalent` upgrade raises a notification there.")
-            W("")
-            W("> Based on secureblue's `security-update-notification` script: `trivalent` upgraded → major notification; "
-              "`kernel` upgraded or max advisory severity important/unknown → normal notification. The severity comes "
-              "from the updateinfo `<severity>` child element (Bodhi maps its own words to RHEL spellings before "
-              "publishing: urgent→Critical, high→Important, medium→Moderate, low→Low, unspecified→None), so an "
-              "`urgent` security advisory triggers a MAJOR notification too, while `medium`/`low` alone stay silent.")
-            W("")
+            if _sbn.get("delivery") and not _sbn.get("unconditional"):
+                W("> Advisory severity uses Bodhi stable source-build candidates. rpm-ostree "
+                  "requires a matching binary NEVRA in local rpm-md; older stable records "
+                  "may no longer be there. Normalised rebuild matches are not counted.")
+                W("")
 
     if is_zh:
         W(f"**如果现在更新，需要下载 {human(ldiff['download_bytes'])}** —— "
@@ -4189,11 +4220,13 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
         "version": cur["annotations"].get("org.opencontainers.image.version"),
         "inputhash": cur["annotations"].get("rpmostree.inputhash"),
         "kernel": cur["annotations"].get("ostree.linux"), "image": cur, "tags": [to]}}
+    cur_time = _ts_order(cur.get("created"))
     sig_pool = sigs
-    if stream_maj:
-        cur_hex = (cur.get("index_digest") or "").partition(":")[2]
-        if cur_hex in sigs:
-            sig_pool = sigs[:sigs.index(cur_hex) + 1]
+    cur_hex = (cur.get("index_digest") or "").partition(":")[2]
+    if cur_hex in sigs:
+        # GHCR puts the attachment tags in push order. Anchor the scan window
+        # on the target, not on the end of the list (which may be months later).
+        sig_pool = sigs[:sigs.index(cur_hex) + 1]
     sig_window = scan * 8
     for hexdig in reversed(sig_pool[-sig_window:] if sig_window > 0 else ()):
         if len(recs) >= scan:
@@ -4232,6 +4265,11 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
             # state took the newest one as its baseline and died on "no
             # standalone rpmdb chunk" - on every later run too, as no state was
             # ever saved.
+            continue
+        candidate_time = _ts_order(img.get("created"))
+        if cur_time and (not candidate_time or candidate_time > cur_time):
+            # Signature publication and image creation can happen in different
+            # orders. A later image should never use up a slot in this history.
             continue
         recs[img["index_digest"]] = {
             # index digest names the push; platform digest names what a client of
@@ -4799,6 +4837,9 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
     bodhi = None if (args.no_bodhi or not rel) else Bodhi(cache_dir=cache_dir,
                                                          max_calls=args.max_bodhi)
     for c in classify_order(diff["changed"]):       # report order stays by name
+        if c["dir"] == "arch-change":
+            # An equal-EVR arch replacement is not a new version or .upgraded.
+            continue
         c["cls"] = classify_change(c["old"], c["new"], rel, bodhi)
     # parse-quality notes: both of these used to fail silently, and both make the
     # diff look calmer than the data warrants
@@ -4808,10 +4849,10 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
     if hdr_rej or fld_skip:
         notes.append(T(
             f"rpmdb parsing: {hdr_rej} package header(s) were "
-            f"rejected (size fields inconsistent) and {fld_skip} "
+            f"rejected (invalid header or identity) and {fld_skip} "
             f"field(s) could not be decoded - missing fields silently weaken the diff "
             f"(epoch, changelog/CVE scan)",
-            f"rpmdb 解析：{hdr_rej} 个包头部被拒（尺寸字段不自洽）、"
+            f"rpmdb 解析：{hdr_rej} 个包头部被拒（包头或身份字段无效）、"
             f"{fld_skip} 个字段无法解码——字段缺失会静默削弱 diff 的"
             f"准确性（epoch、更新日志/CVE 扫描）"))
     _seen_col, _c = set(), []
@@ -4827,11 +4868,11 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
             return f"{x['name']}.{x['shadowed_arch']} ({x['shadowed_evr']})"
 
         notes.append(T(
-            f"{len(_c)} package name(s) exist in more than one architecture in this image "
-            f"(multilib); the table is name-keyed, so the lower EVR is not diffed: "
+            f"{len(_c)} installed package record(s) share a name in one or both images "
+            f"(multiple versions or multilib); the name-keyed diff shadows entries: "
             f"{clip_list(_c, 4, render=_shadowed)}",
-            f"此镜像中有 {len(_c)} 个包名存在多个架构（multilib）；本表以包名为键，"
-            f"因此较低 EVR 的那一个不参与 diff："
+            f"两个镜像中有 {len(_c)} 条同名包记录（多个版本或架构）；"
+            f"包表以名称为键，部分记录未参与对比："
             f"{clip_list(_c, 4, lang='zh', joiner='，', render=_shadowed)}"))
     diff["rpmdb_complete"] = bool(pa and pb) and not (hdr_rej or fld_skip or _c)
     diff["rpmdb_issues"] = {"headers_rejected": hdr_rej, "fields_skipped": fld_skip,
@@ -4863,8 +4904,7 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
             if n in pa:
                 src_of[n] = pa[n]["src"]
     xc = crosscheck_chunks(ld, diff, src_of)
-    backlog, coverage = [], {"candidates": 0, "checked": 0, "skipped": 0, "failed": 0,
-                             "skipped_names": [], "pool_missing": [], "pool_size": 0}
+    backlog, coverage = [], None
     if getattr(args, "audit", False) and bodhi is not None:
         # Same Bodhi object as the diff classification above: one shared
         # --max-bodhi budget (an earlier revision quietly spent a *second*,
@@ -4885,7 +4925,7 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
     # One aggregation per run: the verdict and both halves of the report all read
     # the same source-package groups.
     groups = group_by_src(diff["changed"])
-    v = verdict_of(diff, ld, meta, xc, backlog, bstate, groups)
+    v = verdict_of(diff, ld, meta, xc, backlog if coverage is not None else None, bstate, groups)
     # `backlog` is always a list, so test what decides whether the audit ran:
     # without Bodhi (--no-bodhi, unknown release) there is no coverage to report,
     # and "0 of 0 candidate source packages were queried" read as nothing to do.
@@ -4952,6 +4992,8 @@ def cmd_diff(args):
         xc = res.get("xc") or {}
         # in manifest-only mode nothing ever gets a "cls", so never index it
         payload = {"verdict": res["verdict"],
+                   "from": res["a"]["ref"], "to": res["b"]["ref"],
+                   "from_digest": res["a"]["digest"], "digest": res["b"]["digest"],
                    "download_bytes": res["layers"]["download_bytes"],
                    "download_bytes_is_upper_bound": True,
                    "versions_known": xc.get("versions_known", True),
@@ -5125,17 +5167,17 @@ def cmd_check(args):
     state_lost = False
     state_base_dig = None
     state_base_lbl = None
-    if not ref_a and state.get("digest") and state["digest"] != cur["digest"]:
-        state_base_dig = state["digest"]
-        state_base_lbl = _state_label(state)
-    elif (not ref_a and state.get("digest") == cur["digest"]
-          and state.get("prev_digest") and state["prev_digest"] != cur["digest"]):
-        # `check --force` on an unchanged tag re-analyses the last transition:
-        # reuse the baseline recorded in `prev_digest` instead of losing it or
-        # reversing a rollback via the history scan.
+    if (not ref_a and state.get("prev_digest") and state["prev_digest"] != cur["digest"]
+            and (state.get("digest") == cur["digest"] or state.get("last_verdict") == "unknown")):
+        # A force re-run or an incomplete check has not established a new
+        # comparison baseline. Keep the last usable one even if the tag has
+        # advanced again, so changes in the inconclusive interval are not lost.
         state_base_dig = state["prev_digest"]
         state_base_lbl = clip_text(state.get("prev_label") or state["prev_digest"],
                                    BASELINE_LABEL_CAP, lang="both")
+    elif not ref_a and state.get("digest") and state["digest"] != cur["digest"]:
+        state_base_dig = state["digest"]
+        state_base_lbl = _state_label(state)
     if state_base_dig:
         # Resolved here, before the baseline is settled: the image analysed last
         # time can be gone by now (registries prune old builds, and a schedule
@@ -5172,17 +5214,21 @@ def cmd_check(args):
                 label_a = _state_label(dict(r, digest=pd))
                 break
     if not ref_a:
-        now = time.time()
+        cur_time = _ts_order(cur.get("created"))
+        try:
+            anchor = datetime.date.fromisoformat(cur_time[:10])
+        except ValueError:
+            anchor = datetime.datetime.now(datetime.timezone.utc).date()
         stream_maj = _stream_major(args.to, cur)
-        for i in range(1, 22):
-            day = time.strftime("%Y%m%d", time.gmtime(now - i * 86400))
+        for i in range(22):
+            day = (anchor - datetime.timedelta(days=i)).strftime("%Y%m%d")
             probe_tags = [day, f"{day}-{stream_maj}"] if stream_maj else [day]
             for d in probe_tags:
                 dig = tag_exists(reg, d, warn=hist_warnings)
                 if not dig:
                     continue
                 if dig == cur.get("index_digest"):
-                    break
+                    continue
                 try:
                     cand = resolve(reg, d)
                 except (NoArchManifest, MalformedManifest):
@@ -5199,12 +5245,12 @@ def cmd_check(args):
                 if stream_maj and not cand_ver.startswith(stream_maj + "."):
                     continue
                 if cand.get("digest") == cur["digest"]:
-                    break
+                    continue
                 if rpmdb_chunk(cur) is not None and rpmdb_chunk(cand) is None:
                     continue
-                if _ts_order(cand.get("created")) > (_ts_order(cur.get("created")) or "9"):
-                    # Same major, just newer than `cur`: no need to re-probe `day-<maj>`.
-                    break
+                cand_time = _ts_order(cand.get("created"))
+                if cur_time and (not cand_time or cand_time > cur_time):
+                    continue
                 ref_a, label_a, prev = d, d, cand
                 break
             if ref_a:
@@ -5250,7 +5296,10 @@ def cmd_check(args):
     # and homebrew 7.0.2-26091605 -> 7.0.6-26092310, yet share inputhash
     # 4fde5b5a8c4f..., ostree.commit 4df81387..., ostree.linux and final-diffid.
     # Both annotations describe Fedora's compose, not secureblue's build.
-    if args.fast and not args.force:
+    # Equal inventories prove there is no version delta, not that Fedora has
+    # published no outstanding updates. The exact path reads a shared DB once.
+    wants_backlog = getattr(args, "audit", False) and not getattr(args, "no_bodhi", False)
+    if args.fast and not args.force and not wants_backlog:
         ra, rb = rpmdb_chunk(prev), rpmdb_chunk(cur)
         if ra and rb and ra["digest"] == rb["digest"]:
             log(T("  rpmdb chunk digest identical -> manifest-only comparison "
@@ -5369,7 +5418,9 @@ def cmd_check(args):
         fail_reason = "; ".join(reasons) or "update-now with no CVE/erratum attributed"
     else:
         fail_reason = ""
-    gh_outputs({"verdict": v["level"], "digest": cur["digest"], "version": ver,
+    gh_outputs({"verdict": v["level"], "digest": res["b"]["digest"], "version": to_ver,
+                "from_digest": res["a"]["digest"], "watched_digest": cur["digest"],
+                "watched_version": ver,
                 "download_bytes": res["layers"]["download_bytes"], "summary": summary,
                 "report": report,
                 # complete, not clipped: a workflow consumer must never see a
@@ -5536,6 +5587,9 @@ def main(argv=None):
     p.set_defaults(func=cmd_check)
 
     args = ap.parse_args(argv)
+    if args.cmd == "backlog" and args.no_bodhi:
+        ap.error(T("backlog requires Bodhi; --no-bodhi is incompatible",
+                   "backlog 需要查询 Bodhi，不能与 --no-bodhi 同用"))
     if args.require_cosign and not args.cosign_pub:
         ap.error(T("--require-cosign requires --cosign-pub",
                    "--require-cosign 必须同时提供 --cosign-pub"))
