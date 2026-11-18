@@ -126,8 +126,8 @@ BASELINE_LABEL_CAP = 80  # characters of a baseline label read back from the sta
 #                          whole digest (71), which shortref() then abbreviates. The
 #                          former 26 cut check's own label and appended a 40-character
 #                          marker to it - once more on every --force run.
-PKGLIST_CACHE_VERSION = 2  # v1 omitted `vendor`, needed to ignore third-party repos
-BODHI_CACHE_VERSION = 2  # v1 clipped bug titles (200) and notes (1500) BEFORE
+PKGLIST_CACHE_VERSION = 4  # source_epoch is derived from the matching installed main RPM
+BODHI_CACHE_VERSION = 5  # v1 clipped bug titles (200) and notes (1500) BEFORE
 #                          extracting CVE ids from them, so a v1 cache can be
 #                          missing CVEs. A cache without this marker is refetched.
 OLD_LOG_CAP = 1000  # changelog entries (dropped by this build) scanned for lost fixes
@@ -1010,6 +1010,15 @@ class Registry:
             cfg = json.loads(raw)
             if not isinstance(cfg, dict):
                 raise TypeError("image config must be a JSON object")
+            # A platform digest bypasses the index descriptor entirely. Check
+            # the digest-verified config before attributing packages to --arch.
+            arch, os_name = cfg.get("architecture"), cfg.get("os")
+            if not isinstance(arch, str) or not arch or not isinstance(os_name, str) or not os_name:
+                raise ValueError("image config has no valid os/architecture")
+            if (os_name, arch) != ("linux", self.arch):
+                raise NoArchManifest(T(
+                    f"{self.repo}:{what} is {os_name}/{arch}, not linux/{self.arch}",
+                    f"{self.repo}:{what} 为 {os_name}/{arch}，不是 linux/{self.arch}"))
             ann = {**dict((cfg.get("config") or {}).get("Labels") or {}), **ann}
         out["config"] = cfg
         out["annotations"] = ann
@@ -1378,6 +1387,8 @@ def read_header(blob: bytes, stats: dict | None = None) -> dict:
                     if cnt != 1 and not (typ == 9 and cnt > 1):
                         raise ValueError("scalar string tag with count != 1")
                     out[name] = blob[p:blob.index(b"\0", p, store_end)].decode("utf-8", "replace")
+            else:
+                raise ValueError(f"unsupported RPM type {typ} for {name}")
         except (ValueError, struct.error):
             stats["fields_skipped"] = stats.get("fields_skipped", 0) + 1
             continue
@@ -1456,14 +1467,15 @@ def package_list(reg: Registry, resolved: dict) -> dict:
                 before = stats.get("headers_rejected", 0)
                 h = read_header(blob, stats)
                 name = h.get("name")
-                if (not isinstance(name, str) or not name
-                        or not isinstance(h.get("version"), str) or not h["version"]
+                # Key pseudo-packages legitimately have no architecture.
+                if isinstance(name, str) and name in PSEUDO_PACKAGES:
+                    continue
+                if (any(not isinstance(h.get(k), str) or not h[k]
+                        for k in ("name", "version", "release", "arch"))
                         or any(k in h and not isinstance(h[k], str)
-                               for k in ("release", "arch", "vendor", "sourcerpm"))):
+                               for k in ("vendor", "sourcerpm"))):
                     if stats.get("headers_rejected", 0) == before:
                         stats["headers_rejected"] = before + 1
-                    continue
-                if name in PSEUDO_PACKAGES:
                     continue
                 srpm = (h.get("sourcerpm") or "").removesuffix(".src.rpm").removesuffix(".nosrc.rpm")
                 src = (srpm.rsplit("-", 2)[0] if srpm.count("-") >= 2 else "") or name
@@ -1494,6 +1506,12 @@ def package_list(reg: Registry, resolved: dict) -> dict:
             os.unlink(path)
         except OSError:
             pass
+    # A subpackage may declare a different epoch. When the source's main
+    # binary is installed from the same SRPM, use its epoch, not the subpackage's.
+    for pkg in pkgs.values():
+        main = pkgs.get(pkg["src"])
+        if main and pkg["srpm"] and main["nvr"] == main["srpm"] == pkg["srpm"]:
+            pkg["source_epoch"] = _epoch(main)
     pkgs.headers_rejected = stats.get("headers_rejected", 0)
     pkgs.fields_skipped = stats.get("fields_skipped", 0)
     return pkgs
@@ -1592,11 +1610,26 @@ class Bodhi:
                     data = json.loads(raw)
                 if not isinstance(data, dict):
                     raise ValueError("Bodhi response is not a JSON object")
-                page_ups = data.get("updates", [])
-                if page_ups is not None and (not isinstance(page_ups, list)
-                                             or any(not isinstance(u, dict) for u in page_ups)):
+                page_ups = data.get("updates")
+                if not isinstance(page_ups, list) or any(not isinstance(u, dict) for u in page_ups):
                     raise ValueError("Bodhi updates must be a list of JSON objects")
-                return data, page_ups or []
+                # Validate consumed fields inside the retry/error boundary. An
+                # error document is not a successful query with zero matches.
+                for u in page_ups:
+                    for k in ("alias", "updateid", "type", "status", "severity", "content_type",
+                              "title", "notes"):
+                        if u.get(k) is not None and not isinstance(u[k], str):
+                            raise ValueError(f"invalid Bodhi update field: {k}")
+                    for k, fields in (("builds", ("nvr", "type")), ("bugs", ("title",))):
+                        rows = u.get(k)
+                        if rows is None:
+                            continue
+                        if not isinstance(rows, list) or any(
+                                not isinstance(row, dict) or any(
+                                    row.get(f) is not None and not isinstance(row[f], str)
+                                    for f in fields) for row in rows):
+                            raise ValueError(f"invalid Bodhi update field: {k}")
+                return data, page_ups
             except Exception as ex:
                 if retried or self._streak or self.calls >= self.max_calls:
                     raise
@@ -1649,6 +1682,8 @@ class Bodhi:
         total = None
         truncated = False
         budget_cut = False
+        received = 0  # total counts all content types, not just the RPMs we keep
+        inconsistent = False
         ok = False
         for page in range(1, MAX_BODHI_PAGES + 1):
             if page > 1 and self.calls >= self.max_calls:
@@ -1666,6 +1701,11 @@ class Bodhi:
                  "rows_per_page": str(BODHI_PAGE_SIZE), "page": str(page)})
             try:
                 data, page_ups = self._fetch_page(url, src)
+                for field in ("pages", "page", "total"):
+                    if field in data and (type(data[field]) is not int or data[field] < 0):
+                        raise ValueError(f"invalid Bodhi pagination field: {field}")
+                if data.get("page", page) != page:
+                    raise ValueError(f"Bodhi returned page {data['page']} instead of {page}")
             except Exception as ex:
                 self.failed += 1
                 log(T(f"  ! bodhi lookup failed for {src} (page {page}): {ex}",
@@ -1712,13 +1752,26 @@ class Bodhi:
                     "bugs": bugs,
                     "date_approved": u.get("date_approved"),
                     "date_stable": u.get("date_stable"),
+                    "build_epochs": {b["nvr"]: str(b["epoch"]) for b in u.get("builds") or []
+                                     if b.get("nvr") and (b.get("type") or "rpm").lower() == "rpm"
+                                     and str(b.get("epoch")).isascii() and str(b.get("epoch")).isdigit()},
                     "nvrs": [b.get("nvr") for b in (u.get("builds") or [])
                              if isinstance(b, dict)
                              and (b.get("type") or "rpm").lower() == "rpm"],
                 })
-            if len(page_ups) < BODHI_PAGE_SIZE:
-                break                       # last page
-            if isinstance(total, int) and len(res) >= total:
+            received += len(page_ups)
+            pages = data.get("pages")
+            if pages is not None:
+                more = page < pages
+            elif total is not None:
+                more = received < total
+            else:
+                more = len(page_ups) == BODHI_PAGE_SIZE
+            if not more or not page_ups:
+                if more or (total is not None and received != total):
+                    truncated = inconsistent = True
+                    log(T(f"  ! incomplete Bodhi result for {src}: read {received} of {total}",
+                          f"  ！{src} 的 Bodhi 结果不完整：已读 {received} 条，总数为 {total}"))
                 break
             if page == MAX_BODHI_PAGES:
                 truncated = True
@@ -1733,7 +1786,7 @@ class Bodhi:
             self.truncated_src.add(src)
         # never cache a failed query: an empty answer would blind later runs. A
         # budget-cut one is not cached either - the next run may have the budget.
-        if cf and ok and not budget_cut:
+        if cf and ok and not budget_cut and not inconsistent:
             _cache_write(cf, {"cache_version": BODHI_CACHE_VERSION,
                               "total": total, "truncated": truncated,
                               "updates": res}, "Bodhi")
@@ -1852,7 +1905,21 @@ def _dist_tag(release) -> str:
     return m.group(0) if m else ""
 
 
-def _passed_build(old: dict, new: dict, nvrs) -> str | None:
+def _comparable_epoch(pkg: dict):
+    """Installed source-build epoch, if known without guessing from a subpackage."""
+    if pkg.get("source_epoch") is not None:
+        return pkg["source_epoch"]
+    if pkg.get("name") == pkg.get("src") and (not pkg.get("srpm") or pkg.get("nvr") == pkg["srpm"]):
+        return _epoch(pkg)
+    return None
+
+
+def _epoch_matches(pkg: dict, nvr: str, epochs: dict) -> bool:
+    have, want = _comparable_epoch(pkg), epochs.get(nvr)
+    return have is None or want is None or rpmvercmp(str(have), str(want)) == 0
+
+
+def _passed_build(old: dict, new: dict, nvrs, epochs=None) -> str | None:
     """The erratum build, if any, that an update from `old` to `new` passes over.
 
     That is a build newer than the old one and not newer than the new one, in
@@ -1878,8 +1945,9 @@ def _passed_build(old: dict, new: dict, nvrs) -> str | None:
         if _dist_tag(br) != old_dist or (not old_dist and new_dist):
             continue
         by_src = bn != new["name"]
-        if (_is_behind(old, bv, br, use_build_evr=by_src)
-                and not _is_behind(new, bv, br, use_build_evr=by_src)):
+        epoch = (epochs or {}).get(b)
+        if (_is_behind(old, bv, br, use_build_evr=by_src, candidate_epoch=epoch)
+                and not _is_behind(new, bv, br, use_build_evr=by_src, candidate_epoch=epoch)):
             return b
     return None
 
@@ -1998,16 +2066,17 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
             # exact EVR match = the advisory is attached to this build (this is
             # what rpm-ostree will show under .advisories); a normalised match is
             # information about the upstream build only.
-            hit_attached = exact_new & nvrs
-            hit_corresponding = norm_new & nvrs
-            hit_old = old_all & nvrs
+            epochs = u.get("build_epochs") or {}
+            hit_attached = {b for b in exact_new & nvrs if _epoch_matches(new, b, epochs)}
+            hit_corresponding = {b for b in norm_new & nvrs if _epoch_matches(new, b, epochs)}
+            hit_old = {b for b in old_all & nvrs if _epoch_matches(old, b, epochs)}
             status = (u.get("status") or "").lower()
             if not (hit_attached or hit_corresponding or hit_old):
                 # In neither image, so its erratum matches neither side - but an
                 # update that passes over this build (curl 8.9.0 -> 8.9.3, past
                 # the security erratum of 8.9.1) gains its fix all the same, and
                 # only a CVE id in the rpm changelog could say so before.
-                passed = (_passed_build(old, new, u["nvrs"])
+                passed = (_passed_build(old, new, u["nvrs"], epochs)
                           if (old and (not third_party or norm_new)
                               and (not old_third_party or old_norm)) else None)
                 if passed and u.get("type") == "security" and status in PUSHED_STATUSES:
@@ -2368,7 +2437,7 @@ def _sev_rank_for_upstream(s) -> int:
 
 
 def secureblue_notification(diff: dict, groups: list | None = None) -> dict:
-    """Which notification (if any) secureblue will pop after this update.
+    """Which notification this update qualifies for, not whether it is delivered.
 
     Uses the *binary package names* that actually moved, exactly as rpm-ostree's
     rpm-diff does.  The `ostree.linux` annotation is not usable for this: it is
@@ -2404,15 +2473,17 @@ def secureblue_notification(diff: dict, groups: list | None = None) -> dict:
                 "security_advisory_count": 0,
                 "level_without_advisories": "major", "advisory_driven": False,
                 # not a judgement about this update: every staged update pops it
-                "unconditional": True,
+                "unconditional": True,  # independent of update contents, not of local state
+                "delivery": {"observed": False, "requires": "staged bootc deployment",
+                             "suppress_if_notified_today": ["critical"]},
                 "severity_basis": ("not consulted: the booted image ships no rpm-ostree, "
                                    "and the bootc branch of secureblue's script notifies "
                                    "for every staged update without reading an rpm diff "
                                    "or advisories"),
                 "why": ["the booted image has no rpm-ostree, so secureblue's script takes "
-                        "its bootc branch and notifies for every staged update"],
+                        "its bootc rule for a staged update"],
                 "why_zh": ["已启动的镜像不含 rpm-ostree，secureblue 的脚本走 bootc 分支，"
-                           "只要有已暂存的更新就一律弹窗"]}
+                           "已暂存的更新符合弹窗条件"]}
 
     # Only errata that (a) shipped a build in THIS image, (b) are type=security and
     # (c) matched this package's release string *exactly* reach .advisories, so
@@ -2473,6 +2544,9 @@ def secureblue_notification(diff: dict, groups: list | None = None) -> dict:
             "kernel_updated": kernel_updated, "trivalent_updated": trivalent_updated,
             "security_advisory_count": len(sevs),
             "level_without_advisories": stock, "advisory_driven": stock != level,
+            "delivery": {"observed": False, "requires": "cached rpm-ostree update",
+                         "suppress_if_notified_today": ["critical", "normal"] if level == "normal"
+                         else ["critical"]},
             "severity_basis": ("rpm-ostree .advisories: released security errata whose "
                                "EVR matches a package in the new image exactly; errata "
                                "matched only after stripping .secureblue.N are excluded"),
@@ -2737,12 +2811,12 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
             v["headline_zh"] = ("secureblue 将此更新上调为重大更新：" + v["headline_zh"].strip())
     if sbn["message"]:
         tag = "MAJOR" if sbn["level"] == "major" else "normal"
-        v["headline"] += (f" | secureblue will show a {tag} notification: "
+        v["headline"] += (f" | secureblue may show a {tag} notification: "
                           f"\"{sbn['message']}\" "
                           f"(because: {'; '.join(sbn['why'])})")
         tag_zh = "「重大 / major」" if sbn["level"] == "major" else "「普通 / normal」"
         reasons_zh = sbn.get("why_zh") or sbn.get("why") or []
-        v["headline_zh"] += (f" ｜ secureblue 将弹出{tag_zh}通知："
+        v["headline_zh"] += (f" ｜ secureblue 可能弹出{tag_zh}通知："
                              f"「{sbn['message']}」"
                              f"（触发原因：{'；'.join(reasons_zh)}）")
         if sbn.get("advisory_driven"):
@@ -3135,6 +3209,9 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W("")
             msg_str = (f" — \"{_sbn['message']}\"") if _sbn.get("message") else ""
             W(f"- 预测弹窗: {_badge}{msg_str}")
+            if _sbn.get("delivery"):
+                W("- 仅预测触发条件：本机必须有已缓存或已暂存的更新；当天已有重大通知则不再提醒，"
+                  "普通通知也不会在当天重复。本报告未读取用户的通知记录。")
             if _sbn.get("advisory_driven") and _lvl != "unknown":
                 W("- 未叠加软件包的系统（默认安装）: "
                   + ("普通 (normal)——仅因内核升级"
@@ -3173,6 +3250,11 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
                       "unknown": ("unknown (incomplete package information)" if verdict.get("package_data_complete") is False
                                   else "unknown (package versions not read)")}.get(_lvl, _lvl)
             W("## secureblue Notification Prediction")
+            if _sbn.get("delivery"):
+                W("")
+                W("Eligibility only: a cached or staged update must exist locally. A critical "
+                  "notification today suppresses all repeats; a normal one suppresses another "
+                  "normal notification today. This report did not observe the user's timestamps.")
             W("")
             msg_str = (f" — \"{_sbn['message']}\"") if _sbn.get("message") else ""
             W(f"- predicted popup: {_badge}{msg_str}")
@@ -3710,21 +3792,18 @@ BACKLOG_CANDIDATES = len(BACKLOG_POOL)
 
 
 def _is_behind(p: dict, cand_version: str, cand_release: str,
-               use_build_evr: bool = False) -> bool:
-    """Is the image's package older than an erratum's build?
+               use_build_evr: bool = False, candidate_epoch=None) -> bool:
+    """Compare known source epochs first; never assume an absent epoch is zero.
 
-    Deliberately ignores the epoch: Bodhi's NVR strings never carry one, so
-    comparing the rpmdb epoch against a missing one made every epoch>0 package
-    (23 security-relevant binaries in the live image: cups, container-selinux,
-    bind, grub2, ...) permanently "newer" than any published update - they could
-    never appear in the backlog. Also strips secureblue's local release marker
-    first, so the comparison happens in Fedora's namespace: the image's
-    `7.2.5-200.secureblue.1.fc44` is secureblue's rebuild OF Fedora's
-    `7.2.5-200.fc44` (equal, not behind), while a genuinely newer Fedora build
-    (`7.2.6-…`, `7.2.5-201…`) still compares newer. Left unstripped, the alpha
-    `secureblue` segment rpm-compares above `fc`, i.e. the local rebuild would
-    claim to be newer than its own Fedora original.
+    When either source epoch is unavailable, retain the version/release heuristic.
+    A subpackage epoch is not evidence of its source epoch. Normalise secureblue's
+    release marker only after checking both epochs and versions.
     """
+    have_epoch = _comparable_epoch(p)
+    if candidate_epoch is not None and have_epoch is not None:
+        de = rpmvercmp(str(have_epoch), str(candidate_epoch))
+        if de:
+            return de < 0
     ver, rel = p.get("version", ""), p.get("release", "")
     if use_build_evr:
         bevr = _build_evr(p)
@@ -3735,6 +3814,15 @@ def _is_behind(p: dict, cand_version: str, cand_release: str,
         return dv < 0
     rel = re.sub(r"\.secureblue\.\d+", "", rel)
     return rpmvercmp(rel, cand_release) < 0
+
+
+def package_coverage(pkgs: dict) -> dict:
+    """What the parsed inventory can actually establish, including cache hits."""
+    issues = {"headers_rejected": getattr(pkgs, "headers_rejected", 0),
+              "fields_skipped": getattr(pkgs, "fields_skipped", 0),
+              "shadowed_packages": len(getattr(pkgs, "collisions", ())),
+              "empty_table": not bool(pkgs)}
+    return {"rpmdb_complete": not any(issues.values()), "rpmdb_issues": issues}
 
 
 def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
@@ -3770,7 +3858,7 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
         base = re.sub(r"\.\d+$", "", s)
         if base != s and base in BACKLOG_POOL:
             covered.add(base)
-    cov = {"candidates": len(candidates), "checked": len(chosen),
+    cov = {**package_coverage(pkgs), "candidates": len(candidates), "checked": len(chosen),
            "skipped": len(candidates) - len(chosen),
            "skipped_names": candidates[limit:],
            "pool_size": len(BACKLOG_POOL),
@@ -3816,7 +3904,10 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
                     if bn != n and bn != p["src"]:
                         continue
                     cand = {"name": n, "version": bv, "release": br}
-                    if _is_behind(p, bv, br, use_build_evr=(bn != n)) and (
+                    epoch = (u.get("build_epochs") or {}).get(b)
+                    if epoch is not None:
+                        cand["epoch"] = str(epoch)
+                    if _is_behind(p, bv, br, use_build_evr=(bn != n), candidate_epoch=epoch) and (
                             best is None or evr_cmp(best, cand) < 0):
                         best = cand
                 if best is None:
@@ -3871,7 +3962,7 @@ def coverage_line(cov: dict) -> str:
           + (f", {len(cov['truncated'])} with truncated errata"
              if cov.get("truncated") else "")
           + (f"; {len(cov['pool_missing'])} BACKLOG_POOL entries are not "
-             f"in this image" if cov.get("pool_missing") else ""))
+             f"in the parsed inventory" if cov.get("pool_missing") else ""))
     zh = (f"backlog 审计覆盖率：镜像内 {cov['candidates']} 个候选源码包中查询了 {cov['checked']} 个"
           + (f"，{cov['skipped']} 个因 --backlog-candidates 上限被截断"
              f"（{clip_list(cov.get('skipped_names', []), 6, lang='zh', joiner='，')}）"
@@ -3881,8 +3972,11 @@ def coverage_line(cov: dict) -> str:
           + (f"，{cov['failed']} 个查询失败" if cov.get("failed") else "")
           + (f"，{len(cov['truncated'])} 个勘误列表被截断"
              if cov.get("truncated") else "")
-          + (f"；BACKLOG_POOL 中有 {len(cov['pool_missing'])} 个条目不在此镜像内"
+          + (f"；BACKLOG_POOL 中有 {len(cov['pool_missing'])} 个条目不在已解析的软件包表中"
              if cov.get("pool_missing") else ""))
+    if cov.get("rpmdb_complete") is False:
+        en += "; RPM inventory incomplete: missing packages or fields may hide updates"
+        zh += "；RPM 包表不完整：缺失的软件包或字段可能掩盖更新"
     return T(en, zh)
 
 
@@ -3916,7 +4010,10 @@ def cmd_backlog(args):
             _rest = f" (+{len(_lines)-1} more line(s) / 另有 {len(_lines)-1} 行)" \
                 if len(_lines) > 1 else ""
             print(f"  {'':28}{'':26}     {clip_text(_lines[0], 110)}{_rest}")
-    if not rows:
+    if not rows and (cov.get("rpmdb_complete") is False or cov.get("truncated")):
+        print(T("  no match in the available records; coverage is incomplete",
+                "  在可读取的记录中没有匹配项；审计覆盖不完整"))
+    elif not rows:
         # state the scope explicitly: this is only ever as good as `checked`
         print(f"  none among the {cov['checked']} source package(s) queried — not a claim "
               f"about the whole image / 在所查询的 {cov['checked']} 个源码包中无——"
@@ -4396,10 +4493,15 @@ def cmd_pkgs(args):
     # ~33 MB rpmdb chunk again on every call.
     pkgs = load_pkglist(reg, r, args.ref,
                         args.cache_dir or os.path.expanduser("~/.cache/sbwatch"), [])
+    coverage = package_coverage(pkgs)
+    if not coverage["rpmdb_complete"]:
+        log(T(f"  ! incomplete RPM inventory: {coverage['rpmdb_issues']}",
+              f"  ！RPM 包表不完整：{coverage['rpmdb_issues']}"))
     if args.json:
         slim = {k: {a: b for a, b in v.items() if a != "changelog"} for k, v in pkgs.items()}
         _atomic_write_json(args.json, {"ref": args.ref, "digest": r["digest"],
-                                       "annotations": r["annotations"], "packages": slim},
+                                       "annotations": r["annotations"], "packages": slim,
+                                       "coverage": coverage},
                            indent=1)
         log(T(f"wrote {args.json}: {len(pkgs)} packages",
               f"已写入 {args.json}：{len(pkgs)} 个软件包"))
@@ -5226,8 +5328,9 @@ def cmd_check(args):
     print("\n" + "=" * 72, file=sys.stderr)
     print(summary, file=sys.stderr)
     _atomic_write_json(report + ".json", {"verdict": v, "from": from_lbl, "to": to_lbl,
-               "digest": cur["digest"],
-               "version": ver, "download_bytes": res["layers"]["download_bytes"],
+               "from_digest": res["a"]["digest"], "digest": res["b"]["digest"],
+               "version": to_ver, "watched_digest": cur["digest"], "watched_version": ver,
+               "download_bytes": res["layers"]["download_bytes"],
                "changed": [{"name": c["name"],
                             "old": _evr_pair(c["old"], c["new"])[0],
                             "new": _evr_pair(c["old"], c["new"])[1],
@@ -5239,8 +5342,6 @@ def cmd_check(args):
                # to the JSON output for the rest - for `check`, that is this file
                "behind_stable_security": res.get("backlog") or [],
                "backlog_coverage": res.get("backlog_coverage")})
-    save_state({"prev_digest": prev["digest"], "prev_label": label_a,
-                "last_verdict": v["level"]})
     prune_days = getattr(args, "prune_days", 0) or 0
     if prune_days > 0:
         pruned = prune_cache(getattr(args, "cache_dir", None)
@@ -5278,6 +5379,9 @@ def cmd_check(args):
                 "security_packages": ",".join(v["security_pkgs"]),
                 "security_packages_count": len(v["security_pkgs"]),
                 "changed_count": v["changed_pkg_count"], "fail_reason": fail_reason})
+    # A failed CI output is not a delivered analysis. Retry it on the next run.
+    save_state({"prev_digest": prev["digest"], "prev_label": label_a,
+                "last_verdict": v["level"]})
     if args.fail_on == "security" and v["level"] == "update-now":
         return 10
     return 0
