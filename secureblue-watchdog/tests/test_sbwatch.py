@@ -1513,7 +1513,9 @@ class TestDoDiffFastPathSameRpmdb(unittest.TestCase):
             ]
         }
 
-        res = S.do_diff(args, "a", "b", images=(img_a, img_b))
+        from unittest.mock import patch
+        with patch.object(S.Registry, "_token", return_value=None):
+            res = S.do_diff(args, "a", "b", images=(img_a, img_b))
         self.assertTrue(res["diff"]["same_rpmdb"])
         self.assertTrue(res["xc"]["versions_known"])
         self.assertEqual(res["verdict"]["level"], "no-change")
@@ -2258,7 +2260,7 @@ class TestWorkflowHygiene(unittest.TestCase):
         wf = self._workflow()
         step = wf.split("- name: Save sbwatch cache")[1].split("- name:")[0]
         cond = re.search(r"^\s*if: (.*)$", step, re.M).group(1)
-        self.assertEqual(cond, "always() && steps.check.outputs.verdict != 'no-update'")
+        self.assertEqual(cond, "always() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'")
 
     def test_an_inconclusive_run_is_not_green(self):
         wf = self._workflow()

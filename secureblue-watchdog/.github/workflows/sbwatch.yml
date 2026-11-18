@@ -42,11 +42,6 @@ env:
   # and the red-run step unreachable no matter what the README promised.
   POST_SKIP_VERDICT: ${{ vars.POST_SKIP_VERDICT || 'false' }}
   FAIL_ON_SECURITY: ${{ vars.FAIL_ON_SECURITY || 'false' }}
-  # Job-level, so that a step-level `if: env.X != ''` can see it. A step-level env
-  # entry is not in scope for that step's own `if:` - that is why the Telegram
-  # push never fired before.
-  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
   # sha256 of the committed cosign.pub. The key is the only trust anchor this
   # workflow has, so it is vendored in the repo and its hash is checked before it
   # is handed to `cosign verify --key`. A rotated upstream key fails the run here
@@ -78,7 +73,7 @@ jobs:
       # independently of this one - a regression in rpmvercmp / classify_change
       # shows up here but does NOT block the hourly watch.
       - name: Run the offline test suite
-        run: python3 -m unittest discover -s tests -v
+        run: python3 tests/run_offline.py
 
       - name: Lint (dead imports / undefined names)
         run: |
@@ -99,6 +94,11 @@ jobs:
       contents: read
       issues: write   # sticky issue comment
       actions: write  # pruning old caches via the API
+    # Job-level, so the Telegram step's `if: env.X != ''` sees them without
+    # exposing secrets to the `test` job's `pip install`.
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -172,21 +172,32 @@ jobs:
           # `if`, not `[ -f ] &&`: as the last command of the script the failed
           # test became the step's exit status, so a missing report.md turned a
           # successful analysis red.
-          if [ -f report.md ]; then cat report.md >> "$GITHUB_STEP_SUMMARY"; fi
+          if [ -f report.md ]; then
+            python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          with open("report.md", encoding="utf-8") as fh:
+              s = fh.read()
+          raw = s.encode("utf-8")
+          if len(raw) > 950_000:
+              s = raw[:940_000].decode("utf-8", "ignore") + (
+                  "\n\n… (step summary truncated below GitHub's 1 MiB limit; "
+                  "see the uploaded artifact for the full report)\n")
+          print(s, end="")
+          PY
+          fi
 
       - name: Save sbwatch cache
         # Not after a `no-update` run: that path writes nothing into the cache
         # directory, so each of those runs (nearly all of them) uploaded an
         # identical copy under a new key and left it for the prune step below.
         # The restore above already counts as access, so the entry does not age out.
-        if: always() && steps.check.outputs.verdict != 'no-update'
+        if: always() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/sbwatch
           key: sbwatch-${{ steps.ns.outputs.ns }}-${{ env.SB_ARCH }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Prune old sbwatch caches
-        if: always() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != 'no-update'
+        if: always() && steps.ns.outputs.ns != '' && steps.check.outputs.verdict != '' && steps.check.outputs.verdict != 'no-update'
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           NS: ${{ steps.ns.outputs.ns }}
@@ -310,12 +321,12 @@ jobs:
 
       - name: Push to Telegram
         # env.TELEGRAM_BOT_TOKEN is defined at *job* level, so it is visible here.
-        if: steps.notify.outputs.post == 'true' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
+        if: always() && steps.notify.outputs.post == 'true' && env.TELEGRAM_BOT_TOKEN != '' && env.TELEGRAM_CHAT_ID != ''
         env:
           SUMMARY: ${{ steps.check.outputs.summary }}
         run: |
           python3 - <<'PY'
-          import json, os, urllib.request, sys
+          import json, os, urllib.error, urllib.request, sys
           try:
               with open("report.md", encoding="utf-8") as fh:
                   body = fh.read()
@@ -333,7 +344,7 @@ jobs:
               while cut > 0 and u16_len(
                   text[:cut] + f"\n… (+{len(text) - cut} chars - full report in the run summary)"
               ) > 4096:
-                  cut -= 32
+                  cut = max(0, cut - 32)
               text = text[:cut] + f"\n… (+{len(text) - cut} chars - full report in the run summary)"
           try:
               req = urllib.request.Request(
@@ -344,12 +355,16 @@ jobs:
               # a byte slice can end inside a multi-byte character (a CJK chat
               # title or bot name), which made a delivered push log as failed
               print(urllib.request.urlopen(req, timeout=30).read()[:150].decode("utf-8", "replace"))
+          except urllib.error.HTTPError as e:
+              print(f"Telegram push failed (non-fatal): HTTP {e.code} {e.reason}", file=sys.stderr)
+          except urllib.error.URLError as e:
+              print(f"Telegram push failed (non-fatal): {e.reason}", file=sys.stderr)
           except Exception as e:
-              print(f"Telegram push failed (non-fatal): {e}", file=sys.stderr)
+              print(f"Telegram push failed (non-fatal): {type(e).__name__}", file=sys.stderr)
           PY
 
       - name: Red run when security fixes are waiting
-        if: env.FAIL_ON_SECURITY == 'true' && steps.check.outputs.fail_on_security == 'true'
+        if: always() && env.FAIL_ON_SECURITY == 'true' && steps.check.outputs.fail_on_security == 'true'
         env:
           FAIL_REASON: ${{ steps.check.outputs.fail_reason }}
         run: |
@@ -366,7 +381,7 @@ jobs:
       # exactly like a quiet week. The report is already uploaded above, so
       # failing here still leaves the evidence in place.
       - name: Fail when the watch could not conclude anything
-        if: steps.check.outputs.verdict == 'unknown'
+        if: always() && steps.check.outputs.verdict == 'unknown'
         run: |
           echo "::error::verdict 'unknown' - the watch did not establish anything (no baseline image, or the registry could not be probed). See the run log and the uploaded report."
           exit 1

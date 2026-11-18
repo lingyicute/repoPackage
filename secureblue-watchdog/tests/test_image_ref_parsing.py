@@ -27,5 +27,39 @@ class TestImageRefParsing(unittest.TestCase):
             self.assertEqual(S.list_tags(reg), ["a", "b"])
 
 
+    def test_empty_repository_segment_is_rejected(self):
+        for bad in ("secureblue//silverblue-main-hardened",
+                    "ghcr.io/secureblue//silverblue-main-hardened:latest"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(SystemExit):
+                    S.Registry._split(bad)
+
+
+    def test_manifest_ref_rejects_path_traversal_query_fragment_and_whitespace(self):
+        reg = S.Registry("secureblue/silverblue-main-hardened")
+        for bad in ("../other/manifests/latest", "latest?n=1", "latest#frag",
+                    "latest%2f..", "latest\r\nX: 1", "a b", ".."):
+            with self.subTest(bad=bad):
+                with self.assertRaises(S.RegistryError):
+                    reg.resolve(bad, light=True)
+                with self.assertRaises(S.RegistryError):
+                    reg.index_digest(bad)
+
+
+    def test_uppercase_registry_hostname_is_normalised(self):
+        import argparse
+        host, (repo, tag) = S.Registry._split("GHCR.IO/secureblue/silverblue-main-hardened:45")
+        self.assertEqual((host, repo, tag),
+                         ("ghcr.io", "secureblue/silverblue-main-hardened", "45"))
+        ns = argparse.Namespace(image="GHCR.IO/secureblue/silverblue-main-hardened",
+                                arch="amd64", to=None)
+        reg = S._registry(ns)
+        try:
+            self.assertEqual(reg.host, "ghcr.io")
+            self.assertEqual(ns.image, "ghcr.io/secureblue/silverblue-main-hardened")
+        finally:
+            reg.close()
+
+
 if __name__ == "__main__":
     unittest.main()
