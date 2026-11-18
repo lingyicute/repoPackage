@@ -4,17 +4,23 @@ source "$(dirname "$0")/common.sh"
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 [[ "$CR_ROOT" == /mnt/chromium-relay && "$CR_TRANSFER" == /mnt/chromium-transfer ]] \
   || fail 'Refusing destructive export outside the fixed /mnt checkpoint paths'
+[[ -d "$CR_ROOT" && ! -L "$CR_ROOT" ]] || fail 'Build root must be a real directory'
 mkdir -p "$CR_TRANSFER/checkpoint"
-[[ -z "$(ls -A "$CR_TRANSFER/checkpoint")" ]] || fail 'Checkpoint output must be empty'
+[[ -d "$CR_TRANSFER/checkpoint" && ! -L "$CR_TRANSFER/checkpoint" ]] \
+  || fail 'Checkpoint output must be a real directory'
+checkpoint_entries=$(ls -A -- "$CR_TRANSFER/checkpoint")
+[[ -z "$checkpoint_entries" ]] || fail 'Checkpoint output must be empty'
 # IMPORTANT: destructive export on a disposable VM. No commands may use the
 # source tree afterwards. Each source file is removed after tar reads it, so a
 # full uncompressed tree + a full archive need not fit simultaneously.
 # Preserve hidden files, nanosecond mtimes, symlinks, .git, vpython and CIPD.
 # Do not use --dereference or --exclude-vcs.
-# Ensure read-only directories (e.g. from CIPD/third-party caches) are writable
-# by owner so tar --remove-files can unlink/rmdir them; chmod does not alter
-# directory mtimes or regular file permission bits.
-find "$CR_ROOT" -mindepth 1 -type d ! -perm -u+w -exec chmod u+w {} +
+# Ensure restricted directories (e.g. from CIPD/third-party caches) grant u+rwx
+# before descending so tar --remove-files can traverse, unlink, and rmdir them;
+# chmod does not alter directory mtimes or regular file permission bits.
+find "$CR_ROOT" -type d ! -perm -u+rwx -exec chmod u+rwx {} \;
+# Remove stale Unix sockets (tar ignores sockets and then fails rmdir).
+find "$CR_ROOT" -mindepth 1 -type s -delete
 # Archive the ENTRIES of $CR_ROOT (dotglob covers .gclient etc.), never "."
 # itself: with --remove-files tar would finish by rmdir'ing $CR_ROOT, which is
 # denied because /mnt belongs to root, and tar's exit status 2 would abort the
@@ -29,6 +35,7 @@ hash=$(
     | "$CR_PYTHON" "$GITHUB_WORKSPACE/.github/scripts/checkpoint.py" pack-stream "$CR_TRANSFER/checkpoint"
 )
 [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || fail 'Invalid checkpoint SHA-256 output'
-[[ -z "$(ls -A "$CR_ROOT")" ]] || fail 'Destructive export left files behind in build root'
-echo "sha256=$hash" >> "$GITHUB_OUTPUT"
+leftover_entries=$(ls -A -- "$CR_ROOT")
+[[ -z "$leftover_entries" ]] || fail 'Destructive export left files behind in build root'
+echo "sha256=$hash" >> "${GITHUB_OUTPUT:?}"
 du -sh "$CR_TRANSFER/checkpoint"

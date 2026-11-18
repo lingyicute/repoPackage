@@ -2,14 +2,24 @@
 source "$(dirname "$0")/common.sh"
 mkdir -p "$HOME" "$CR_ROOT/cache" "$CR_ROOT/metadata" "$CIPD_CACHE_DIR"
 "$CR_PYTHON" "$GITHUB_WORKSPACE/.github/scripts/resolve.py"
-readarray -t lock < <("$CR_PYTHON" - <<'PY'
-import json, os
-with open(os.environ['CR_ROOT'] + '/metadata/build-lock.json') as f:
+lock_raw=$("$CR_PYTHON" - <<'PY'
+import json, os, re
+with open(os.environ['CR_ROOT'] + '/metadata/build-lock.json', encoding='utf-8') as f:
     x = json.load(f)
-for k in ('version', 'chromium_revision', 'depot_tools_revision'):
-    print(x[k])
+version = x['version']
+revision = x['chromium_revision']
+depot = x['depot_tools_revision']
+if not isinstance(version, str) or not re.fullmatch(r'(?:0|[1-9][0-9]{0,3})(?:\.(?:0|[1-9][0-9]{0,5})){3}', version):
+    raise SystemExit('Invalid version in build-lock.json')
+for name, sha in (('chromium_revision', revision), ('depot_tools_revision', depot)):
+    if not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{40}', sha):
+        raise SystemExit(f'Invalid {name} in build-lock.json')
+print(version)
+print(revision)
+print(depot)
 PY
 )
+readarray -t lock <<< "$lock_raw"
 [[ "${#lock[@]}" -eq 3 && -n "${lock[0]}" && -n "${lock[1]}" && -n "${lock[2]}" ]] || fail 'Failed to read build-lock.json'
 version="${lock[0]}"; revision="${lock[1]}"; depot_revision="${lock[2]}"
 # Validate tag -> commit against the independent official source repository.
@@ -19,6 +29,7 @@ git -C "$CR_ROOT/src" remote add origin https://chromium.googlesource.com/chromi
 retry git -C "$CR_ROOT/src" -c fetch.fsckObjects=true fetch --no-tags --depth=1 origin "refs/tags/$version"
 [[ "$(git -C "$CR_ROOT/src" rev-parse 'FETCH_HEAD^{commit}')" == "$revision" ]] || fail 'Stable tag/ChromiumDash commit mismatch'
 git -C "$CR_ROOT/src" checkout --detach "$revision"
+[[ "$(git -C "$CR_ROOT/src" rev-parse HEAD)" == "$revision" ]] || fail 'Chromium source checkout revision mismatch'
 git init "$CR_ROOT/depot_tools"
 git -C "$CR_ROOT/depot_tools" remote add origin https://chromium.googlesource.com/chromium/tools/depot_tools.git
 retry git -C "$CR_ROOT/depot_tools" -c fetch.fsckObjects=true fetch --no-tags --depth=1 origin "$depot_revision"
@@ -49,13 +60,15 @@ retry gclient sync --nohooks --no-history --revision "src@$revision" --jobs=8
 import json, os
 from pathlib import Path
 root = Path(os.environ['CR_ROOT'])
-parts = {k.strip(): v.strip() for line in (root / 'src/chrome/VERSION').read_text().splitlines()
-         if '=' in line for k, v in (line.split('=', 1),)}
+parts = {k.strip(): v.strip()
+         for line in (root / 'src/chrome/VERSION').read_text(encoding='utf-8').splitlines()
+         if not line.lstrip().startswith('#') and '=' in line
+         for k, v in (line.split('=', 1),)}
 try:
     actual = '.'.join(parts[k] for k in ('MAJOR', 'MINOR', 'BUILD', 'PATCH'))
 except KeyError as exc:
     raise SystemExit(f'chrome/VERSION missing field: {exc.args[0]}') from exc
-expected = json.loads((root / 'metadata/build-lock.json').read_text())['version']
+expected = json.loads((root / 'metadata/build-lock.json').read_text(encoding='utf-8'))['version']
 if actual != expected:
     raise SystemExit(f'chrome/VERSION mismatch: {actual} != {expected}')
 PY
@@ -77,9 +90,9 @@ buildtools/linux64/gn gen out/Release --fail-on-unused-args
 buildtools/linux64/gn args out/Release --list --short > "$CR_ROOT/metadata/effective-args.txt"
 # Reclaim transient CIPD download cache and temp files before compiling.
 if [[ -d "$CIPD_CACHE_DIR" ]]; then
-  find "$CIPD_CACHE_DIR" -type d ! -perm -u+w -exec chmod u+w {} +
+  find "$CIPD_CACHE_DIR" -type d ! -perm -u+rwx -exec chmod u+rwx {} \;
   rm -rf -- "$CIPD_CACHE_DIR"
 fi
-find "$TMPDIR" -mindepth 1 -type d ! -perm -u+w -exec chmod u+w {} +
+find "$TMPDIR" -mindepth 1 -type d ! -perm -u+rwx -exec chmod u+rwx {} \;
 find "$TMPDIR" -mindepth 1 -delete
 df -h /mnt

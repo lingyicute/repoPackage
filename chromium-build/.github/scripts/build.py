@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Only OUR orderly deadline may cause a resume; never mask an OOM/error."""
 import json
+import math
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import time
@@ -27,12 +29,22 @@ def monotonic_now():
     return time.monotonic()
 
 
+DEAD_PROC_STATES = frozenset({'Z', 'X', 'x'})
+
+
 def compute_jobs(cpu_count=None, mem_kib=None):
     if cpu_count is None:
         cpu_count = os.cpu_count() or 1
+    elif isinstance(cpu_count, bool) or not isinstance(cpu_count, int) or cpu_count < 1:
+        raise ValueError('cpu_count must be a positive integer')
     if mem_kib is None:
-        mem_kib = int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines()
-                           if line.startswith('MemTotal:')))
+        lines = Path('/proc/meminfo').read_text(encoding='utf-8').splitlines()
+        mem_line = next((line for line in lines if line.startswith('MemTotal:')), None)
+        if mem_line is None:
+            raise RuntimeError('MemTotal missing from /proc/meminfo')
+        mem_kib = int(mem_line.split()[1])
+    elif isinstance(mem_kib, bool) or not isinstance(mem_kib, int) or mem_kib < 0:
+        raise ValueError('mem_kib must be a non-negative integer')
     # Public repos typically have more RAM/CPU than private standard runners.
     return max(1, min(cpu_count, mem_kib // (3 * 1024 * 1024), 4))
 
@@ -42,16 +54,39 @@ def compute_budget(started, now, final_stage=False):
     return started + deadline - now
 
 
-def _live_session_pids(sid):
+def _has_live_thread(proc_dir):
+    try:
+        tids = os.listdir(proc_dir / 'task')
+    except OSError:
+        return False
+    for tid in tids:
+        if not tid.isdigit():
+            continue
+        try:
+            tstat = (proc_dir / 'task' / tid / 'stat').read_text(encoding='utf-8')
+            tfields = tstat[tstat.rindex(')') + 2:].split()
+            if tfields[0] not in DEAD_PROC_STATES:
+                return True
+        except (OSError, ValueError, IndexError):
+            pass
+    return False
+
+
+def _live_session_pids(sid, proc_root='/proc'):
     pids = []
-    for entry in os.listdir('/proc'):
+    for entry in os.listdir(proc_root):
         if not entry.isdigit():
             continue
         try:
-            stat = Path('/proc', entry, 'stat').read_text()
-            # Fields after the ")" closing comm: state ppid pgrp session ...
+            proc_dir = Path(proc_root, entry)
+            stat = (proc_dir / 'stat').read_text(encoding='utf-8')
+            # Fields after the ")" closing comm: state ppid pgrp session ... num_threads(17)
             fields = stat[stat.rindex(')') + 2:].split()
-            if fields[0] not in ('Z', 'X', 'x') and int(fields[3]) == sid:
+            if int(fields[3]) != sid:
+                continue
+            if fields[0] not in DEAD_PROC_STATES:
+                pids.append(int(entry))
+            elif fields[0] == 'Z' and len(fields) > 17 and int(fields[17]) > 1 and _has_live_thread(proc_dir):
                 pids.append(int(entry))
         except (OSError, ValueError, IndexError):
             pass
@@ -79,6 +114,12 @@ def kill_session(sid, timeout=10.0):
 
 
 def supervise(command, seconds, grace=180, env=None):
+    if (isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds) or seconds <= 0):
+        raise ValueError('seconds must be a positive finite number')
+    if (isinstance(grace, bool) or not isinstance(grace, (int, float))
+            or not math.isfinite(grace) or grace < 0):
+        raise ValueError('grace must be a non-negative finite number')
     # start_new_session: ninja becomes session leader, so session id == p.pid.
     p = subprocess.Popen(command, start_new_session=True, env=env)
     lingering = []
@@ -117,11 +158,14 @@ def supervise(command, seconds, grace=180, env=None):
                 os.killpg(p.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-        lingering = kill_session(p.pid)
+        lingering = list(kill_session(p.pid))
         if p.pid in lingering:
             p.poll()
         else:
-            p.wait()
+            try:
+                p.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                lingering.append(p.pid)
     if lingering and not result.startswith('failed:'):
         return f'failed:lingering-processes({",".join(map(str, lingering))})'
     return result
@@ -133,7 +177,7 @@ def summarize(line):
     if not path:
         return
     try:
-        with open(path, 'a') as f:
+        with open(path, 'a', encoding='utf-8') as f:
             f.write(line + '\n')
     except OSError:
         pass
@@ -142,14 +186,21 @@ def summarize(line):
 def swapped_out_bytes(vmstat='/proc/vmstat'):
     """Bytes written to swap since boot (None if unknown); a diagnostic only."""
     try:
-        with open(vmstat) as f:
+        with open(vmstat, encoding='utf-8') as f:
             for line in f:
                 key, _, value = line.partition(' ')
                 if key == 'pswpout':
-                    return int(value) * os.sysconf('SC_PAGE_SIZE')
+                    pages = int(value)
+                    return pages * os.sysconf('SC_PAGE_SIZE') if pages >= 0 else None
     except (OSError, ValueError):
         pass
     return None
+
+
+def swap_delta_mib(swap_before, swap_after):
+    if swap_before is None or swap_after is None or swap_after < swap_before:
+        return None
+    return round((swap_after - swap_before) / 2**20)
 
 
 def free_gib(path):
@@ -163,20 +214,31 @@ def free_gib(path):
 
 def main():
     def _handle_sigterm(signum, frame):
+        # Ignore repeated SIGTERM so supervise()'s finally finishes reaping the session.
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         raise SystemExit(f'Build supervisor terminated by signal {signum}')
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
-    root = Path(os.environ['CR_ROOT'])
-    started = int((Path(os.environ['RUNNER_TEMP']) / 'chromium-job-start').read_text().strip())
+    stage = os.environ.get('STAGE', '')
+    if not re.fullmatch(r'0[0-8]', stage):
+        raise SystemExit(f'Invalid STAGE: {stage!r}')
     final_raw = os.environ.get('FINAL_STAGE', 'false')
-    if final_raw not in ('true', 'false'):
+    if final_raw not in ('true', 'false') or (stage == '00' and final_raw == 'true'):
         raise SystemExit(f'Invalid FINAL_STAGE: {final_raw!r}')
     final_stage = final_raw == 'true'
+
+    root = Path(os.environ['CR_ROOT'])
+    raw_started = (Path(os.environ['RUNNER_TEMP']) / 'chromium-job-start').read_text(encoding='utf-8').strip()
+    if not re.fullmatch(r'-?[0-9]+', raw_started):
+        msg = f'Invalid job start timestamp: {raw_started!r}'
+        summarize(f'- Stage {stage}: `failed` before compiling; {msg}.')
+        raise SystemExit(msg)
+    started = int(raw_started)
     now = monotonic_now()
     if started > now:
         msg = f'Invalid future job start timestamp ({started} > {now:.1f})'
-        summarize(f"- Stage {os.environ['STAGE']}: `failed` before compiling; {msg}.")
+        summarize(f'- Stage {stage}: `failed` before compiling; {msg}.')
         raise SystemExit(msg)
     remaining = compute_budget(started, now, final_stage=final_stage)
     setup = round(now - started, 1)
@@ -184,8 +246,11 @@ def main():
         msg = (f'Fetch/restore exhausted the time budget '
                f'(setup {setup / 60:.1f} min, remaining {remaining / 60:.1f} min); '
                f'refusing a no-progress checkpoint')
-        summarize(f"- Stage {os.environ['STAGE']}: `failed` before compiling; {msg}.")
+        summarize(f'- Stage {stage}: `failed` before compiling; {msg}.')
         raise SystemExit(msg)
+    output_path = os.environ.get('GITHUB_OUTPUT', '')
+    if not output_path:
+        raise SystemExit('Missing GITHUB_OUTPUT')
     jobs = compute_jobs()
     os.chdir(root / 'src')
     env = dict(os.environ)
@@ -198,31 +263,33 @@ def main():
     elapsed = round(monotonic_now() - t0, 1)
     # Memory pressure and disk headroom: what the -j cap and later stages depend on.
     swap_after, disk_free = swapped_out_bytes(), free_gib(root)
-    swap_mib = None if None in (swap_before, swap_after) else round((swap_after - swap_before) / 2**20)
+    swap_mib = swap_delta_mib(swap_before, swap_after)
     usage = (f"{'unknown' if swap_mib is None else swap_mib} MiB written to swap while compiling, "
              f"{'unknown' if disk_free is None else disk_free} GiB left free on the build disk")
     if status.startswith('failed:'):
-        summarize(f"- Stage {os.environ['STAGE']}: `{status}` after compiling for {elapsed / 60:.1f} min "
+        summarize(f'- Stage {stage}: `{status}` after compiling for {elapsed / 60:.1f} min '
                   f'with -j{jobs}; setup before compiling took {setup / 60:.1f} min.')
-        summarize(f"- Stage {os.environ['STAGE']} resources: {usage}.")
+        summarize(f'- Stage {stage} resources: {usage}.')
         # Heavy swapping or a full disk explains many failures (e.g. an OOM kill or ENOSPC).
         raise SystemExit(f'Build failed after {elapsed:.1f}s, NOT checkpointing: {status}; {usage}')
     if status == 'running' and final_stage:
         status = 'exhausted'
-    record = dict(stage=os.environ['STAGE'], image_os=os.environ.get('ImageOS'),
+    record = dict(stage=stage, image_os=os.environ.get('ImageOS'),
                   image_version=os.environ.get('ImageVersion'), jobs=jobs,
                   run_attempt=os.environ['GITHUB_RUN_ATTEMPT'],
                   final_stage=final_stage, budget_minutes=round(remaining / 60, 1),
                   setup_seconds=setup, elapsed_seconds=elapsed, status=status,
                   swap_out_mib=swap_mib, disk_free_gib=disk_free)
-    with (root / 'metadata/runners.jsonl').open('a') as f:
+    meta_dir = root / 'metadata'
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    with (meta_dir / 'runners.jsonl').open('a', encoding='utf-8') as f:
         f.write(json.dumps(record) + '\n')
-    with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+    with open(output_path, 'a', encoding='utf-8') as f:
         f.write(f'status={status}\n')
     print(f'Stage result: {status} ({elapsed:.1f}s)', flush=True)
-    summarize(f"- Stage {os.environ['STAGE']}: `{status}` after compiling for {elapsed / 60:.1f} min with -j{jobs}; "
+    summarize(f'- Stage {stage}: `{status}` after compiling for {elapsed / 60:.1f} min with -j{jobs}; '
               f'setup before compiling (runner prep, then fetch or download and restore) took {setup / 60:.1f} min.')
-    summarize(f"- Stage {os.environ['STAGE']} resources: {usage}.")
+    summarize(f'- Stage {stage} resources: {usage}.')
 
 
 if __name__ == '__main__':

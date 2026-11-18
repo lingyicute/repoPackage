@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+export LC_ALL=C.UTF-8 LANG=C.UTF-8 TZ=UTC
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 # Run ONLY on a fresh GitHub-hosted VM. Never use this cleanup on a personal host.
 [[ "${RUNNER_ENVIRONMENT:-}" == github-hosted ]] || { echo 'GitHub-hosted runner required' >&2; exit 1; }
-[[ "$(uname -m)" == x86_64 ]] || { echo "Unsupported architecture: $(uname -m) (need x86_64)" >&2; exit 1; }
-. /etc/os-release
-[[ "$ID" == ubuntu && "$VERSION_ID" == 24.04 ]] || { echo "Unsupported image: $ID $VERSION_ID (need ubuntu 24.04)" >&2; exit 1; }
-mkdir -p "${RUNNER_TEMP:?}/chromium-logs"
-[[ -x /usr/bin/python3 ]] || { echo 'Missing /usr/bin/python3; refusing apt/pip fallback' >&2; exit 1; }
-for cmd in sudo git tar zstd sha256sum timeout fallocate mkswap swapon swapoff free df du find sort xargs tee chmod nproc cp rmdir dirname tail sleep; do
+for cmd in sudo git tar zstd sha256sum timeout fallocate mkswap swapon swapoff \
+  free df du find sort xargs tee chmod chown nproc cp rm rmdir mkdir mktemp ls \
+  cat id uname dirname tail sleep; do
   command -v "$cmd" >/dev/null || { echo "Missing runner tool: $cmd; refusing apt/pip fallback" >&2; exit 1; }
 done
+[[ "$(uname -m)" == x86_64 ]] || { echo "Unsupported architecture: $(uname -m) (need x86_64)" >&2; exit 1; }
+[[ -r /etc/os-release ]] || { echo 'Missing /etc/os-release' >&2; exit 1; }
+. /etc/os-release
+[[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == 24.04 ]] \
+  || { echo "Unsupported image: ${ID:-unknown} ${VERSION_ID:-unknown} (need ubuntu 24.04)" >&2; exit 1; }
+mkdir -p "${RUNNER_TEMP:?}/chromium-logs"
+[[ -x /usr/bin/python3 ]] || { echo 'Missing /usr/bin/python3; refusing apt/pip fallback' >&2; exit 1; }
 # Record monotonic boot time so NTP wall-clock adjustments cannot skew stage budgets.
 /usr/bin/python3 -c 'import time; print(int(time.clock_gettime(time.CLOCK_BOOTTIME)))' > "$RUNNER_TEMP/chromium-job-start"
 # Disk layout: / (OS disk) receives the swap file; /mnt (the larger ephemeral
@@ -35,12 +40,21 @@ for dir in /usr/local/lib/android /usr/local/.ghcup /usr/share/dotnet \
   cleanup+=("$!")
 done
 sudo mkdir -p /mnt/chromium-relay /mnt/chromium-transfer
-sudo chown "$(id -u):$(id -g)" /mnt/chromium-relay /mnt/chromium-transfer
+for workdir in /mnt/chromium-relay /mnt/chromium-transfer; do
+  [[ -d "$workdir" && ! -L "$workdir" ]] || { echo "Refusing non-directory or symlink: $workdir" >&2; exit 1; }
+  sudo chown -h "$(id -u):$(id -g)" "$workdir"
+  existing=$(ls -A -- "$workdir")
+  [[ -z "$existing" ]] || { echo "Expected fresh empty runner directory: $workdir" >&2; exit 1; }
+done
 # The image ships its own swap file on /mnt; reclaim that space for the tree.
+swap_devs=$(swapon --show=NAME --noheadings --raw)
 while IFS= read -r dev; do
   [[ "$dev" == /mnt/* ]] || continue
-  sudo swapoff -- "$dev" && sudo rm -f -- "$dev"
-done < <(swapon --show=NAME --noheadings --raw)
+  sudo swapoff -- "$dev"
+  if [[ -f "$dev" && ! -L "$dev" ]]; then
+    sudo rm -f -- "$dev"
+  fi
+done <<< "$swap_devs"
 # Reap every background deletion before failing so none keep running on error.
 cleanup_failed=0
 for pid in "${cleanup[@]}"; do
@@ -54,7 +68,8 @@ swap_gib=16
 root_free_gib=$(/usr/bin/python3 -c 'import shutil; print(shutil.disk_usage("/").free // 2**30)')
 (( root_free_gib - swap_gib >= 8 )) || swap_gib=$(( root_free_gib - 8 ))
 (( swap_gib >= 8 )) || { echo "Only ${root_free_gib} GiB free on / after cleanup; cannot place a >= 8 GiB swap file" >&2; exit 1; }
-sudo fallocate -l "${swap_gib}G" /chromium-relay.swap
+sudo rm -f -- /chromium-relay.swap
+sudo bash -c 'umask 077 && exec fallocate -l "$1" /chromium-relay.swap' _ "${swap_gib}G"
 sudo chmod 600 /chromium-relay.swap
 sudo mkswap /chromium-relay.swap >/dev/null
 sudo swapon /chromium-relay.swap
