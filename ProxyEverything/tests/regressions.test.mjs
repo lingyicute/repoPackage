@@ -30,7 +30,7 @@ const base = 'https://example.com/dir/page';
 const origin = 'https://proxy.example';
 const proxy = (url) => {
 	const u = new URL(url, base);
-	return origin + '/' + encodeURIComponent(u.origin) + u.pathname.split('/').map(encodeURIComponent).join('/') + u.search + u.hash;
+	return origin + '/~' + encodeURIComponent(u.origin) + u.pathname + u.search + u.hash;
 };
 
 test('already-proxied URLs and inline CSS/JS/JSON never break out of raw-text or CDATA', () => {
@@ -154,9 +154,9 @@ test('homepage submit preserves percent-encoded plain URLs and rejects ws://', (
 		return { href: location.href, snack: snackEl.textContent || null };
 	};
 
-	assert.equal(submit('https://en.wikipedia.org/wiki/C%23').href, '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523');
-	assert.equal(submit('https://example.com/files/a%2Fb?x=1').href, '/https%3A%2F%2Fexample.com/files/a%252Fb?x=1');
-	assert.equal(submit(origin + '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523').href, '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523');
+	assert.equal(submit('https://en.wikipedia.org/wiki/C%23').href, '/~https%3A%2F%2Fen.wikipedia.org/wiki/C%23');
+	assert.equal(submit('https://example.com/files/a%2Fb?x=1').href, '/~https%3A%2F%2Fexample.com/files/a%2Fb?x=1');
+	assert.equal(submit(origin + '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523').href, '/~https%3A%2F%2Fen.wikipedia.org/wiki/C%23');
 	const wsRes = submit('ws://example.com/ws');
 	assert.equal(wsRes.href, origin + '/');
 	assert.equal(wsRes.snack, '仅支持 http:// 或 https:// 网址');
@@ -169,7 +169,7 @@ test('Referer lookups enforce ALLOWED_TARGET_ORIGINS and rewrite Sec-Fetch-Site'
 		forwarded = { url: String(url), headers: new Headers(init.headers) };
 		return new Response('ok', { headers: { 'content-type': 'text/plain' } });
 	};
-	const send = (url, headers = {}, env = undefined) => {
+	const send = (url, headers = {}, env = { ALLOWED_TARGET_ORIGINS: 'https://example.com,https://other.example' }) => {
 		forwarded = null;
 		return worker.fetch({ url, method: 'GET', headers: new Headers(headers), body: null }, env);
 	};
@@ -301,4 +301,55 @@ test('fast paths preserve untouched JS/CSS while still rewriting escaped style U
 		rewriteStyleAttr('background: \\75 rl(a.png)', base, origin),
 		`background: url("${proxy('a.png')}")`
 	);
+});
+
+test('upstream access requires a valid explicit origin allowlist', async () => {
+	const originalFetch = globalThis.fetch;
+	const seen = [];
+	globalThis.fetch = async url => { seen.push(url); return new Response('ok'); };
+	try {
+		const request = new Request(proxy('https://example.com/page'));
+		for (const value of [undefined, '', '*', 'https://example.com/path', 'not a URL']) {
+			const response = await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: value });
+			assert.equal(response.status, 503);
+		}
+		assert.equal((await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com:9443' })).status, 403);
+		assert.deepEqual(seen, []);
+		assert.equal((await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' })).status, 200);
+		assert.deepEqual(seen, ['https://example.com/page']);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test('SVG scanner keeps declarations and exact XML element names intact', () => {
+	const prolog = `<?xml version="1.0" encoding="iso-8859-1"?>`;
+	const internalSubset = `<!DOCTYPE svg [<!-- ] > --> <!ENTITY icon 'sprite.svg'>]>`;
+	const nested = `<svg><style-note>url(label.txt)</style-note><image href="&icon;"/><image href="a&amp;b.png"/></svg>`;
+	const input = prolog + internalSubset + nested;
+	const expected = prolog.replace('iso-8859-1', 'UTF-8') + internalSubset +
+		nested.replace('href="a&amp;b.png"', `href="${proxy('a&b.png').replace('&', '&amp;')}"`);
+	assert.equal(rewriteSvg(input, base, origin), expected);
+	assert.equal(rewriteSvg(`<svg><style>/* unfinished */`, base, origin), `<svg><style>/* unfinished */`);
+});
+
+test('HTML charset prescan recognizes only complete metadata declarations', async () => {
+	const fragments = [
+		'<div title="<meta charset=gbk>"></div>',
+		'<meta-description charset="gbk">',
+		'<meta data:charset="gbk">',
+		'<!-- <meta charset=gbk> --!>',
+		'<meta charset="utf-8" charset="gbk">',
+	];
+	const text = fragments.join('') + '<meta charset="windows-1252">';
+	for (const [input, expected] of [[text, 'utf-8'], [fragments.slice(0, 4).join('') + '<meta charset="windows-1252">', 'windows-1252']]) {
+		const stream = new Response(input).body;
+		const sniffed = await sniffHtmlCharset(stream);
+		assert.equal(sniffed.charset, expected);
+		assert.equal(await new Response(sniffed.body).text(), input);
+	}
+	const xhtml = '<?xml version="1.0" encoding="windows-1252"?><html><meta charset="gbk" /></html>';
+	const sniffed = await sniffHtmlCharset(new Response(xhtml).body, null, true);
+	assert.equal(sniffed.charset, 'windows-1252');
+	await sniffed.body.cancel();
 });

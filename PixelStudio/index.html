@@ -531,6 +531,13 @@
       touch-action: none;
     }
 
+    /* Keep both empty-state actions reachable when the card is taller than the viewport. */
+    .canvas-viewport:not(.has-image) {
+      overflow-y: auto;
+      align-items: safe center;
+      touch-action: pan-y;
+    }
+
     /* Empty State Dropzone Card */
     .dropzone-card {
       width: 100%;
@@ -1671,6 +1678,14 @@
       }
     }
 
+    @media (max-width: 559px) and (max-height: 560px) {
+      .stage-area {
+        min-height: 0;
+        height: 34vh;
+        height: 34dvh;
+      }
+    }
+
     /* Small phones in landscape are too narrow for the desktop layout, and the stacked mobile layout
        leaves the inspector only a sliver of height there: put the stage and the inspector side by side */
     @media (min-width: 560px) and (max-width: 767px) and (max-height: 480px) {
@@ -1781,6 +1796,10 @@
     /* Let native controls (select popups, spinners, scrollbars, color input) follow the theme */
     :root { color-scheme: light; }
     [data-theme="dark"] { color-scheme: dark; }
+    /* The theme toggle icon follows data-theme in CSS, so it is already right on the first paint */
+    #iconSun { display: none; }
+    [data-theme="dark"] #iconMoon { display: none; }
+    [data-theme="dark"] #iconSun { display: block; }
 
     /* Keyboard focus indicators for controls that suppress the native outline */
     .crop-box:focus { outline: none; }
@@ -1813,6 +1832,24 @@
       .canvas-viewport.has-image { padding-bottom: 60px; }
     }
   </style>
+  <script>
+    // Apply the saved (or system) theme before the first paint. The app script at the end of <body> only runs once
+    // the whole page is parsed, so dark-mode users first saw the light theme, which then faded to dark on every load.
+    // Mirrors applyTheme / applySeed / syncThemeColorMeta in bindEvents (same "pixelstudio.prefs" storage key).
+    (() => {
+      let prefs = {};
+      try { prefs = JSON.parse(localStorage.getItem("pixelstudio.prefs") || "{}") || {}; } catch { /* private mode */ }
+      const root = document.documentElement;
+      const dark = typeof prefs.dark === "boolean"
+        ? prefs.dark
+        : Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      if (dark) root.setAttribute("data-theme", "dark");
+      if (/^(violet|azure|forest|terracotta)$/.test(prefs.seed)) root.setAttribute("data-seed", prefs.seed);
+      const surface = getComputedStyle(root).getPropertyValue("--md-sys-color-surface").trim();
+      const meta = document.querySelector('meta[name="theme-color"]');
+      if (meta && surface) meta.setAttribute("content", surface);
+    })();
+  </script>
 </head>
 <body>
   <noscript>
@@ -1875,7 +1912,7 @@
           <svg id="iconMoon" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
           </svg>
-          <svg id="iconSun" style="display:none" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg id="iconSun" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
           </svg>
         </button>
@@ -1888,7 +1925,7 @@
     <div class="workspace-body">
       <!-- M3 Navigation Rail (Desktop) / Navigation Bar (Mobile) -->
       <nav class="nav-rail" aria-label="功能导航">
-        <button class="nav-item active" data-tab="crop" aria-current="page">
+        <button class="nav-item active" data-tab="crop" aria-label="无损裁剪" aria-current="page">
           <div class="nav-pill">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>
@@ -1897,7 +1934,7 @@
           <span class="nav-label">无损裁剪</span>
         </button>
 
-        <button class="nav-item" data-tab="resize">
+        <button class="nav-item" data-tab="resize" aria-label="修改尺寸">
           <div class="nav-pill">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
@@ -1906,7 +1943,7 @@
           <span class="nav-label">修改尺寸</span>
         </button>
 
-        <button class="nav-item" data-tab="exif">
+        <button class="nav-item" data-tab="exif" aria-label="修改 EXIF">
           <div class="nav-pill">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>
@@ -1915,7 +1952,7 @@
           <span class="nav-label">修改EXIF</span>
         </button>
 
-        <button class="nav-item" data-tab="export">
+        <button class="nav-item" data-tab="export" aria-label="格式压缩">
           <div class="nav-pill">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
@@ -1957,7 +1994,7 @@
               <span class="feature-tag">等比/自由改尺寸</span>
               <span class="feature-tag">二进制 EXIF 读写</span>
               <span class="feature-tag">JPEG / PNG / WebP / BMP</span>
-              <span class="feature-tag">有损/无损压缩率控制</span>
+              <span class="feature-tag">有损画质控制与无损输出</span>
             </div>
           </div>
 
@@ -2143,7 +2180,7 @@
                   <span>按百分比缩放</span>
                   <span class="slider-value-pill" id="scalePercentBadge">100%</span>
                 </div>
-                <input type="range" class="m3-slider" id="sliderScalePercent" aria-label="按百分比缩放" min="10" max="200" step="5" value="100" />
+                <input type="range" class="m3-slider" id="sliderScalePercent" aria-label="按百分比缩放" min="10" max="200" step="1" value="100" />
               </div>
 
               <!-- Quick Scale Presets -->
@@ -2301,7 +2338,7 @@
                   </div>
                   <div>
                     <h2 class="card-title">格式转换与压缩</h2>
-                    <p class="card-subtitle">支持有损 / 无损模式与精确压缩率控制</p>
+                    <p class="card-subtitle">可设置编码质量并查看实际文件体积</p>
                   </div>
                 </div>
               </div>
@@ -2335,11 +2372,11 @@
                 <div class="segmented-group" id="compressionModeSegmented">
                   <button class="segmented-btn active" data-mode="lossy">
                     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
-                    有损压缩 (指定压缩率)
+                    调节画质
                   </button>
                   <button class="segmented-btn" data-mode="lossless">
                     <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="20 6 9 17 4 12"/></svg>
-                    无损压缩 (100% 原始保真)
+                    无损 / 最高画质
                   </button>
                 </div>
               </div>
@@ -2347,22 +2384,21 @@
               <!-- Lossy Compression Rate Slider & Exact Input -->
               <div id="lossyControlsBlock" class="slider-block" style="background:var(--md-sys-color-surface-container-high);padding:12px;border-radius:16px;">
                 <div class="slider-header">
-                  <span>压缩率 (Compression Rate)</span>
+                  <span>质量设定（越低通常文件越小）</span>
                   <div style="display:flex;align-items:center;gap:6px;">
-                    <span class="slider-value-pill" id="compressionRateLabel">压缩 20% · 画质 80%</span>
+                    <span class="slider-value-pill" id="compressionRateLabel">质量 80 / 100</span>
                   </div>
                 </div>
-                <input type="range" class="m3-slider" id="sliderCompression" aria-label="压缩率" min="1" max="95" step="1" value="20" />
+                <input type="range" class="m3-slider" id="sliderCompression" aria-label="质量设定" min="1" max="99" step="1" value="80" />
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
                   <div class="chip-group" id="compressionPresets">
-                    <button class="m3-chip" data-comp="5">轻度 5%</button>
-                    <button class="m3-chip active" data-comp="20">均衡 20%</button>
-                    <button class="m3-chip" data-comp="45">高压缩 45%</button>
-                    <button class="m3-chip" data-comp="70">极限 70%</button>
+                    <button class="m3-chip" data-quality="95">高画质 95</button>
+                    <button class="m3-chip active" data-quality="80">均衡 80</button>
+                    <button class="m3-chip" data-quality="55">小体积 55</button>
+                    <button class="m3-chip" data-quality="30">更小 30</button>
                   </div>
                   <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
-                    <input type="number" id="inpCompressionExact" aria-label="精确压缩率 (%)" min="1" max="99" value="20" />
-                    <span style="font-size:12px;font-weight:600;">%</span>
+                    <input type="number" id="inpCompressionExact" aria-label="精确质量设定（1 到 99）" min="1" max="99" value="80" />
                   </div>
                 </div>
               </div>
@@ -2372,13 +2408,13 @@
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:1px;">
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
                 </svg>
-                <span id="losslessBannerText">当前为无损压缩模式：保留全部像素细节与色彩精度，不进行有损量化丢弃。</span>
+                <span id="losslessBannerText">以当前格式的无损或最高画质模式编码。</span>
               </div>
 
               <!-- Output Filename Input -->
               <div class="m3-field">
                 <label for="inpOutputFilename">导出文件名 (自动追加扩展名)</label>
-                <input type="text" id="inpOutputFilename" value="pixelstudio_edited" placeholder="输入文件名" maxlength="120" autocomplete="off" spellcheck="false" />
+                <input type="text" id="inpOutputFilename" value="pixelstudio_edited" placeholder="输入文件名" maxlength="255" autocomplete="off" spellcheck="false" />
               </div>
             </div>
           </section>
@@ -2582,6 +2618,7 @@
           let gpsLatRef = null, gpsLngRef = null, gpsStatus = "";
           let gpsLatArr = null, gpsLngArr = null;
           let isoBase = 0, sensitivityType = 0;
+          let dateOriginal = "", dateDigitized = "";
           const isoExt = {};
 
           for (let i = 0; i < count; i++) {
@@ -2617,11 +2654,9 @@
               else if (tag === 0x8825 && isLong) ptrs.gpsIfd = view.getUint32(valOffset, little);
             } else if (group === "EXIF") {
               if (tag === 0x9003 && isAscii) {
-                const taken = this._readDate(view, valOffset, numValues);
-                if (taken) out.dateTime = taken; // keep the IFD0 fallback when this one is blank
-              } else if (tag === 0x9004 && isAscii && !out.dateTime) {
-                const dig = this._readDate(view, valOffset, numValues);
-                if (dig) out.dateTime = dig;
+                dateOriginal = this._readDate(view, valOffset, numValues);
+              } else if (tag === 0x9004 && isAscii) {
+                dateDigitized = this._readDate(view, valOffset, numValues);
               } else if (tag === 0x829a && isRational) {
                 const r = this._readRational(view, valOffset, little, isSigned);
                 if (r > 0) out.exposureTime = this.formatExposure(r); // significant digits: 1/32000 s must survive
@@ -2662,6 +2697,9 @@
           }
 
           if (group === "EXIF") {
+            // Capture time: DateTimeOriginal, then DateTimeDigitized. The IFD0 DateTime read before is only
+            // the file's last modification time, so it is merely the fallback when both are blank
+            if (dateOriginal || dateDigitized) out.dateTime = dateOriginal || dateDigitized;
             const prefOrder =
               sensitivityType === 2 || sensitivityType === 6
                 ? [0x8832, 0x8833, 0x8831]
@@ -2751,20 +2789,22 @@
           return /^(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(s) ? parseFloat(s) : NaN;
         },
 
-        // Shutter speeds below 1 s read better as the classic "1/250" form
+        _unitFractionDenominator(seconds) {
+          const inv = 1 / seconds;
+          const den = Math.round(inv);
+          // Treat only numeric rounding noise as a unit fraction, not any value within 1% of it.
+          return den >= 2 && den <= 0xffffffff && Math.abs(den - inv) <= Number.EPSILON * inv * 4 ? den : 0;
+        },
+
         formatExposure(seconds) {
-          if (!(seconds > 0)) return "";
-          if (seconds < 1) {
-            const inv = 1 / seconds;
-            // "1/1" would be a confusing way to spell a full second: leave 0.99x s as a decimal
-            if (Math.round(inv) >= 2 && Math.abs(inv - Math.round(inv)) / inv < 0.01) return `1/${Math.round(inv)}`;
-          }
-          return String(Number(seconds.toPrecision(6)));
+          if (!(seconds > 0) || !Number.isFinite(seconds)) return "";
+          const den = this._unitFractionDenominator(seconds);
+          return den ? `1/${den}` : String(Number(seconds.toPrecision(12)));
         },
 
         canonicalExposure(raw) {
-          const v = this.parseExposure(raw);
-          return v >= 1e-6 && v <= 3600 ? this.formatExposure(v) : "";
+          const seconds = this.parseExposure(raw);
+          return seconds >= 1 / 0xffffffff && seconds <= 0xffffffff ? this.formatExposure(seconds) : "";
         },
 
         // EXIF requires "YYYY:MM:DD HH:MM:SS"; accept common variants (incl. ISO 8601 with fractional
@@ -2871,14 +2911,13 @@
             if (!(floatVal > 0) || !Number.isFinite(floatVal)) return;
             let num;
             let den;
-            const inv = 1 / floatVal;
-            if (allowUnitFraction && floatVal < 1 && Math.round(inv) >= 2 && Math.abs(inv - Math.round(inv)) / inv < 0.01) {
-              // Classic shutter fractions such as 1/125 s
+            const unitDen = allowUnitFraction ? this._unitFractionDenominator(floatVal) : 0;
+            if (unitDen) {
               num = 1;
-              den = Math.round(inv);
+              den = unitDen;
             } else {
-              num = Math.round(floatVal * scale);
-              den = scale;
+              den = Math.max(1, Math.min(scale, Math.floor(0xffffffff / floatVal)));
+              num = Math.round(floatVal * den);
               const g = gcd(num, den);
               if (g > 1) { num /= g; den /= g; }
             }
@@ -2917,7 +2956,7 @@
               addLong(exifIfd, 0xa002, dims.w); // PixelXDimension: tells readers the real output size
               addLong(exifIfd, 0xa003, dims.h); // PixelYDimension
             }
-            addRational(exifIfd, 0x829a, expTime, 1000000, true);
+            addRational(exifIfd, 0x829a, expTime, 0xffffffff, true);
             addRational(exifIfd, 0x829d, fNum, 100);
             if (isoVal > 0) {
               // ISOSpeedRatings is a SHORT: 65535 means "overflow", the real value goes in the LONG
@@ -3042,7 +3081,7 @@
         // Inject or strip APP1 EXIF segment in a JPEG Uint8Array
         processJpegBytes(jpegBytes, stripExif, meta, dims) {
           if (jpegBytes.length < 4 || jpegBytes[0] !== 0xff || jpegBytes[1] !== 0xd8) {
-            return jpegBytes;
+            throw new Error("无法读取 JPEG 容器");
           }
           // Drop any existing APP1 (0xFFE1) segments (EXIF / XMP) after SOI
           const chunks = [new Uint8Array([0xff, 0xd8])];
@@ -3051,11 +3090,7 @@
           while (pos + 4 <= jpegBytes.length) {
             const m1 = jpegBytes[pos];
             const m2 = jpegBytes[pos + 1];
-            if (m1 !== 0xff) {
-              chunks.push(jpegBytes.subarray(pos));
-              pos = jpegBytes.length;
-              break;
-            }
+            if (m1 !== 0xff) throw new Error("JPEG 段标记无效");
             if (m2 === 0xff) {
               chunks.push(jpegBytes.subarray(pos, pos + 1));
               pos += 1;
@@ -3073,11 +3108,7 @@
             }
             const segLen = (jpegBytes[pos + 2] << 8) | jpegBytes[pos + 3];
             const nextPos = pos + 2 + segLen;
-            if (segLen < 2 || nextPos > jpegBytes.length) {
-              chunks.push(jpegBytes.subarray(pos));
-              pos = jpegBytes.length;
-              break;
-            }
+            if (segLen < 2 || nextPos > jpegBytes.length) throw new Error("JPEG 段长度无效");
             // Skip existing APP1 (0xE1) if we are stripping or replacing EXIF
             if (m2 !== 0xe1) {
               chunks.push(jpegBytes.subarray(pos, nextPos));
@@ -3123,10 +3154,10 @@
 
         // Inject or strip PNG eXIf chunk in a PNG Uint8Array
         injectPngExif(pngBytes, stripExif, meta, dims) {
-          if (pngBytes.length < 33) return pngBytes;
           const view = new DataView(pngBytes.buffer, pngBytes.byteOffset, pngBytes.byteLength);
-          if (view.getUint32(0, false) !== 0x89504e47 || view.getUint32(4, false) !== 0x0d0a1a0a) {
-            return pngBytes;
+          if (pngBytes.length < 33 || this.detectFormat(view) !== "image/png" ||
+              view.getUint32(8) !== 13 || view.getUint32(12) !== 0x49484452) {
+            throw new Error("无法读取 PNG 容器");
           }
           let exifChunk = null;
           if (!stripExif) {
@@ -3145,6 +3176,7 @@
           let pos = 8;
           let removedAny = false;
           let inserted = false;
+          let ended = false;
           while (pos + 12 <= pngBytes.length) {
             const len = view.getUint32(pos, false);
             const type = view.getUint32(pos + 4, false);
@@ -3161,10 +3193,15 @@
               inserted = true;
             }
             pos = nextPos;
-            if (type === 0x49454e44) break; // IEND
+            if (type === 0x49454e44) { // IEND
+              if (len !== 0) throw new Error("PNG 结束块无效");
+              ended = true;
+              break;
+            }
           }
-          if (pos < pngBytes.length) parts.push(pngBytes.subarray(pos));
-          if (stripExif && !removedAny) return pngBytes;
+          if (!ended) throw new Error("PNG 容器不完整");
+          if (!stripExif && pos < pngBytes.length) parts.push(pngBytes.subarray(pos));
+          if (stripExif && !removedAny && pos === pngBytes.length) return pngBytes;
 
           const totalLen = parts.reduce((sum, p) => sum + p.length, 0);
           const out = new Uint8Array(totalLen);
@@ -3369,7 +3406,7 @@
         sourceImg: null,        // Original HTMLImageElement (or downscaled canvas for extreme inputs)
         sourceW: 0,
         sourceH: 0,
-        transformedCanvas: null, // Source after rotation/flip
+        transformedSource: null, // Original source or a canvas after rotation/flip
         rotW: 0,
         rotH: 0,
 
@@ -3391,8 +3428,9 @@
         targetH: 0,
         lockAspect: true,
         resampleQuality: "high",
-        resizeScale: 1, // Exact output/crop scale factor (slider is only a rounded view of it)
-        resizeScaleY: null, // Only set when the aspect lock is off and H was scaled independently of W
+        resizeScale: 1, // Requested scale, retained when a larger crop hits the canvas limits
+        resizeScaleY: null, // An explicitly stretched height when the aspect lock is off
+        resizeLimit: 1, // Multiplier actually applied to keep the rounded dimensions encodable
 
         // EXIF
         stripExif: false,
@@ -3416,7 +3454,7 @@
         outputFormat: "image/jpeg",
         matteColor: "#ffffff",
         compressionMode: "lossy", // 'lossy' | 'lossless'
-        compressionRate: 20,      // 1..95% (quality = 100 - compressionRate)
+        compressionQuality: 80,   // Encoder setting, not a promised file-size reduction
         modeBeforeBmp: null,      // Compression mode to restore when leaving BMP
         formatTouched: false,     // The user picked an output format themselves
         modeTouched: false,       // The user picked lossy / lossless themselves
@@ -3542,6 +3580,28 @@
         return `${text} ${units[i]}`;
       }
 
+      function makeDownloadFilename(raw, ext) {
+        let name = raw
+          .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, "_")
+          .replace(/\.(jpe?g|png|webp|bmp|avif)[\s.]*$/i, "")
+          .replace(/^[\s.]+|[\s.]+$/g, "");
+        const deviceName = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])(?= *(?:\.|$))/i;
+        // The extension counts toward the 255-byte name limit. Keep whole Unicode code points.
+        const byteLimit = 255 - ext.length - 1;
+        let used = 0;
+        let safe = "";
+        if (deviceName.test(name)) name = `_${name}`;
+        for (const ch of name) {
+          const cp = ch.codePointAt(0);
+          used += cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+          if (used > byteLimit) break;
+          safe += ch;
+        }
+        safe = safe.replace(/[\s.]+$/, "") || "pixelstudio_output";
+        if (deviceName.test(safe)) safe = `_${safe}`;
+        return `${safe}.${ext}`;
+      }
+
       function getNowExifDate() {
         const d = new Date();
         const pad = (n) => String(n).padStart(2, "0");
@@ -3586,17 +3646,18 @@
         const nw = Math.max(1, Math.floor(w * s));
         const nh = Math.max(1, Math.floor(h * s));
         const c = document.createElement("canvas");
-        c.width = nw;
-        c.height = nh;
-        const cx = c.getContext("2d");
-        if (!cx) {
+        try {
+          sizeCanvas(c, nw, nh);
+          const cx = c.getContext("2d");
+          if (!cx) throw new Error("无法分配工作画布，请尝试尺寸较小的图片");
+          cx.imageSmoothingEnabled = true;
+          cx.imageSmoothingQuality = "high";
+          drawResampled(cx, img, 0, 0, w, h, nw, nh, "high");
+          return { source: c, w: nw, h: nh, downscaled: true };
+        } catch (err) {
           releaseCanvas(c);
-          throw new Error("无法分配工作画布，请尝试尺寸较小的图片");
+          throw err;
         }
-        cx.imageSmoothingEnabled = true;
-        cx.imageSmoothingQuality = "high";
-        drawResampled(cx, img, 0, 0, w, h, nw, nh, "high");
-        return { source: c, w: nw, h: nh, downscaled: true };
       }
 
       function releaseCanvas(canvas) {
@@ -3616,7 +3677,7 @@
       async function loadImageFromFile(file, onLoaded) {
         const looksLikeImage = file && (
           (file.type && file.type.startsWith("image/")) ||
-          /\.(jpe?g|png|webp|gif|bmp|avif|svg|heic|heif|tiff?)$/i.test(file.name || "")
+          /\.(jpe?g|a?png|webp|gif|bmp|avif|svg|ico|cur|heic|heif|tiff?)$/i.test(file.name || "")
         );
         if (!looksLikeImage) {
           showToast("请选择有效的图片文件 (JPEG / PNG / WebP / BMP / GIF)");
@@ -3779,8 +3840,9 @@
       function initWorkspaceWithImage(img, meta) {
         const safe = ensureSafeSource(img);
         // Free the previous working canvases right away: big canvases are scarce on mobile browsers
-        if (state.transformedCanvas && state.transformedCanvas !== safe.source) releaseCanvas(state.transformedCanvas);
+        if (state.transformedSource !== state.sourceImg) releaseCanvas(state.transformedSource);
         if (state.sourceImg instanceof HTMLCanvasElement && state.sourceImg !== safe.source) releaseCanvas(state.sourceImg);
+        state.transformedSource = null;
         if (state.outputUrl) {
           URL.revokeObjectURL(state.outputUrl);
           state.outputUrl = null;
@@ -3788,18 +3850,15 @@
         state.outputBlob = null;
         compareAfterCache = null;
         releaseCanvas(els.compareAfterCanvas);
-        cropDragState = null;
-        compareDragPointer = null;
+        cancelActiveCropDrag(true);
+        cancelCompareDrag();
         imageSerial++;
-        clearTimeout(encodeTimer);
-        encodeTimer = null;
-        encodeSeq++;
+        cancelScheduledEncode();
         rawEncodeCache = null;
         lastScheduledEncodeKey = null;
         lastCompletedEncodeKey = null;
         outputGeometryKey = null;
         outputCompareLabel = "";
-        encodeInFlight = false;
         isEncodePending = false;
         state.hasImage = true;
         state.sourceImg = safe.source;
@@ -3834,6 +3893,8 @@
         els.iconLockClosed.style.display = "block";
         els.iconLockOpen.style.display = "none";
         els.estimatedSizeLabel.textContent = "-- KB";
+        // The previous picture's spec (or the "no image" placeholder) must not linger while the first encode runs
+        els.exportSpecSummary.textContent = "--";
         els.sizeDeltaPill.textContent = "等待编码";
         els.sizeDeltaPill.classList.remove("increase");
 
@@ -3898,8 +3959,9 @@
         const ext = ((meta.fileName || "").match(/\.([a-z0-9]+)$/i) || [])[1];
         const webpTarget = $("btnFormatWebp").style.display !== "none" ? "image/webp" : "image/png";
         const avifTarget = $("btnFormatAvif").style.display !== "none" ? "image/avif" : "image/png";
-        const byMime = { "image/jpeg": "image/jpeg", "image/png": "image/png", "image/webp": webpTarget, "image/avif": avifTarget, "image/gif": "image/png", "image/svg+xml": "image/png", "image/bmp": "image/png" };
-        const byExt = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: webpTarget, avif: avifTarget, gif: "image/png", svg: "image/png", bmp: "image/png" };
+        // Icons and animated PNGs carry transparency too: they must not fall through to the JPEG default
+        const byMime = { "image/jpeg": "image/jpeg", "image/png": "image/png", "image/apng": "image/png", "image/webp": webpTarget, "image/avif": avifTarget, "image/gif": "image/png", "image/svg+xml": "image/png", "image/bmp": "image/png", "image/x-icon": "image/png", "image/vnd.microsoft.icon": "image/png" };
+        const byExt = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", apng: "image/png", webp: webpTarget, avif: avifTarget, gif: "image/png", svg: "image/png", bmp: "image/png", ico: "image/png", cur: "image/png" };
         const target = byMime[meta.mimeType] || byExt[(ext || "").toLowerCase()] || "image/jpeg";
         if (target !== state.outputFormat) {
           const btn = document.querySelector(`#formatSegmented .segmented-btn[data-format="${target}"]`);
@@ -3924,37 +3986,37 @@
 
         // Free the previous full-size bitmap BEFORE allocating the next one: holding both at once
         // doubles the peak memory, which is what makes big photos fail on phones
-        const previousCanvas = state.transformedCanvas;
-        state.transformedCanvas = null;
+        const previousCanvas = state.transformedSource;
+        state.transformedSource = null;
         if (previousCanvas && previousCanvas !== state.sourceImg) releaseCanvas(previousCanvas);
 
-        if (state.rotation === 0 && !state.flipH && !state.flipV && state.sourceImg instanceof HTMLCanvasElement) {
-          state.transformedCanvas = state.sourceImg;
-        } else {
-          const tc = document.createElement("canvas");
-          tc.width = rotW;
-          tc.height = rotH;
-          const ctx = tc.getContext("2d");
-          if (!ctx) {
-            releaseCanvas(tc);
-            showToast("无法创建画布，可能是内存不足");
-            clearOutput();
-            setEncodePending(false);
-            return;
-          }
-
-          // Exact integer matrix: Math.cos(π/2) is not 0, and a 1e-16 skew can make the browser
-          // resample (blur) the edges of a quarter turn. Smoothing off keeps this step bit-exact.
-          const [cs, sn] = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] }[state.rotation] || [1, 0];
-          const fx = state.flipH ? -1 : 1;
-          const fy = state.flipV ? -1 : 1;
-          ctx.imageSmoothingEnabled = false;
-          ctx.setTransform(cs * fx, sn * fx, -sn * fy, cs * fy, rotW / 2, rotH / 2);
-          ctx.drawImage(state.sourceImg, -srcW / 2, -srcH / 2);
-          state.transformedCanvas = tc;
-        }
+        // Commit geometry even if a bitmap allocation fails, so another rotation or reset can recover.
         state.rotW = rotW;
         state.rotH = rotH;
+        if (state.rotation === 0 && !state.flipH && !state.flipV) {
+          // A decoded image already has the correct pixels. Avoid keeping a second full-size bitmap.
+          state.transformedSource = state.sourceImg;
+        } else {
+          const tc = document.createElement("canvas");
+          try {
+            sizeCanvas(tc, rotW, rotH);
+            const ctx = tc.getContext("2d");
+            if (!ctx) throw new Error("无法创建画布，可能是内存不足");
+
+            // Exact integer matrix with smoothing off keeps quarter turns pixel-aligned.
+            const [cs, sn] = { 0: [1, 0], 90: [0, 1], 180: [-1, 0], 270: [0, -1] }[state.rotation];
+            const fx = state.flipH ? -1 : 1;
+            const fy = state.flipV ? -1 : 1;
+            ctx.imageSmoothingEnabled = false;
+            ctx.setTransform(cs * fx, sn * fx, -sn * fy, cs * fy, rotW / 2, rotH / 2);
+            ctx.drawImage(state.sourceImg, -srcW / 2, -srcH / 2);
+            state.transformedSource = tc;
+          } catch (err) {
+            releaseCanvas(tc);
+            console.error(err);
+            showToast("无法创建变换后的画布，请尝试较小的图片或重置图像");
+          }
+        }
 
         if (resetCropAndResize) {
           state.cropX = 0;
@@ -3965,8 +4027,7 @@
           state.targetH = rotH;
           state.resizeScale = 1;
           state.resizeScaleY = null;
-          els.sliderScalePercent.value = 100;
-          els.scalePercentBadge.textContent = "100%";
+          state.resizeLimit = 1;
         } else {
           // Clamp existing crop within new rotated bounds
           state.cropW = Math.min(state.cropW, rotW);
@@ -3978,6 +4039,14 @@
 
         syncCropInputs();
         syncResizeInputs();
+        if (!state.transformedSource) {
+          compareBeforeKey = null;
+          releaseCanvas(els.previewCanvas);
+          els.cropOverlay.classList.remove("visible");
+          clearOutput();
+          setEncodePending(false);
+          return;
+        }
         if (state.compareMode) renderCompareView();
         else renderStageCanvas();
         scheduleOutputEncode();
@@ -4036,67 +4105,51 @@
         els.resizeSourceInfo.textContent = `当前裁剪区域: ${Math.round(state.cropW)} × ${Math.round(state.cropH)} px`;
       }
 
-      // Pixel budget with a little headroom, because target sizes are rounded to whole pixels after scaling
-      const SAFE_CANVAS_PIXELS = MAX_CANVAS_PIXELS * 0.99;
-      // Largest uniform output scale of a cw x ch crop. It honours the per-edge canvas limit AND the pixel
-      // budget: otherwise the slider / presets offered sizes that the encoder always rejected at export time
-      function maxUniformScale(cw, ch) {
-        const bySide = Math.min(MAX_CANVAS_SIDE / cw, MAX_CANVAS_SIDE / ch);
-        let byBudget = Math.sqrt(SAFE_CANVAS_PIXELS / (cw * ch));
-        // The 1% headroom must not push a crop that already fits below its native size: 1:1 is exact
-        // (no rounding), so a crop within the budget can always be exported at 100%
-        if (cw * ch <= MAX_CANVAS_PIXELS) byBudget = Math.max(byBudget, 1);
-        return Math.min(bySide, byBudget);
+      function fitResizeScales(cw, ch, sx, sy) {
+        const sizeAt = (k) => ({
+          w: Math.max(1, Math.round(cw * sx * k)),
+          h: Math.max(1, Math.round(ch * sy * k))
+        });
+        const cap = Math.min(1, MAX_CANVAS_SIDE / (cw * sx), MAX_CANVAS_SIDE / (ch * sy));
+        const fits = ({ w, h }) => w * h <= MAX_CANVAS_PIXELS && w <= MAX_CANVAS_SIDE && h <= MAX_CANVAS_SIDE;
+        const size = sizeAt(cap);
+        if (fits(size)) return { ...size, limit: cap };
+
+        // Check the actual integer dimensions, not a continuous area estimate that can round up past the budget.
+        let lo = 0, hi = cap;
+        for (let i = 0; i < 32; i++) {
+          const mid = (lo + hi) / 2;
+          if (fits(sizeAt(mid))) lo = mid;
+          else hi = mid;
+        }
+        return { ...sizeAt(lo), limit: lo };
       }
 
-      // keepStretch: the crop changed but the user's scale did not, so an unlocked (non-uniform)
-      // width/height ratio must survive instead of snapping back to the crop's own aspect.
-      function syncResizeFromCrop(scaleFactor = null, keepStretch = false, preserveSlider = false) {
-        const cw = Math.max(1, Math.round(state.cropW));
-        const ch = Math.max(1, Math.round(state.cropH));
-        if (scaleFactor !== null) {
-          let sx = scaleFactor;
-          let sy = keepStretch && !state.lockAspect && state.resizeScaleY ? state.resizeScaleY : scaleFactor;
-          if (sy === sx) state.resizeScaleY = null;
-          if (state.lockAspect || sy === sx) {
-            const maxUniform = maxUniformScale(cw, ch);
-            if (sx > maxUniform) sx = sy = maxUniform;
-          } else {
-            sx = Math.min(sx, MAX_CANVAS_SIDE / cw);
-            sy = Math.min(sy, MAX_CANVAS_SIDE / ch);
-            const area = sx * sy * cw * ch;
-            if (area > SAFE_CANVAS_PIXELS) {
-              const k = Math.sqrt(SAFE_CANVAS_PIXELS / area);
-              sx *= k;
-              sy *= k;
-            }
-            state.resizeScaleY = sy;
-          }
-          state.resizeScale = sx;
-          state.targetW = Math.max(1, Math.min(MAX_CANVAS_SIDE, Math.round(cw * sx)));
-          state.targetH = Math.max(1, Math.min(MAX_CANVAS_SIDE, Math.round(ch * sy)));
-        } else if (state.lockAspect) {
-          const aspect = cw / ch;
-          let h = Math.max(1, Math.round(state.targetW / aspect));
-          if (h > MAX_CANVAS_SIDE) {
-            h = MAX_CANVAS_SIDE;
-            state.targetW = Math.max(1, Math.round(h * aspect));
-          }
-          state.targetH = h;
-        }
-        syncResizeInputs(preserveSlider);
+      function syncResizeFromCrop(skipInput = null) {
+        const sx = state.resizeScale;
+        const sy = state.resizeScaleY ?? sx;
+        const { w, h, limit } = fitResizeScales(state.cropW, state.cropH, sx, sy);
+        state.targetW = w;
+        state.targetH = h;
+        state.resizeLimit = limit;
+        syncResizeInputs(skipInput);
       }
 
-      function syncResizeInputs(preserveSlider = false) {
-        els.inpResizeW.value = Math.round(state.targetW);
-        els.inpResizeH.value = Math.round(state.targetH);
-        const pct = Math.round((state.targetW / Math.max(1, state.cropW)) * 100);
-        // Only skip rewriting the slider while the slider itself is driving the resize (avoiding jitter
-        // on small crops); checking activeElement fails on Safari where button clicks do not move focus
-        if (!preserveSlider) {
-          els.sliderScalePercent.value = Math.max(10, Math.min(200, pct));
-        }
-        els.scalePercentBadge.textContent = `${pct}%`;
+      function setUniformResize(scale, skipInput = null) {
+        state.resizeScale = scale;
+        state.resizeScaleY = null;
+        syncResizeFromCrop(skipInput);
+      }
+
+      function syncResizeInputs(skipInput = null) {
+        if (skipInput !== els.inpResizeW) els.inpResizeW.value = state.targetW;
+        if (skipInput !== els.inpResizeH) els.inpResizeH.value = state.targetH;
+        const pct = state.resizeScale * state.resizeLimit * 100;
+        const label = (n) => n < 1 ? "<1%" : `${Math.round(n)}%`;
+        els.sliderScalePercent.value = Math.round(pct);
+        const sy = state.resizeScaleY;
+        els.scalePercentBadge.textContent = sy === null || sy === state.resizeScale
+          ? label(pct) : `${label(pct)} × ${label(sy * state.resizeLimit * 100)}`;
         syncResizePresetChips();
       }
 
@@ -4125,16 +4178,18 @@
         });
       }
 
+      let compareBeforeKey = null;
+
       // Fit stage canvas cleanly into viewport while preserving exact aspect ratio
       function renderStageCanvas() {
-        if (!state.hasImage || !state.transformedCanvas) return;
+        if (!state.hasImage || !state.transformedSource) return;
 
         const vpRect = els.canvasViewport.getBoundingClientRect();
         const vpStyle = getComputedStyle(els.canvasViewport);
         const padX = (parseFloat(vpStyle.paddingLeft) || 0) + (parseFloat(vpStyle.paddingRight) || 0);
         const padY = (parseFloat(vpStyle.paddingTop) || 0) + (parseFloat(vpStyle.paddingBottom) || 0);
-        const maxW = Math.max(120, vpRect.width - padX - 4);
-        const maxH = Math.max(120, vpRect.height - padY - 8);
+        const maxW = Math.max(1, vpRect.width - padX - 4);
+        const maxH = Math.max(1, vpRect.height - padY - 8);
 
         // In compare mode the stage shows the OUTPUT (cropped + resized), so follow its aspect ratio;
         // otherwise follow the full rotated source so the crop box maps 1:1 onto it.
@@ -4159,27 +4214,40 @@
         sizeCanvas(els.previewCanvas, Math.round(dispW * dpr), Math.round(dispH * dpr));
 
         const ctx = els.previewCanvas.getContext("2d");
-        ctx.imageSmoothingEnabled = state.resampleQuality !== "pixelated";
+        if (!ctx) return;
+        const w = els.previewCanvas.width, h = els.previewCanvas.height;
+        const smoothing = state.resampleQuality !== "pixelated";
+        ctx.imageSmoothingEnabled = smoothing;
         ctx.imageSmoothingQuality = "high";
-        ctx.clearRect(0, 0, els.previewCanvas.width, els.previewCanvas.height);
         if (state.compareMode) {
-          // "Before" half = untouched cropped source pixels
-          ctx.drawImage(
-            state.transformedCanvas,
-            state.cropX, state.cropY, state.cropW, state.cropH,
-            0, 0, els.previewCanvas.width, els.previewCanvas.height
-          );
+          const key = `${buildGeometryKey(state.targetW, state.targetH)}|${w}x${h}|${smoothing}`;
+          if (key !== compareBeforeKey) {
+            ctx.clearRect(0, 0, w, h);
+            const { transformedSource: src, cropX: x, cropY: y, cropW: cw, cropH: ch } = state;
+            try {
+              // The source side must also sample only the crop, not the pixels next to it.
+              drawResampled(ctx, src, x, y, cw, ch, w, h, smoothing ? "medium" : "pixelated");
+              compareBeforeKey = key;
+            } catch {
+              // A large temporary crop may not fit on a constrained device. Show nearest-neighbour instead.
+              ctx.imageSmoothingEnabled = false;
+              ctx.drawImage(src, x, y, cw, ch, 0, 0, w, h);
+              compareBeforeKey = key;
+            }
+          }
           updateCompareClip();
         } else {
+          compareBeforeKey = null;
           els.previewCanvas.style.clipPath = "";
-          ctx.drawImage(state.transformedCanvas, 0, 0, els.previewCanvas.width, els.previewCanvas.height);
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(state.transformedSource, 0, 0, w, h);
         }
 
         updateCropBoxVisual(dispW, dispH);
       }
 
       function updateCropBoxVisual(dispW, dispH) {
-        if (!state.hasImage) return;
+        if (!state.transformedSource) return;
         const innerW = dispW || els.canvasStageInner.clientWidth;
         const innerH = dispH || els.canvasStageInner.clientHeight;
         if (!innerW || !innerH) return;
@@ -4257,7 +4325,7 @@
         state.cropX = x; state.cropY = y; state.cropW = w; state.cropH = h;
         if (sizeChanged) {
           syncCropInputs();
-          syncResizeFromCrop(state.resizeScale, true);
+          syncResizeFromCrop();
         } else {
           els.inpCropX.value = x;
           els.inpCropY.value = y;
@@ -4273,9 +4341,9 @@
       let cropDragState = null;
 
       els.cropBox.addEventListener("pointerdown", (e) => {
-        if (!state.hasImage) return;
-        // Right / middle clicks and extra touches must not start (or hijack) a crop drag
-        if (!e.isPrimary || (e.pointerType === "mouse" && e.button !== 0)) return;
+        if (!state.transformedSource || cropDragState) return;
+        // Extra pointers (including a primary pointer from a different device) must not steal a drag.
+        if (!e.isPrimary || e.button !== 0) return;
         e.preventDefault();
         e.stopPropagation();
         const handle = e.target.closest(".crop-handle");
@@ -4318,8 +4386,8 @@
         cropDragState.moved = true;
         const dxPx = ((e.clientX - startX) / stageW) * state.rotW;
         const dyPx = ((e.clientY - startY) / stageH) * state.rotH;
-        const minW = Math.min(16, state.rotW);
-        const minH = Math.min(16, state.rotH);
+        // Match the keyboard and numeric inputs; a drag from a tiny crop must not jump out to 16 px.
+        const minW = 1, minH = 1;
         const lockedRatio = parseRatioValue(state.cropRatio);
 
         let nx = initCropX;
@@ -4390,7 +4458,7 @@
 
         if (sizeChanged) {
           syncCropInputs();
-          syncResizeFromCrop(state.resizeScale, true);
+          syncResizeFromCrop();
         } else {
           els.inpCropX.value = nextX;
           els.inpCropY.value = nextY;
@@ -4408,9 +4476,15 @@
       window.addEventListener("pointercancel", endCropDrag);
       els.cropBox.addEventListener("lostpointercapture", endCropDrag);
 
+      function releaseCapturedPointer(el, id) {
+        if (el.hasPointerCapture(id)) el.releasePointerCapture(id);
+      }
+
       function cancelActiveCropDrag(willScheduleEncode = true) {
         if (!cropDragState) return;
+        const { pointerId } = cropDragState;
         cropDragState = null;
+        releaseCapturedPointer(els.cropBox, pointerId);
         if (!willScheduleEncode) scheduleOutputEncode();
       }
 
@@ -4443,8 +4517,7 @@
         state.cropY = Math.round((state.rotH - state.cropH) / 2);
 
         syncCropInputs();
-        const currentScale = state.resizeScale;
-        syncResizeFromCrop(currentScale, true);
+        syncResizeFromCrop();
         if (state.compareMode) renderCompareView();
         else updateCropBoxVisual();
         scheduleOutputEncode();
@@ -4459,64 +4532,72 @@
       let lastCompletedEncodeKey = null;
       let outputGeometryKey = null;
       let outputCompareLabel = "";
-      let encodeInFlight = false;
+      let encodeWorkerActive = false;
+      let encodeQueued = false;
       let isEncodePending = false;
+
+      function cancelScheduledEncode() {
+        clearTimeout(encodeTimer);
+        encodeTimer = null;
+        encodeQueued = false;
+        encodeSeq++;
+      }
 
       // The result on screen no longer matches the settings (e.g. mid crop drag): block export of the
       // stale file now, but leave the actual encode to whoever finishes the gesture
       function invalidateOutput() {
         if (!state.hasImage) return;
-        clearTimeout(encodeTimer);
-        encodeTimer = null;
-        encodeInFlight = false;
+        cancelScheduledEncode();
         lastScheduledEncodeKey = null;
-        encodeSeq++;
         setEncodePending(true);
       }
 
       function scheduleOutputEncode() {
         if (!state.hasImage) return;
         const nextKey = buildEncodeKey();
-        if (nextKey === lastScheduledEncodeKey && (encodeTimer !== null || encodeInFlight || state.outputBlob !== null)) {
-          return;
-        }
-        // Reverting back to the already-encoded state (during debounce, mid-encode, or after a crop drag) needs no re-encode
+        if (nextKey === lastScheduledEncodeKey) return;
+        cancelScheduledEncode();
+        lastScheduledEncodeKey = nextKey;
+
+        // Reverting to the already-encoded state needs no new bitmap or encode.
         if (nextKey === lastCompletedEncodeKey && state.outputBlob !== null) {
-          clearTimeout(encodeTimer);
-          encodeTimer = null;
-          encodeSeq++;
-          encodeInFlight = false;
-          lastScheduledEncodeKey = nextKey;
           setEncodePending(false);
           if (state.compareMode) renderCompareView();
           return;
         }
-        lastScheduledEncodeKey = nextKey;
-        clearTimeout(encodeTimer);
-        // Invalidate any encode still in flight, otherwise its late result would re-enable
-        // the export button with a stale file while the new encode is only pending
-        encodeSeq++;
-        encodeInFlight = false;
         setEncodePending(true);
         encodeTimer = setTimeout(() => {
           encodeTimer = null;
-          try {
-            generateOutputBlob();
-          } catch (err) {
-            // e.g. out-of-memory in getImageData; never leave the UI stuck on "编码中…"
+          encodeQueued = true;
+          void runNextEncode();
+        }, 140);
+      }
+
+      async function runNextEncode() {
+        if (encodeWorkerActive || !encodeQueued) return;
+        encodeWorkerActive = true;
+        encodeQueued = false;
+        const seq = encodeSeq;
+        try {
+          await generateOutputBlob(seq);
+        } catch (err) {
+          if (seq === encodeSeq) {
             console.error(err);
-            showToast("编码失败：" + ((err && err.message) || "内存不足，请降低目标尺寸"));
+            showToast("编码失败：" + (err?.message || "内存不足，请降低目标尺寸"));
             clearOutput();
             setEncodePending(false);
           }
-        }, 140);
+        } finally {
+          encodeWorkerActive = false;
+          // A still-running canvas encode cannot be aborted. Only start the newest settled request
+          // after it releases its backing store, rather than allocating multiple full-size canvases.
+          if (encodeQueued) void runNextEncode();
+        }
       }
 
       // Drop the last encoded result so a failed encode can never export a stale file
       function clearOutput() {
-        clearTimeout(encodeTimer);
-        encodeTimer = null;
-        encodeSeq++;
+        cancelScheduledEncode();
         if (state.outputUrl) URL.revokeObjectURL(state.outputUrl);
         state.outputUrl = null;
         state.outputBlob = null;
@@ -4524,7 +4605,6 @@
         lastCompletedEncodeKey = null;
         outputGeometryKey = null;
         outputCompareLabel = "";
-        encodeInFlight = false;
         isEncodePending = false;
         compareAfterCache = null;
         els.estimatedSizeLabel.textContent = "-- KB";
@@ -4541,8 +4621,9 @@
         // Crop drags call this on every pointer move: only write the label when it really changes
         const label = pending ? "编码中…" : "导出保存图片";
         if (els.btnDownloadText.textContent !== label) els.btnDownloadText.textContent = label;
-        if (pending && state.compareMode && els.compareRightLabel.textContent !== "编码中…") {
-          els.compareRightLabel.textContent = "编码中…";
+        if (pending && state.compareMode) {
+          clearCompareAfter();
+          if (els.compareRightLabel.textContent !== "编码中…") els.compareRightLabel.textContent = "编码中…";
         }
       }
 
@@ -4553,6 +4634,18 @@
         let cur = src;
         let cx = sx, cy = sy, cw = sw, ch = sh;
         try {
+          // drawImage filters against the edges of the entire source bitmap, not the source rect.
+          // Isolate cropped pixels at native size before smoothing, so an adjacent pixel cannot bleed in.
+          if (quality !== "pixelated" && (sw !== dw || sh !== dh) &&
+              (sx || sy || sw !== (src.naturalWidth || src.width) || sh !== (src.naturalHeight || src.height))) {
+            cur = document.createElement("canvas");
+            sizeCanvas(cur, sw, sh);
+            const cropCtx = cur.getContext("2d");
+            if (!cropCtx) throw new Error("无法分配裁剪画布，请降低图片尺寸");
+            cropCtx.imageSmoothingEnabled = false;
+            cropCtx.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+            cx = cy = 0;
+          }
           if (quality === "high") {
             while (cw >= dw * 2 || ch >= dh * 2) {
               let nw = cw >= dw * 2 ? Math.max(dw, Math.ceil(cw / 2)) : cw;
@@ -4618,7 +4711,7 @@
           imageSerial, state.rotation, state.flipH, state.flipV,
           Math.round(state.cropX), Math.round(state.cropY), Math.round(state.cropW), Math.round(state.cropH),
           outW, outH, state.outputFormat, usesMatte ? state.matteColor : "", state.resampleQuality,
-          isLossy ? state.compressionRate : "lossless"
+          isLossy ? state.compressionQuality : "lossless"
         ]);
       }
 
@@ -4654,130 +4747,73 @@
         ])}`;
       }
 
-      function generateOutputBlob() {
+      async function generateOutputBlob(seq) {
         if (!state.hasImage) return;
-        if (!state.transformedCanvas) {
-          // The rotated bitmap could not be allocated: do not leave the UI stuck on "编码中…"
-          clearOutput();
-          setEncodePending(false);
-          return;
-        }
-        const seq = ++encodeSeq;
+        if (!state.transformedSource) throw new Error("无法创建画布，可能是内存不足");
 
-        const outW = Math.max(1, Math.round(state.targetW));
-        const outH = Math.max(1, Math.round(state.targetH));
-
+        const outW = state.targetW;
+        const outH = state.targetH;
         if (outW * outH > MAX_CANVAS_PIXELS || outW > MAX_CANVAS_SIDE || outH > MAX_CANVAS_SIDE) {
-          showToast(`目标尺寸 ${outW}×${outH} 超出浏览器画布上限，请降低输出尺寸`);
-          clearOutput();
-          setEncodePending(false);
-          return;
+          throw new Error(`目标尺寸 ${outW}×${outH} 超出浏览器画布上限，请降低输出尺寸`);
         }
 
-        encodeInFlight = true;
         const requestedFormat = state.outputFormat;
         const pixelKey = buildPixelKey(outW, outH);
-        if (rawEncodeCache && rawEncodeCache.key === pixelKey) {
-          // Only metadata (EXIF / strip switch) changed since the last encode: reuse the compressed pixels
-          finishEncode(rawEncodeCache.blob, requestedFormat, seq, outW, outH);
+        if (rawEncodeCache?.key === pixelKey) {
+          await finishEncode(rawEncodeCache.blob, requestedFormat, seq, outW, outH);
           return;
         }
 
         const outCanvas = document.createElement("canvas");
-        outCanvas.width = outW;
-        outCanvas.height = outH;
-        // BMP and lossy PNG read the pixels back (getImageData): ask for a CPU-backed canvas up front
-        const needsReadback = state.outputFormat === "image/bmp" || (state.outputFormat === "image/png" && state.compressionMode !== "lossless");
-        const ctx = outCanvas.getContext("2d", { willReadFrequently: needsReadback });
-        if (!ctx) releaseCanvas(outCanvas);
-        if (!ctx) {
-          showToast("无法创建画布，可能是内存不足");
-          clearOutput();
-          setEncodePending(false);
-          return;
-        }
-
+        const isBmp = requestedFormat === "image/bmp";
         const isLossless = state.compressionMode === "lossless";
-        const quality = isLossless ? 1.0 : Math.max(0.01, Math.min(0.99, (100 - state.compressionRate) / 100));
-
+        const quantize = requestedFormat === "image/png" && !isLossless;
+        const quality = isLossless ? 1 : state.compressionQuality / 100;
+        let rawBlob;
         try {
-          // Fill background matte if target format has no alpha channel (JPEG / BMP)
-          if (state.outputFormat === "image/jpeg" || state.outputFormat === "image/bmp") {
+          sizeCanvas(outCanvas, outW, outH);
+          const ctx = outCanvas.getContext("2d", { willReadFrequently: isBmp || quantize });
+          if (!ctx) throw new Error("无法创建画布，可能是内存不足");
+          if (requestedFormat === "image/jpeg" || isBmp) {
             ctx.fillStyle = state.matteColor;
             ctx.fillRect(0, 0, outW, outH);
           }
 
-          // Configure resampling quality
-          if (state.resampleQuality === "pixelated") {
-            ctx.imageSmoothingEnabled = false;
-          } else {
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = state.resampleQuality; // 'high' or 'medium'
-          }
+          ctx.imageSmoothingEnabled = state.resampleQuality !== "pixelated";
+          if (ctx.imageSmoothingEnabled) ctx.imageSmoothingQuality = state.resampleQuality;
+          drawResampled(ctx, state.transformedSource, state.cropX, state.cropY, state.cropW, state.cropH,
+            outW, outH, state.resampleQuality);
 
-          // Draw exact cropped source region into target output dimensions
-          drawResampled(
-            ctx,
-            state.transformedCanvas,
-            Math.round(state.cropX),
-            Math.round(state.cropY),
-            Math.round(state.cropW),
-            Math.round(state.cropH),
-            outW,
-            outH,
-            state.resampleQuality
-          );
-
-          // Handle BMP natively via pure JS encoder; release outCanvas before allocating the BMP buffer
-          if (state.outputFormat === "image/bmp") {
+          if (isBmp) {
             const imgData = ctx.getImageData(0, 0, outW, outH);
-            releaseCanvas(outCanvas);
-            const bmpBlob = CodecHelper.encodeBmp(imgData);
-            rawEncodeCache = { key: pixelKey, blob: bmpBlob };
-            finalizeOutputBlob(bmpBlob, outW, outH);
-            return;
+            releaseCanvas(outCanvas); // Return the bitmap before allocating the BMP byte buffer.
+            rawBlob = CodecHelper.encodeBmp(imgData);
+          } else {
+            if (quantize) CodecHelper.quantizeCanvasForLossyPng(ctx, outW, outH, quality);
+            rawBlob = await new Promise((resolve) => outCanvas.toBlob(resolve, requestedFormat, quality));
           }
-
-          // If PNG + Lossy mode is chosen, perform perceptual color quantization so compression slider genuinely reduces size
-          if (state.outputFormat === "image/png" && !isLossless) {
-            CodecHelper.quantizeCanvasForLossyPng(ctx, outW, outH, quality);
-          }
-        } catch (err) {
-          releaseCanvas(outCanvas);
-          throw err;
+        } finally {
+          if (outCanvas.width || outCanvas.height) releaseCanvas(outCanvas);
         }
-
-        outCanvas.toBlob(async (rawBlob) => {
-          // The encoded bytes are all we need: hand the (possibly huge) bitmap back immediately
-          releaseCanvas(outCanvas);
-          if (seq !== encodeSeq) return; // A newer encode has been requested meanwhile
-
-          // A null blob means the encode itself failed (e.g. out of memory). A blob of another type (the browser
-          // silently substituted PNG) means the format is unsupported: only that case may fall back to PNG
-          if (!rawBlob || (rawBlob.type && rawBlob.type !== requestedFormat)) {
-            encodeInFlight = false;
-            if (rawBlob && requestedFormat !== "image/png") {
-              lastScheduledEncodeKey = null;
-              showToast("当前浏览器不支持导出该格式，已自动回退为 PNG");
-              if (requestedFormat === "image/avif") $("btnFormatAvif").style.display = "none";
-              if (requestedFormat === "image/webp") $("btnFormatWebp").style.display = "none";
-              // Go through the real button so banner / matte row / compression mode stay consistent
-              document.querySelector('#formatSegmented .segmented-btn[data-format="image/png"]').click();
-              if (!state.modeTouched && state.compressionMode !== "lossless") {
-                state.autoLosslessForPng = true;
-                document.querySelector('#compressionModeSegmented .segmented-btn[data-mode="lossless"]').click();
-              }
-            } else {
-              showToast("编码失败：输出尺寸过大或内存不足，请降低目标尺寸");
-              clearOutput();
-              setEncodePending(false);
-            }
-            return;
+        if (seq !== encodeSeq) return;
+        if (!rawBlob) throw new Error("输出尺寸过大或内存不足，请降低目标尺寸");
+        if (rawBlob.type !== requestedFormat) {
+          if (rawBlob.type !== "image/png" || requestedFormat === "image/png") {
+            throw new Error("浏览器返回了意外的输出格式");
           }
-
-          rawEncodeCache = { key: pixelKey, blob: rawBlob }; // Metadata-only edits can reuse these bytes
-          finishEncode(rawBlob, requestedFormat, seq, outW, outH);
-        }, requestedFormat, quality);
+          showToast("当前浏览器不支持导出该格式，已自动回退为 PNG");
+          if (requestedFormat === "image/avif") $("btnFormatAvif").style.display = "none";
+          if (requestedFormat === "image/webp") $("btnFormatWebp").style.display = "none";
+          // Encode again: the PNG fallback must not inherit the JPEG matte or skip PNG quantization.
+          document.querySelector('#formatSegmented .segmented-btn[data-format="image/png"]').click();
+          if (!state.modeTouched && state.compressionMode !== "lossless") {
+            state.autoLosslessForPng = true;
+            document.querySelector('#compressionModeSegmented .segmented-btn[data-mode="lossless"]').click();
+          }
+          return;
+        }
+        rawEncodeCache = { key: pixelKey, blob: rawBlob };
+        await finishEncode(rawBlob, requestedFormat, seq, outW, outH);
       }
 
       // Everything after pixel encoding: write / strip metadata, then publish the result.
@@ -4788,6 +4824,7 @@
           return;
         }
         let finalBlob = rawBlob;
+        let webpLossless = false;
         readExifFromInputs();
 
         try {
@@ -4808,29 +4845,37 @@
             const buf = await rawBlob.arrayBuffer();
             if (seq !== encodeSeq) return;
             const bytes = new Uint8Array(buf);
+            if (state.compressionMode === "lossless") {
+              for (const { type } of ExifEngine._webpChunks(new DataView(buf))) {
+                if (type === 0x5650384c) webpLossless = true; // VP8L, not lossy VP8.
+              }
+            }
             const processed = ExifEngine.injectWebpExif(bytes, state.stripExif, state.exif, outW, outH);
             if (processed !== bytes) finalBlob = new Blob([processed], { type: "image/webp" });
           }
         } catch (err) {
-          console.warn("EXIF 写入失败，已输出不含元数据的文件", err);
-          if (seq === encodeSeq) showToast("EXIF 写入失败，已输出不含元数据的文件：" + ((err && err.message) || err));
+          if (seq !== encodeSeq) return;
+          // Never fall back to unverified bytes when the user explicitly requested privacy stripping.
+          if (state.stripExif) throw new Error("无法确认 EXIF 已清除，未导出图片", { cause: err });
+          console.warn("EXIF 写入失败，已保留编码器原始结果", err);
+          showToast("EXIF 写入失败，导出文件未包含编辑后的元数据：" + (err?.message || err));
         }
 
         if (seq !== encodeSeq) return;
-        finalizeOutputBlob(finalBlob, outW, outH);
+        finalizeOutputBlob(finalBlob, outW, outH, webpLossless);
       }
 
-      function finalizeOutputBlob(blob, outW, outH) {
-        if (state.outputUrl) {
-          URL.revokeObjectURL(state.outputUrl);
-        }
-        encodeInFlight = false;
+      function finalizeOutputBlob(blob, outW, outH, webpLossless = false) {
+        const url = URL.createObjectURL(blob);
+        if (state.outputUrl) URL.revokeObjectURL(state.outputUrl);
         state.outputBlob = blob;
-        state.outputUrl = URL.createObjectURL(blob);
+        state.outputUrl = url;
         lastCompletedEncodeKey = lastScheduledEncodeKey;
         outputGeometryKey = buildGeometryKey(outW, outH);
-        const compareModeStr = state.compressionMode === "lossless" ? "无损输出" : `压缩率 ${state.compressionRate}%`;
-        outputCompareLabel = `${compareModeStr} (${formatBytes(blob.size)})`;
+        const modeText = blob.type === "image/bmp" ? "未压缩" : state.compressionMode === "lossy"
+          ? `质量 ${state.compressionQuality}/100` : blob.type === "image/png" || webpLossless
+            ? "无损" : "最高画质（非无损）";
+        outputCompareLabel = `${modeText} (${formatBytes(blob.size)})`;
         compareAfterCache = null; // Stale decoded copy of the previous output
         setEncodePending(false);
 
@@ -4842,10 +4887,6 @@
           "image/avif": "AVIF"
         };
         const fmtName = fmtExtMap[state.outputFormat] || "IMG";
-        const modeText = state.compressionMode === "lossless"
-          ? "无损"
-          : `有损 ${100 - state.compressionRate}%画质`;
-
         els.exportSpecSummary.textContent = `${outW}×${outH} · ${fmtName} (${modeText})`;
         els.estimatedSizeLabel.textContent = formatBytes(blob.size);
 
@@ -4871,63 +4912,73 @@
       /* ======================================================================
          MODULE 9: BEFORE / AFTER VISUAL SPLIT COMPARISON
          ====================================================================== */
-      let compareAfterCache = null; // { url, img, ready } of the decoded "after" image
+      let compareAfterCache = null; // Decoded output (or failure), keyed by object URL
+
+      function clearCompareAfter() {
+        const canvas = els.compareAfterCanvas;
+        if (canvas.width || canvas.height) releaseCanvas(canvas);
+      }
 
       function paintCompareAfter(img) {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const w = Math.round(els.canvasStageInner.clientWidth * dpr);
         const h = Math.round(els.canvasStageInner.clientHeight * dpr);
-        if (!w || !h) return;
+        if (!w || !h) return false;
         sizeCanvas(els.compareAfterCanvas, w, h);
         const aCtx = els.compareAfterCanvas.getContext("2d");
+        if (!aCtx) return false;
         aCtx.imageSmoothingEnabled = state.resampleQuality !== "pixelated";
         aCtx.imageSmoothingQuality = "high";
         aCtx.clearRect(0, 0, w, h);
         aCtx.drawImage(img, 0, 0, w, h);
-        updateCompareClip();
+        return true;
+      }
+
+      function isCurrentCompareOutput(url) {
+        return Boolean(state.compareMode && state.transformedSource && !isEncodePending && url &&
+          url === state.outputUrl && outputGeometryKey === buildGeometryKey(state.targetW, state.targetH));
       }
 
       function renderCompareView() {
         if (!state.compareMode) return;
-
-        // Stage is re-fitted to the OUTPUT aspect ratio and the "before" (cropped source) half is painted
         renderStageCanvas();
-
-        const outW = Math.max(1, Math.round(state.targetW));
-        const outH = Math.max(1, Math.round(state.targetH));
-        if (!state.outputUrl || !state.outputBlob || outputGeometryKey !== buildGeometryKey(outW, outH)) {
-          // No (valid) encoded result yet, geometry changed, or the encode failed: never leave a stale "after" image behind
-          const aCanvas = els.compareAfterCanvas;
-          aCanvas.getContext("2d").clearRect(0, 0, aCanvas.width, aCanvas.height);
+        const url = state.outputUrl;
+        if (!isCurrentCompareOutput(url)) {
+          clearCompareAfter();
           els.compareRightLabel.textContent = isEncodePending ? "编码中…" : "输出预览";
           return;
         }
 
-        // Decode the actual encoded output so the "after" half shows true compression artifacts.
-        // The decoded image is cached per output URL: a window resize repaints this view on every
-        // frame and must not re-decode the whole file each time.
-        const url = state.outputUrl;
+        // Keep a decoded image per URL. A late callback must not paint after the settings changed,
+        // even if the old URL is still retained so that the user can revert to it.
         let entry = compareAfterCache;
         if (!entry || entry.url !== url) {
+          clearCompareAfter();
           const img = new Image();
-          entry = compareAfterCache = { url, img, ready: false };
-          img.onload = () => {
-            entry.ready = true;
-            if (compareAfterCache === entry && url === state.outputUrl && state.compareMode) paintCompareAfter(img);
+          entry = compareAfterCache = { url, img, ready: false, failed: false };
+          const previewSettled = (ok) => {
+            entry.ready = ok;
+            entry.failed = !ok;
+            if (compareAfterCache === entry && isCurrentCompareOutput(url)) renderCompareView();
           };
-          img.onerror = () => {
-            if (compareAfterCache === entry) {
-              compareAfterCache = null;
-              const aCanvas = els.compareAfterCanvas;
-              aCanvas.getContext("2d").clearRect(0, 0, aCanvas.width, aCanvas.height);
-            }
-          };
+          img.onload = () => previewSettled(true);
+          img.onerror = () => previewSettled(false);
           img.src = url;
-        } else if (entry.ready) {
-          paintCompareAfter(entry.img);
         }
-
-        els.compareRightLabel.textContent = isEncodePending ? "编码中…" : (outputCompareLabel || "输出预览");
+        if (!entry.ready && !entry.failed) {
+          els.compareRightLabel.textContent = "正在加载预览…";
+          return;
+        }
+        try {
+          if (entry.ready && paintCompareAfter(entry.img)) {
+            els.compareRightLabel.textContent = outputCompareLabel || "输出预览";
+            return;
+          }
+        } catch (err) {
+          console.warn("无法绘制输出预览", err);
+        }
+        clearCompareAfter();
+        els.compareRightLabel.textContent = "输出预览不可用";
       }
 
       function updateCompareClip() {
@@ -4961,8 +5012,15 @@
       });
 
       let compareDragPointer = null;
+      function cancelCompareDrag() {
+        if (compareDragPointer === null) return;
+        const id = compareDragPointer;
+        compareDragPointer = null;
+        releaseCapturedPointer(els.compareOverlay, id);
+      }
+
       const startCompareDrag = (e) => {
-        if (!e.isPrimary || (e.pointerType === "mouse" && e.button !== 0)) return; // right / middle click and extra touches must not start a drag
+        if (!state.compareMode || compareDragPointer !== null || !e.isPrimary || e.button !== 0) return;
         e.preventDefault();
         compareDragPointer = e.pointerId;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
@@ -5053,8 +5111,6 @@
         function applyTheme(isDark) {
           if (isDark) document.documentElement.setAttribute("data-theme", "dark");
           else document.documentElement.removeAttribute("data-theme");
-          $("iconMoon").style.display = isDark ? "none" : "block";
-          $("iconSun").style.display = isDark ? "block" : "none";
           syncThemeColorMeta();
         }
 
@@ -5136,6 +5192,7 @@
         document.querySelectorAll(".nav-item").forEach((btn) => {
           btn.addEventListener("click", () => {
             const tab = btn.dataset.tab;
+            if (state.activeTab !== tab) $("inspectorScroll").scrollTop = 0;
             state.activeTab = tab;
 
             document.querySelectorAll(".nav-item").forEach((b) => {
@@ -5159,9 +5216,6 @@
               }
             });
 
-            if (!isMobile && tab === "export") {
-              $("panel-export").scrollIntoView({ behavior: "smooth", block: "nearest" });
-            }
           });
         });
 
@@ -5301,7 +5355,7 @@
           state.compareMode = !state.compareMode;
           // The pointerup of an interrupted drag is ignored, so the encode it left pending has to start here
           cancelActiveCropDrag(false);
-          compareDragPointer = null;
+          cancelCompareDrag();
           els.btnToggleCompareTop.classList.toggle("btn-filled", state.compareMode);
           els.btnToggleCompareTop.classList.toggle("btn-tonal", !state.compareMode);
           els.btnToggleCompareTop.setAttribute("aria-pressed", String(state.compareMode));
@@ -5379,8 +5433,7 @@
           } else {
             syncCropInputs(target);
           }
-          const currentScale = state.resizeScale;
-          syncResizeFromCrop(currentScale, true);
+          syncResizeFromCrop();
           if (state.compareMode) renderCompareView();
           else updateCropBoxVisual();
           scheduleOutputEncode();
@@ -5422,7 +5475,7 @@
             setRatioChipActive("free");
           }
           syncCropInputs();
-          syncResizeFromCrop(state.resizeScale, true);
+          syncResizeFromCrop();
           if (state.compareMode) renderCompareView();
           else updateCropBoxVisual();
           scheduleOutputEncode();
@@ -5430,6 +5483,7 @@
 
         $("btnToggleCropOverlay").addEventListener("click", () => {
           state.showCropOverlay = !state.showCropOverlay;
+          if (!state.showCropOverlay) cancelActiveCropDrag(false);
           $("btnToggleCropOverlay").setAttribute("aria-pressed", String(state.showCropOverlay));
           updateCropBoxVisual();
         });
@@ -5437,24 +5491,11 @@
         // 6. Resize Controls
         els.btnLockAspect.addEventListener("click", () => {
           state.lockAspect = !state.lockAspect;
-          if (state.lockAspect) {
-            state.resizeScaleY = null;
-            // Locking again must bring a stretched output back to the crop's own aspect ratio
-            if (state.hasImage && state.cropW > 0 && state.cropH > 0) {
-              const cw = Math.max(1, Math.round(state.cropW));
-              const ch = Math.max(1, Math.round(state.cropH));
-              const scale = Math.min(Math.round(state.targetW) / cw, maxUniformScale(cw, ch));
-              const w = Math.max(1, Math.min(MAX_CANVAS_SIDE, Math.round(cw * scale)));
-              const h = Math.max(1, Math.min(MAX_CANVAS_SIDE, Math.round(ch * scale)));
-              if (h !== Math.round(state.targetH) || w !== Math.round(state.targetW)) {
-                state.targetW = w;
-                state.targetH = h;
-                state.resizeScale = scale;
-                syncResizeInputs();
-                if (state.compareMode) renderCompareView();
-                scheduleOutputEncode();
-              }
-            }
+          if (state.lockAspect && state.hasImage && state.resizeScaleY !== null) {
+            // Re-lock from the current width, not from the independently edited height.
+            setUniformResize(state.targetW / state.cropW);
+            if (state.compareMode) renderCompareView();
+            scheduleOutputEncode();
           }
           els.btnLockAspect.classList.toggle("active", state.lockAspect);
           els.btnLockAspect.setAttribute("aria-pressed", String(state.lockAspect));
@@ -5462,69 +5503,37 @@
           els.iconLockOpen.style.display = state.lockAspect ? "none" : "block";
         });
 
-        const afterManualResize = () => {
-          state.resizeScale = state.targetW / Math.max(1, state.cropW);
-          state.resizeScaleY = state.lockAspect ? null : state.targetH / Math.max(1, state.cropH);
-          const pct = Math.round((state.targetW / Math.max(1, state.cropW)) * 100);
-          els.sliderScalePercent.value = Math.max(10, Math.min(200, pct));
-          els.scalePercentBadge.textContent = `${pct}%`;
-          syncResizePresetChips();
+        const applyManualResize = (input) => {
+          if (!state.hasImage) return;
+          const raw = parseNumericInt(input.value);
+          if (!Number.isFinite(raw)) return; // Field temporarily empty while typing
+          const byWidth = input === els.inpResizeW;
+          const requested = Math.max(1, Math.min(MAX_CANVAS_SIDE, raw));
+          if (state.lockAspect) {
+            setUniformResize(requested / (byWidth ? state.cropW : state.cropH), input);
+          } else {
+            // Keep the other axis as entered; limit only the one the user is editing.
+            const other = byWidth ? state.targetH : state.targetW;
+            const effective = Math.min(requested, Math.floor(MAX_CANVAS_PIXELS / other));
+            if (byWidth) state.targetW = effective;
+            else state.targetH = effective;
+            state.resizeScale = state.targetW / state.cropW;
+            state.resizeScaleY = state.targetH / state.cropH;
+            state.resizeLimit = 1;
+            syncResizeInputs(input);
+          }
           if (state.compareMode) renderCompareView();
           scheduleOutputEncode();
         };
 
-        els.inpResizeW.addEventListener("input", () => {
-          if (!state.hasImage) return;
-          const raw = parseNumericInt(els.inpResizeW.value);
-          if (!Number.isFinite(raw)) return; // Field temporarily empty while typing
-          let w = Math.max(1, Math.min(MAX_CANVAS_SIDE, raw));
-          if (state.lockAspect && state.cropW > 0 && state.cropH > 0) {
-            let h = Math.max(1, Math.round(w * (state.cropH / state.cropW)));
-            if (h > MAX_CANVAS_SIDE) {
-              h = MAX_CANVAS_SIDE;
-              w = Math.max(1, Math.round(h * (state.cropW / state.cropH)));
-            }
-            state.targetH = h;
-            els.inpResizeH.value = h;
-          }
-          state.targetW = w;
-          afterManualResize();
-        });
-
-        els.inpResizeH.addEventListener("input", () => {
-          if (!state.hasImage) return;
-          const raw = parseNumericInt(els.inpResizeH.value);
-          if (!Number.isFinite(raw)) return;
-          let h = Math.max(1, Math.min(MAX_CANVAS_SIDE, raw));
-          if (state.lockAspect && state.cropH > 0 && state.cropW > 0) {
-            let w = Math.max(1, Math.round(h * (state.cropW / state.cropH)));
-            if (w > MAX_CANVAS_SIDE) {
-              w = MAX_CANVAS_SIDE;
-              h = Math.max(1, Math.round(w * (state.cropH / state.cropW)));
-            }
-            state.targetW = w;
-            els.inpResizeW.value = w;
-          }
-          state.targetH = h;
-          afterManualResize();
-        });
-
-        // Normalize out-of-range / empty values once editing is finished
         [els.inpResizeW, els.inpResizeH].forEach((inp) => {
-          inp.addEventListener("change", () => {
-            if (!state.hasImage) return;
-            els.inpResizeW.value = Math.round(state.targetW);
-            els.inpResizeH.value = Math.round(state.targetH);
-          });
+          inp.addEventListener("input", () => applyManualResize(inp));
+          inp.addEventListener("change", () => { if (state.hasImage) syncResizeInputs(); });
         });
 
         els.sliderScalePercent.addEventListener("input", () => {
           if (!state.hasImage) return;
-          const pct = parseInt(els.sliderScalePercent.value, 10) || 100;
-          syncResizeFromCrop(pct / 100, false, true); // also refreshes the badge with the scale that was really applied
-          // A size limit can cap the scale below the thumb: move the thumb back to the applied value
-          const applied = Math.round(state.resizeScale * 100);
-          if (applied < pct) els.sliderScalePercent.value = applied;
+          setUniformResize(Number(els.sliderScalePercent.value) / 100);
           if (state.compareMode) renderCompareView();
           scheduleOutputEncode();
         });
@@ -5536,11 +5545,11 @@
             chip.classList.add("active");
             if (chip.dataset.scale) {
               const s = parseFloat(chip.dataset.scale);
-              syncResizeFromCrop(s);
+              setUniformResize(s);
             } else if (chip.dataset.maxw) {
               const targetW = parseInt(chip.dataset.maxw, 10);
               const s = targetW / Math.max(1, state.cropW);
-              syncResizeFromCrop(s);
+              setUniformResize(s);
             }
             if (state.compareMode) renderCompareView();
             scheduleOutputEncode();
@@ -5549,7 +5558,7 @@
 
         $("btnResetResize").addEventListener("click", () => {
           if (!state.hasImage) return;
-          syncResizeFromCrop(1);
+          setUniformResize(1);
           if (state.compareMode) renderCompareView();
           scheduleOutputEncode();
         });
@@ -5690,7 +5699,7 @@
         });
 
         // 8. Format & Lossy/Lossless Compression Controls
-        // Detect browser WebP & AVIF encoding support dynamically (Safari / WebKit lacks WebP export)
+        // Encoding capabilities vary by browser version (decoding support does not imply encoding support).
         let canEncodeWebp = false;
         try {
           const testWebp = document.createElement("canvas");
@@ -5720,6 +5729,9 @@
             btn.classList.add("active");
             const wasBmp = state.outputFormat === "image/bmp";
             state.outputFormat = btn.dataset.format;
+            // Until a picture is opened the footer only names the target format: keep it in step with the choice
+            // (sourceImg, not hasImage: the latter is cleared on purpose while a new image picks its default format)
+            if (!state.sourceImg) els.exportSpecSummary.textContent = `未加载图片 · ${btn.textContent.trim()}`;
 
             // Show background matte picker for formats without transparency
             const needsMatte = state.outputFormat === "image/jpeg" || state.outputFormat === "image/bmp";
@@ -5785,14 +5797,17 @@
 
         function updateCompressionBannerText() {
           if (state.compressionMode !== "lossless") return;
-          if (state.outputFormat === "image/png" || state.outputFormat === "image/bmp" || state.outputFormat === "image/webp") {
-            els.losslessBanner.classList.remove("warning");
-            els.losslessBannerText.textContent = "当前为无损压缩模式：逐像素完整保留原始色彩与透明度信息，零画质损失。";
+          const format = state.outputFormat;
+          els.losslessBanner.classList.toggle("warning", format !== "image/png" && format !== "image/bmp");
+          if (format === "image/bmp") {
+            els.losslessBannerText.textContent = "BMP 以未压缩的 24 位 RGB 保存；透明区域将使用所选背景色填充。";
+          } else if (format === "image/png") {
+            els.losslessBannerText.textContent = "PNG 无损编码：不对当前画布的像素做有损量化。";
+          } else if (format === "image/webp") {
+            els.losslessBannerText.textContent = "向浏览器请求最高画质；输出确为无损 WebP 时才会标注无损。如需保证无损，请选择 PNG。";
           } else {
-            els.losslessBanner.classList.add("warning");
-            els.losslessBannerText.textContent = state.outputFormat === "image/avif"
-              ? "浏览器的 AVIF 编码器无法保证数学意义上的无损，已按最高画质导出；如需绝对无损，建议切换为 PNG 或 WebP 格式。"
-              : "JPEG 格式本身基于 DCT 变换，已为您锁定 100% 最高保真参数；如需数学意义上的绝对无损，建议切换为 PNG 或 WebP 格式。";
+            const name = format === "image/avif" ? "AVIF" : "JPEG";
+            els.losslessBannerText.textContent = `以浏览器的最高画质参数编码 ${name}，不保证无损。如需无损请选择 PNG。`;
           }
         }
 
@@ -5809,41 +5824,39 @@
           });
         });
 
-        function updateCompressionRate(rate, syncExactInput = true) {
-          const clamped = Math.max(1, Math.min(99, Math.round(rate)));
-          state.compressionRate = clamped;
-          els.sliderCompression.value = Math.min(95, clamped);
+        function updateCompressionQuality(quality, syncExactInput = true) {
+          const clamped = Math.max(1, Math.min(99, Math.round(quality)));
+          state.compressionQuality = clamped;
+          els.sliderCompression.value = clamped;
           if (syncExactInput) els.inpCompressionExact.value = clamped;
-          els.compressionRateLabel.textContent = `压缩 ${clamped}% · 画质 ${100 - clamped}%`;
+          els.compressionRateLabel.textContent = `质量 ${clamped} / 100`;
           document.querySelectorAll("#compressionPresets .m3-chip").forEach((c) => {
-            c.classList.toggle("active", parseInt(c.dataset.comp, 10) === clamped);
+            c.classList.toggle("active", Number(c.dataset.quality) === clamped);
           });
           scheduleOutputEncode();
         }
 
         els.sliderCompression.addEventListener("input", () => {
-          updateCompressionRate(parseInt(els.sliderCompression.value, 10));
+          updateCompressionQuality(Number(els.sliderCompression.value));
         });
 
         els.inpCompressionExact.addEventListener("input", () => {
           const v = parseNumericInt(els.inpCompressionExact.value);
-          if (Number.isFinite(v)) updateCompressionRate(v, false);
+          if (Number.isFinite(v)) updateCompressionQuality(v, false);
         });
 
         els.inpCompressionExact.addEventListener("change", () => {
           const v = parseNumericInt(els.inpCompressionExact.value);
-          updateCompressionRate(Number.isFinite(v) ? v : state.compressionRate, true);
+          updateCompressionQuality(Number.isFinite(v) ? v : state.compressionQuality);
         });
 
         document.querySelectorAll("#compressionPresets .m3-chip").forEach((chip) => {
-          chip.addEventListener("click", () => {
-            updateCompressionRate(parseInt(chip.dataset.comp, 10));
-          });
+          chip.addEventListener("click", () => updateCompressionQuality(Number(chip.dataset.quality)));
         });
 
         // 9. Export & Download Action
         els.btnDownloadExport.addEventListener("click", () => {
-          if (!state.outputBlob) return;
+          if (isEncodePending || !state.outputUrl || !state.outputBlob) return;
           const extMap = {
             "image/jpeg": "jpg",
             "image/png": "png",
@@ -5852,15 +5865,7 @@
             "image/avif": "avif"
           };
           const ext = extMap[state.outputBlob.type] || extMap[state.outputFormat] || "jpg";
-          const cleanName = (els.inpOutputFilename.value || "")
-            // Only strip characters that are illegal in file names; keep dots, spaces and non-Latin scripts
-            .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, "_")
-            .replace(/\.(jpe?g|png|webp|bmp|avif)[\s.]*$/i, "")
-            .replace(/^[\s.]+|[\s.]+$/g, "") || "pixelstudio_output";
-          // Keep names within common file-system limits (by code point) and avoid Windows device names
-          let safeName = Array.from(cleanName).slice(0, 120).join("").replace(/[\s.]+$/, "") || "pixelstudio_output";
-          if (/^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(safeName)) safeName = `_${safeName}`;
-          const fullFilename = `${safeName}.${ext}`;
+          const fullFilename = makeDownloadFilename(els.inpOutputFilename.value, ext);
 
           const link = document.createElement("a");
           link.href = state.outputUrl;
@@ -5869,7 +5874,7 @@
           link.click();
           document.body.removeChild(link);
 
-          showToast(`已成功导出 ${fullFilename} (${formatBytes(state.outputBlob.size)})`);
+          showToast(`已请求保存 ${fullFilename} (${formatBytes(state.outputBlob.size)})`);
         });
 
         // 10. Responsive ResizeObserver on Stage Viewport
@@ -5878,6 +5883,8 @@
           // Coalesce bursts of resize notifications into one paint per animation frame
           cancelAnimationFrame(roFrame);
           roFrame = requestAnimationFrame(() => {
+            // The crop drag records its starting display scale. A new layout invalidates that scale.
+            cancelActiveCropDrag(false);
             if (state.hasImage) {
               if (state.compareMode) renderCompareView(); // Already re-fits & paints the stage
               else renderStageCanvas();

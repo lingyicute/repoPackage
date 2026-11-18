@@ -10,10 +10,10 @@ const { getShimScript } = await import(
 );
 
 const origin = 'https://proxy.example';
-const proxy = path => origin + '/' + encodeURIComponent('https://example.com') + path;
+const proxy = path => origin + '/~' + encodeURIComponent('https://example.com') + path;
 
 /** 只提供 shim 安装钩子所需的最小浏览器环境；shim 内部异常记入 errors。 */
-function createBrowser() {
+function createBrowser(globals = {}) {
 	class Element {
 		constructor(tag) {
 			this.localName = tag.toLowerCase();
@@ -37,7 +37,7 @@ function createBrowser() {
 		navigator: {},
 		location: {
 			href: proxy('/dir/page'), origin, protocol: 'https:', hostname: 'proxy.example', port: '',
-			pathname: '/' + encodeURIComponent('https://example.com') + '/dir/page', search: '',
+			pathname: '/~' + encodeURIComponent('https://example.com') + '/dir/page', search: '',
 		},
 		document: {
 			addEventListener() {},
@@ -45,6 +45,7 @@ function createBrowser() {
 			querySelectorAll() { return []; },
 		},
 	};
+	Object.assign(ctx, globals);
 	ctx.window = ctx;
 	vm.createContext(ctx);
 	const code = getShimScript(origin, '').replace(/^<script>/, '').replace(/<\/script>$/, '');
@@ -115,4 +116,49 @@ test('shim: re-executing an injected copy keeps the hooks installed once', () =>
 	const img = new ctx.Element('img');
 	img.setAttribute('src', 'a.png');
 	assert.equal(img.getAttribute('src'), proxy('/dir/a.png'));
+});
+
+test('shim: an empty action keeps the current document even when a base is present', () => {
+	const { ctx } = createBrowser();
+	ctx.document.querySelectorAll = () => [{ getAttribute: () => 'https://example.com/other/' }];
+	const form = new ctx.Element('form');
+	const button = new ctx.Element('button');
+	const link = new ctx.Element('a');
+	form.setAttribute('action', '');
+	button.setAttribute('formaction', '');
+	link.setAttribute('href', '#heading');
+	assert.equal(form.getAttribute('action'), '');
+	assert.equal(button.getAttribute('formaction'), '');
+	assert.equal(link.getAttribute('href'), proxy('/other/#heading'));
+});
+
+test('shim: Request retains native cloning, validation and subclass behavior', async () => {
+	const calls = [];
+	const { ctx } = createBrowser({ Request, fetch: async (...args) => { calls.push(args); } });
+	const input = new Request(proxy('/submit'), { method: 'POST', body: 'sample' });
+	const clone = new ctx.Request(input);
+	assert.notEqual(clone, input);
+	assert.equal(await clone.text(), 'sample');
+	assert.equal(input.bodyUsed, true);
+	const Subclass = class extends ctx.Request {};
+	assert.ok(new Subclass(new Request('https://example.com/asset')) instanceof Subclass);
+	assert.throws(() => new ctx.Request('/bad', { method: 'GET', body: 'invalid' }), TypeError);
+
+	const options = Object.create({ credentials: 'omit' });
+	Object.defineProperty(options, 'integrity', { value: 'sha256-marker' });
+	Object.freeze(options);
+	const request = new ctx.Request('/asset', options);
+	assert.equal(request.url, proxy('/asset'));
+	assert.equal(request.credentials, 'omit');
+	assert.equal(request.integrity, '');
+	assert.equal(new ctx.Request('data:,plain', options).integrity, 'sha256-marker');
+	await ctx.fetch({ url: '/unrelated-field', toString: () => '/actual' });
+	assert.equal(calls[0][0], proxy('/actual'));
+});
+
+test('shim srcset uses the same URL boundaries and leaves data candidates alone', () => {
+	const { ctx } = createBrowser();
+	const image = new ctx.Element('img');
+	image.setAttribute('srcset', 'first,a.png 1x, data:image/gif;base64,token 2x, last.png,, ');
+	assert.equal(image.getAttribute('srcset'), `${proxy('/dir/first,a.png')} 1x, data:image/gif;base64,token 2x, ${proxy('/dir/last.png')},, `);
 });
