@@ -19,8 +19,9 @@
     checkpoint.py            # 分块清单摘要、逐块先验证后流式恢复
     pack.sh                  # 破坏性导出检查点（仅用于临时 VM）
     restore.sh               # 恢复并检查仓库/运行/提交/前序阶段
+    relay.sh                 # 导出与恢复共享的 tar 操作
     source_state.py          # 源码锁、Git 工作树、版本与续编历史校验
-    build.py                 # 按 job 截止点分配编译预算，监督 Ninja 进程会话
+    build.py                 # 按 job 截止点分配编译预算，监督 Ninja 会话和被收养的孤儿子进程
     build.sh                 # 编译日志
     release.sh               # APK 验签与产物整理
     apk.py                   # 安全暂存并检查构建生成的 APK
@@ -37,7 +38,9 @@ tests/
 README.md
 ```
 > [!tip]
-> 请不要在个人机器或已有数据的自托管 runner 上执行本项目的 `host.sh` / `pack.sh`。前者删除固定路径下的预装大型软件，并关闭、删除 `/mnt` 下已有的 swap 文件；后者会在打包成功读取各文件后删除整个本地构建树。
+> 请不要在个人机器或已有数据的自托管 runner 上执行本项目的 `host.sh` / `pack.sh`。前者删除固定路径下的预装大型软件，并关闭、删除 `/mnt` 下已有的 swap 文件；后者会在打包成功读取各文件后删除整个本地构建树。 检测到这些清理路径或中转目录本身、其下方有独立挂载（含 bind mount）时会拒绝操作。
+
+归档测试使用 GNU tar 与 zstd；系统 PATH 中有 Ninja 时，还会用一个极小的本地工程验证中断后未完成的目标能续编、已完成的目标不会重做，不下载 Chromium。
 
 ## 运行
 
@@ -61,11 +64,11 @@ prepare（stage 00，与续编段共用 chromium-stage.yml）
 part-01 → part-02 → … → part-08
   ├─ 按前序 job 给出的精确 artifact ID 下载
   ├─ 用前序 job 给出的 SHA-256 认证分块清单，逐块验证后才解包
-  ├─ 恢复固定路径与纳秒文件时间戳，核对仓库、版本和完整前序记录
+  ├─ 恢复固定路径与纳秒文件时间戳，核对发布记录、两个 Git 检出的提交和已跟踪文件、GN 参数及完整前序记录
   ├─ 不重新 sync / runhooks / gn gen
   ├─ 本地 Ninja 编译至本 job 开始后第 260 分钟（最终段 part-08 为第 325 分钟）
   ├─ 正常到点未完成：常规段正常中断并导出新检查点；最终段跳过无用检查点直接结束
-  ├─ 真正编译失败/OOM/停机失败：直接失败
+  ├─ 真正编译失败/OOM/停机失败（包括必须强杀另建会话的遗留子进程）：直接失败
   ├─ 完成：验证 APK 签名并上传产物，跳过后续分段
   └─ 检查点下载/上传与 APK 上传失败时各自动重试一次
        ↓
@@ -81,7 +84,7 @@ result：只接受连续的成功检查点，以及已确认上传 APK 的成功
 
 每段的 job summary 会列出编译前准备（清理、同步或下载与恢复）与编译各自的耗时、编译期间写入 swap 的数据量与编译结束时构建盘的剩余空间，以及检查点打包、恢复的体积与吞吐；`metadata/runners.jsonl` 同样记录 `setup_seconds`、`swap_out_mib` 与 `disk_free_gib`。编译失败时，swap 写入量与剩余空间也会写进错误信息，便于区分内存压力（OOM）、磁盘写满与真正的编译错误。跑过一次真实构建后，可据此判断约 90 分钟的预留是否过宽、`-j` 上限是否合适，再调整 `build.py` 中的截止点、并行度与工作流里的步骤时限。
 
-检查点含源码、`.git`、GN/Ninja 中间产物、depot_tools、vpython 缓存和隐藏文件（临时 `CIPD_CACHE_DIR` 下载缓存在 `fetch.sh` 结束时直接清理，不进入检查点；`.gclient` 使用 `checkout_configuration="small"` 并关闭 JS 覆盖率模块与测试用 `generate_location_tags` 钩子以缩减体积，`config/args.gn` 锁定 `concurrent_links = 1` 防止并发链接 OOM）。归档使用 POSIX tar 保留纳秒 mtime、符号链接与权限（打包前仅为受限目录补齐 `u+rwx` 并清理残留 Unix 套接字以便删除），经 `zstd` 以全部逻辑 CPU 压缩（`-T0` 只按物理核计数，在每核双线程的 hosted runner 上只会用到一半 vCPU）后，边按 1 GiB 分块写入边计算每块 SHA-256，并生成记录各块摘要与大小的 `tree.manifest`；传给下一段的是该清单的 SHA-256。导出时删除已归档的源文件；恢复时先认证清单，再逐块“验证 → 解包 → 删除”：下一块在后台线程验证；当前块从已打开的文件描述符重读（通常命中页缓存），每 8 MiB 复核已验证的前缀摘要，再交给 zstd/tar。即使同一文件在两次读取间被改写也不会输出改变的字节。
+检查点含源码、`.git`、GN/Ninja 中间产物、depot_tools、vpython 缓存和隐藏文件（临时 `CIPD_CACHE_DIR` 下载缓存在 `fetch.sh` 结束时直接清理，不进入检查点；`.gclient` 使用 `checkout_configuration="small"` 并关闭 JS 覆盖率模块与测试用 `generate_location_tags` 钩子以缩减体积，`config/args.gn` 锁定 `concurrent_links = 1` 防止并发链接 OOM）。归档使用 POSIX tar 保留纳秒 mtime、链接、稀疏文件的空洞与权限（打包前仅为受限目录补齐 `u+rwx` 并清理残留 Unix 套接字以便删除），经 `zstd` 以全部逻辑 CPU 压缩（`-T0` 只按物理核计数，在每核双线程的 hosted runner 上只会用到一半 vCPU）后，边按 1 GiB 分块写入边计算每块 SHA-256，并生成记录各块摘要与大小的 `tree.manifest`；传给下一段的是该清单的 SHA-256。导出时删除已归档的源文件；恢复时先认证清单，再逐块“验证 → 解包 → 删除”：下一块在后台线程验证；当前块从已打开的文件描述符重读（通常命中页缓存），每 8 MiB 复核已验证的前缀摘要，再交给 zstd/tar。即使同一文件在两次读取间被改写也不会输出改变的字节。
 
 Android stable 的版本不是写死的；每次新 workflow run 从官方 API 解析一次，再锁定源码提交。运行期间版本不会漂移。官方 tag 与 API 暂时不一致会失败，不会猜测另一个版本。
 
@@ -118,7 +121,7 @@ Android stable 的版本不是写死的；每次新 workflow run 从官方 API �
 |---|---|
 | `apk-` | `Chromium-Stable-arm64.apk`、`apk-signature.txt`、`SHA256SUMS`、`metadata/` |
 | `unverified-apk-` | 仅在编译完成、原始 APK 已安全暂存但后续步骤失败时可能出现：未经验证的原始 APK，仅供排查，不要安装或分发；只保留 3 天 |
-| `source-lock-` | 初始版本/源码/工具链锁定记录、DEPS、GN 参数、依赖列表 |
+| `source-lock-` | 初始版本/源码/工具链锁定记录、DEPS、GN 参数、声明的依赖与实际检出的 Git 提交列表 |
 | `logs-` | 资源信息与编译日志 |
 | `tree-` | 续编译检查点，不是安装包；只保留 3 天。每段都会上传完整树，一次跑满 8 段的 run 检查点总量可达 200 GB 以上 |
 

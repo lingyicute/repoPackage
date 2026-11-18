@@ -149,7 +149,7 @@ sbwatch layers A B            # chunk 级别 diff + 预估下载大小
 sbwatch pkgs [ref]            # 某个镜像的精确包列表
 sbwatch diff A B              # 精确包 diff + CVE 分类
 sbwatch backlog [ref]         # 这个镜像还缺哪些已发布的 stable 安全更新
-                              #   --backlog-candidates N：审计最多看多少个候选源码包（默认 64，即整个 BACKLOG_POOL）
+                              #   --backlog-candidates N：审计最多看多少个候选源码包（默认不限，仍受 --max-bodhi 限制）
 sbwatch check                 # 有状态的 digest watch，用于 CI/cron -> report.md + verdict + $GITHUB_OUTPUT
 
 # A/B/ref 可以是：
@@ -194,6 +194,8 @@ python3 sbwatch.py diff 20260916 latest --exact 0
 python3 sbwatch.py diff 20260916 latest --cosign-pub ./cosign.pub --require-cosign
 #    cosign 只对 digest 签名；sbwatch 会对按 digest 取回的 manifest、config 和 rpmdb blob
 #    逐一校验 sha256，内容与 digest 不符即中止，因此「签名通过」覆盖到实际被分析的数据
+#    校验的是平台 manifest。版本等分析元数据只取自该 manifest 或它的 config；不使用
+#    父 index / 平台描述符的注解。签名并不能证明可变 tag 仍指向发布方期望的 digest。
 #    --require-cosign 必须同时指定 --cosign-pub，否则在任何网络请求前报参数错误
 #    history 同样遵守签名选项：启用时逐一校验所有列出的镜像
 
@@ -201,7 +203,7 @@ python3 sbwatch.py diff 20260916 latest --cosign-pub ./cosign.pub --require-cosi
 python3 sbwatch.py check --image secureblue/silverblue-main-hardened --to latest --report report.md
 # check 的 --audit（默认开）与 diff 共用同一个 Bodhi 调用预算和同一份答案缓存：
 # --max-bodhi 10 就是最多 10 次调用，不会再被内部悄悄放大到 45 次；候选上限用
-# --backlog-candidates 单独控制
+# --backlog-candidates 单独控制；已安装的第三方包与未安装的候选会分别披露。
 # 使用 state.json 中的上次镜像作基线时，check 保留「上次 → 当前」的实际方向；
 # tag 回滚会报告降级，不会按时间反转成安全升级。显式 --a 仍遵守 --keep-order。
 
@@ -231,6 +233,8 @@ python3 sbwatch.py backlog latest --max-bodhi 80
 以及逐包的 `verdict.security_basis`，区分「安全勘误」「对应 Fedora 勘误（归一化匹配）」、
 「被越过构建的安全勘误」「非安全类勘误（含 CVE 或高严重度）」与「更新日志 CVE」——
 只有新版更新日志里真的出现了 CVE 编号，才会标成「更新日志 CVE」。
+Bodhi 的多源码包勘误（例如依赖库更新与批量重建）中的 CVE 会在 `advisory_wide_cves`
+中单列，不能归因给每个命中的源码包；`verdict.cves` 仍列出全部证据中的编号。
 
 
 报告里会包含：
@@ -242,7 +246,8 @@ python3 sbwatch.py backlog latest --max-bodhi 80
 - `downgrades`：这次更新把某个包**降级**了（真证据，会抬高级别；报告点名「回退」的是**被离开的
   那个构建**的已发布安全勘误，而不是降级目标自己的勘误）；`cves_dropped`：
   新版更新日志不再提到的 CVE 编号（通常是日志被编辑，只作提示、不再抬高级别）
-- `backlog`：即使跳过，你仍暴露在多少已发布 stable 安全更新之外
+- `backlog`：候选池内，镜像源码构建与已发布 stable 安全勘误之间的差距；版本保留已知 epoch，
+  JSON 的 `advisories` 列出各条证据。汇总严重度取最高值，展示的勘误编号与说明来自最新匹配构建。
 - `passed_over`：被这次更新**越过**的中间构建所带的 stable 安全勘误（旧 < 该构建 ≤ 新，同一 Fedora 版本内）。
   两个镜像里都没有这个构建，所以它的勘误对不上任何一方，但修复随新构建一并到来——计入结论与 CVE，
   不计入通知预测（rpm-ostree 只把勘误挂在精确命中的构建上）；`security_basis` 中标为「被越过构建的安全勘误」
@@ -402,6 +407,7 @@ CI 中由 `test` 作业运行；`watch` 作业**不**依赖 `test`（两者并�
   运行时不再从网络取钥；上游换钥会在这里失败，而不是静默改变"已验证"的含义
 - 若配置了 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` secrets，推送到 Telegram
   （Telegram 单条消息上限 4096 字符，超出部分会被截断并注明，完整报告见 run summary）
+  只设置其中一个或发送失败时不会保存检查点；下次会重试，已送达的 issue 评论可能重复。
 
 环境变量（workflow_dispatch 输入）：
 - `SB_IMAGE` (默认 `secureblue/silverblue-main-hardened`)
@@ -437,8 +443,12 @@ along with this program.  If not, see https://www.gnu.org/licenses.
 In an analysed `report.md.json`, `from_digest` identifies the comparison baseline;
 `digest` and `version` identify its target (`to`). An explicit `--a` can cause
 chronological reordering. `watched_digest` and `watched_version` identify the
-watched tag independently; the state file and Actions `digest` output still
-track that tag, not the reordered comparison target.
+watched tag independently. The state tracks that tag, and the Actions output
+has separate `digest` (comparison target) and `watched_digest` keys.
+`from_index_digest`, `index_digest` and `watched_index_digest` record the top-level
+references resolved by the run (a platform digest if the input named it directly).
+Both `diff` and `check` exports include added and removed packages, old/new
+architectures, available advisory evidence, and any RPM inventory issues.
 
 Notification levels describe eligibility, not observed delivery. The upstream
 script checks a per-user critical stamp before either update backend and also

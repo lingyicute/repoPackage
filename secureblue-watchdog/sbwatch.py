@@ -286,24 +286,32 @@ _RFC3339_RE = re.compile(
     r"(Z|[+-]\d{2}:?\d{2})$", re.I)
 
 
-def _ts_order(s) -> str:
-    """Sortable key for an RFC 3339 timestamp, normalised to UTC (Python 3.10+)."""
-    raw = str(s or "").strip()
-    if not raw:
+def _utc_timestamp(s) -> str:
+    """Canonical UTC with nine fractional digits, or empty for invalid input."""
+    match = _RFC3339_RE.fullmatch(str(s or "").strip())
+    if not match:
         return ""
-    m = _RFC3339_RE.match(raw)
-    if m:
-        day, hms, frac, zone = m.groups()
-        z = "+00:00" if zone.upper() == "Z" else (
-            zone if ":" in zone else f"{zone[:3]}:{zone[3:]}")
-        try:
-            dt = datetime.datetime.fromisoformat(f"{day}T{hms}{z}")
-            utc = dt.astimezone(datetime.timezone.utc)
-            ns = (frac or "").ljust(9, "0")[:9]
-            return utc.strftime("%Y-%m-%dT%H:%M:%S") + f".{ns}Z"
-        except ValueError:
-            pass
-    return raw
+    day, hms, frac, zone = match.groups()
+    offset = "+00:00" if zone.upper() == "Z" else zone
+    if ":" not in offset:
+        offset = f"{offset[:3]}:{offset[3:]}"
+    if int(offset[1:3]) >= 24 or int(offset[4:]) >= 60:
+        return ""
+    try:
+        dt = datetime.datetime.fromisoformat(f"{day}T{hms}{offset}")
+        utc = dt.astimezone(datetime.timezone.utc)
+        return utc.replace(tzinfo=None).isoformat(timespec="seconds") + f".{(frac or '').ljust(9, '0')[:9]}Z"
+    except (ValueError, OverflowError):
+        return ""
+
+
+def _ts_order(s) -> str:
+    """Sortable timestamp key, also accepting legacy state/report timestamps."""
+    return _utc_timestamp(s) or str(s or "").strip()
+
+
+def _image_order(img: dict) -> str:
+    return _ts_order(img.get("created_order") or img.get("created"))
 
 
 def rfc3339_seconds(s) -> str:
@@ -748,33 +756,44 @@ class Registry:
 
     @staticmethod
     def _split(ref: str):
-        # strip first: with the whitespace still in front, the scheme prefix did
-        # not match and " docker://ghcr.io/..." was rejected as host `docker:`
         ref = (ref or "").strip().removeprefix("docker://").removeprefix("oci:")
-        if ref.count("/") < 1:
-            raise SystemExit(T(f"need a reference like host/ns/name:tag, got: {ref}",
-                               f"需要形如 host/ns/name:tag 的引用，实际收到：{ref}"))
-        first, _, rest_all = ref.partition("/")
-        if "." not in first and ":" not in first and first != "localhost":
-            host, rest = "ghcr.io", ref          # bare ns/name -> ghcr.io (secureblue's home)
+
+        def invalid():
+            return RegistryError(T(f"invalid image reference: {ref!r} (expected [host/]repo[:tag][@sha256:digest])",
+                                   f"无效的镜像引用：{ref!r}（需要 [host/]repo[:tag][@sha256:digest]）"))
+
+        first, slash, rest = ref.partition("/")
+        if not slash:
+            raise invalid()
+        if "." in first or ":" in first or first.lower() == "localhost":
+            host = first.lower()
+            # Validate the authority before inserting it into any URL. urlsplit
+            # also rejects malformed IPv6 literals and out-of-range ports.
+            try:
+                authority = urllib.parse.urlsplit(f"https://{host}")
+                if (not re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+                                     r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*"
+                                     r"|\[[0-9a-f:.]+\])(?::[0-9]+)?", host)
+                        or not authority.hostname or authority.port == 0):
+                    raise invalid()
+            except ValueError:
+                raise invalid() from None
         else:
-            host, rest = first, rest_all
-        if "@" in rest:
-            repo, _, dig = rest.partition("@")
-            if not dig:
-                raise SystemExit(T(f"missing digest after '@' in reference: {ref}",
-                                   f"引用中 '@' 后缺少 digest：{ref}"))
-            if ":" in repo.rsplit("/", 1)[-1]:
-                repo, _, _ = repo.rpartition(":")
-        elif ":" in rest.rsplit("/", 1)[-1]:
-            repo, _, tag = rest.rpartition(":")
-            dig = tag
-        else:
-            repo, dig = rest, "latest"
-        if not repo or repo.startswith("/") or repo.endswith("/") or "//" in repo:
-            raise SystemExit(T(f"need a reference like host/ns/name:tag, got: {ref}",
-                               f"需要形如 host/ns/name:tag 的引用，实际收到：{ref}"))
-        return host.lower(), (repo, dig or "latest")
+            host, rest = "ghcr.io", ref
+
+        named, at, digest = rest.partition("@")
+        repo, colon, tag = named.rpartition(":") if ":" in named.rsplit("/", 1)[-1] else (named, "", "")
+        # Distribution's repository grammar, not a general-purpose URL path.
+        component = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+        if not re.fullmatch(component + rf"(?:/{component})*", repo):
+            raise invalid()
+        if colon:
+            tag = Registry._validate_ref(tag)
+        if at:
+            if not _clean_sha256_header(digest) or digest != digest.strip():
+                raise invalid()
+            return host, (repo, Registry._validate_ref(digest))
+        return host, (repo, tag if colon else "latest")
 
     def _token(self):
         """Anonymous pull token, or None when the registry needs none.
@@ -975,8 +994,7 @@ class Registry:
             raise TypeError("manifest must be a JSON object")
         out = {"ref": what, "index_digest": top_digest, "mediaType": ctype,
                "is_index": "index" in ctype or "manifests" in man}
-        ann = dict(man.get("annotations") or {})
-        if "index" in ctype or "manifests" in man:
+        if out["is_index"]:
             pick = None
             for m in man.get("manifests", []):
                 p = m.get("platform") or {}
@@ -986,7 +1004,6 @@ class Registry:
             if pick is None:
                 raise NoArchManifest(T(f"no {self.arch} manifest in {self.repo}:{what}",
                                        f"{self.repo}:{what} 中没有 {self.arch} 架构的 manifest"))
-            ann.update(dict(pick.get("annotations") or {}))
             pick_dig = _clean_sha256_header(pick.get("digest"))
             if not pick_dig:
                 raise ValueError("platform descriptor requires a sha256 digest")
@@ -998,9 +1015,11 @@ class Registry:
             if not isinstance(man, dict):
                 raise TypeError("platform manifest must be a JSON object")
             out["digest"] = "sha256:" + plat_hex
-            ann.update(dict(man.get("annotations") or {}))
         else:
             out["digest"] = top_digest
+        # Verification authorizes the platform digest, not its mutable tag or
+        # the enclosing index. Use only metadata in that manifest or its config.
+        ann = dict(man.get("annotations") or {})
         out["manifest"] = man
         cfg = {}
         if not light:
@@ -1026,10 +1045,18 @@ class Registry:
             ann = {**dict((cfg.get("config") or {}).get("Labels") or {}), **ann}
         out["config"] = cfg
         out["annotations"] = ann
-        # RFC3339 with nanoseconds -> whole seconds + zone. Only the fractional
-        # part goes, and nothing downstream compares finer than a second.
-        out["created"] = rfc3339_seconds(cfg.get("created")
-                                         or ann.get("org.opencontainers.image.created"))
+        # On secureblue the platform annotation can be more precise than the
+        # config. Refine the config's second only with the matching annotation,
+        # never with the inherited Labels value from an intermediate build.
+        key = "org.opencontainers.image.created"
+        config_time = _utc_timestamp(cfg.get("created"))
+        manifest_time = _utc_timestamp((man.get("annotations") or {}).get(key))
+        if (config_time and manifest_time and config_time.endswith(".000000000Z")
+                and config_time[:19] == manifest_time[:19]):
+            config_time = manifest_time
+        created = config_time or manifest_time or _utc_timestamp(ann.get(key))
+        out["created_order"] = created
+        out["created"] = created[:19] + "Z" if created else ""
         out["layers"] = []
         layers_raw = man["layers"]
         if not isinstance(layers_raw, list):
@@ -2000,8 +2027,22 @@ def classify_order(changed: list) -> list:
                   key=lambda c: not _src_matches_pool(c.get("src") or "", IMPORTANT_SRC))
 
 
+def _advisory_cve_scope(update: dict) -> tuple[set, set]:
+    """Return (source-level, advisory-wide) CVE IDs, not per-binary proof."""
+    ids = set(update.get("cves") or ())
+    for text in (update.get("title"), update.get("notes"),
+                 *(bug.get("title") for bug in update.get("bugs") or ())):
+        ids.update(find_cves(text))
+    names = {parts[0] for nvr in update.get("nvrs") or () if nvr
+             if len(parts := nvr.rsplit("-", 2)) == 3}
+    # Bodhi CVEs belong to the whole update, e.g. the libxml2 transition in
+    # FEDORA-2026-91259c13b9 also includes hundreds of dependent rebuilds.
+    return (set(), ids) if len(names) > 1 else (ids, set())
+
+
 def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) -> dict:
-    info = {"security": False, "cves": set(), "cves_dropped": set(), "aliases": [],
+    info = {"security": False, "cves": set(), "cves_dropped": set(),
+            "advisory_wide_cves": set(), "aliases": [],
             "severities": [], "sec_severities": [], "bodhi_type": None, "why": [], "erratum": None,
             # set only by a *pushed* type=security erratum that shipped a build in
             # the NEW image *and* matched its release string exactly - the exact
@@ -2029,6 +2070,11 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
     def add_cves(text, into=None):
         for c in find_cves(text):
             (into if into is not None else info["cves"]).add(c)
+
+    def add_advisory_cves(update):
+        source, shared = _advisory_cve_scope(update)
+        info["cves"].update(source)
+        info["advisory_wide_cves"].update(shared)
 
     # (a) changelog entries that are new in this build: Fedora writes CVE ids there.
     # The per-package caps only guard against a pathological changelog (no real
@@ -2119,7 +2165,7 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
                         {"alias": u["alias"], "severity": u.get("severity"),
                          "nvr": passed})
                     info["security"] = True
-                    info["cves"].update(u.get("cves") or ())
+                    add_advisory_cves(u)
                     info["severities"].append((u.get("severity") or "").lower())
                     info["sec_severities"].append((u.get("severity") or "").lower())
                     info["why"].append(
@@ -2151,11 +2197,7 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
                 continue
             if u.get("alias"):
                 info["aliases"].append(u["alias"])
-            info["cves"].update(u.get("cves") or ())
-            add_cves(u.get("notes") or "")
-            add_cves(u.get("title") or "")
-            for bg in u.get("bugs") or []:
-                add_cves(bg.get("title"))
+            add_advisory_cves(u)
             sev_word = (u.get("severity") or "").lower()
             info["severities"].append(sev_word)
             cand_err = {"alias": u["alias"], "type": u["type"],
@@ -2209,13 +2251,14 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
     # A CVE carried by the new build's pushed erratum is not a dropped fix even if
     # the RPM changelog entry that used to mention it was trimmed or reworded.
     info["cves_dropped"] -= info["cves"]
-    if info["cves"]:
+    if info["cves"] or info["advisory_wide_cves"]:
         info["security"] = True
     if info["cves_dropped"]:
         info["why"].insert(1 if chlog_cves else 0,
                            "no longer mentioned/不再提及: "
                            + clip_list(sorted(info["cves_dropped"]), 8, lang="both"))
     info["cves"] = sorted(info["cves"])
+    info["advisory_wide_cves"] = sorted(info["advisory_wide_cves"])
     info["cves_dropped"] = sorted(info["cves_dropped"])
     info["important_src"] = _src_matches_pool(new["src"], IMPORTANT_SRC)
     # only severities belonging to a *pushed* erratum for the *new* build count
@@ -2616,7 +2659,8 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
     # section: a downgraded group belongs to the downgrade warning below, and
     # calling it a "version bump" in the same headline contradicted that warning.
     imp = [g for g in groups if g["important"] and not g["security"] and not g["downgrade"]]
-    cves = sorted({c for g in sec for c in g["cves"]})
+    shared_cves = {c for g in sec for c in g.get("advisory_wide_cves", ())}
+    cves = sorted({c for g in sec for c in g["cves"]} | shared_cves)
     sev = max([g["sev_rank"] for g in sec] or [0])
     # `kernel` as a *binary package that actually moved* - the same test
     # secureblue runs against .rpm-diff.upgraded.  The ostree.linux annotation is
@@ -2680,7 +2724,8 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
          "security_pkgs": sorted({p["name"] for g in sec for p in g["pkgs"]
                                   if p.get("dir") != "downgrade"}),
          "important_pkgs": sorted({p["name"] for g in imp for p in g["pkgs"]}),
-         "cves": cves, "cves_dropped": sorted({c for g in lost for c in g["dropped"]}),
+         "cves": cves, "advisory_wide_cves": sorted(shared_cves),
+          "cves_dropped": sorted({c for g in lost for c in g["dropped"]}),
          "downgrades": [g["src"] for g in down], "severity_rank": sev,
          "kernel_changed": kernel_moved, "kernel_in_diff": kernel_in_diff,
          "kernel_annotation_changed": kernel_annot_moved,
@@ -2764,15 +2809,15 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
             render=lambda g: f"{g['src']} "
                              f"（{clip_list(g['cves'], HEADLINE_CVE_CAP, lang='zh') or _evidence_pair(g)[1]}）")
         v["headline"] = (f"{plural(len(sec), 'source package')} "
-                         f"{'gains' if len(sec) == 1 else 'gain'} security fixes: {top_en}"
+                         f"{'has' if len(sec) == 1 else 'have'} security evidence: {top_en}"
                          + (f" — {len(cves)} CVE(s) total" if cves else "")
                          + (". Kernel version also changed" if kernel_moved else ""))
-        v["headline_zh"] = (f"{len(sec)} 个源码包获得安全修复：{top_zh}"
+        v["headline_zh"] = (f"{len(sec)} 个源码包有安全相关证据：{top_zh}"
                             + (f" —— 共 {len(cves)} 个 CVE" if cves else "")
                             + ("；内核版本也已变化" if kernel_moved else ""))
         if sev >= 3:
-            v["headline"] = "HIGH/CRITICAL severity fix present. " + v["headline"]
-            v["headline_zh"] = "存在 HIGH/CRITICAL（高/严重）级别修复。" + v["headline_zh"]
+            v["headline"] = "HIGH/CRITICAL security evidence present. " + v["headline"]
+            v["headline_zh"] = "存在 HIGH/CRITICAL（高/严重）级别的安全证据。" + v["headline_zh"]
     elif kernel_moved or imp or silent_key:
         v["level"] = "consider"
         bits, bits_zh = [], []
@@ -3064,6 +3109,7 @@ def group_by_src(changed: list) -> list:
             # subpackage, only to be thrown away.
             g = groups[key] = {"src": key, "pkgs": [], "security": False,
                                "cves": set(), "dropped": set(), "aliases": [],
+                               "advisory_wide_cves": set(),
                                "why": [], "sev_rank": 0, "sec_sev_rank": 0, "important": False,
                                "downgrade": False, "has_erratum": False,
                                "has_security_erratum": False,
@@ -3080,6 +3126,7 @@ def group_by_src(changed: list) -> list:
         if not is_down:
             g["security"] = g["security"] or bool(cls.get("security"))
             g["cves"].update(cls.get("cves") or [])
+            g["advisory_wide_cves"].update(cls.get("advisory_wide_cves") or [])
             g["changelog_cves"].update(cls.get("changelog_cves") or [])
             if cls.get("erratum"):
                 g["has_erratum"] = True
@@ -3126,6 +3173,7 @@ def group_by_src(changed: list) -> list:
     out = sorted(groups.values(), key=lambda g: (-g["sev_rank"], g["src"]))
     for g in out:
         g["cves"] = sorted(g["cves"])
+        g["advisory_wide_cves"] = sorted(g["advisory_wide_cves"])
         g["dropped"] = sorted(g["dropped"])
         g["changelog_cves"] = sorted(g["changelog_cves"])
         rep = min(g["pkgs"], key=lambda p: (p["name"] != g["src"], p["name"]))
@@ -3485,6 +3533,16 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             pkg_col = fmt_pkgs(g, "zh" if is_zh else "en")
             W(f"| {pkg_col} ({g['src']}) | {g['old_evr']} → **{g['new_evr']}** | {cve_str} | {ev} |")
         W("")
+        shared = verdict.get("advisory_wide_cves") or []
+        if shared:
+            W("### 多源码包勘误中的 CVE（按勘误统计）" if is_zh else
+              "### Advisory-wide CVEs (updates with multiple source packages)")
+            W("")
+            W("这些编号是整条勘误的证据，不能归给上述每个源码包。" if is_zh else
+              "These IDs are evidence for the advisory as a whole, not for every listed source.")
+            W("")
+            W(", ".join(shared))
+            W("")
         # A security report is the one place where an elided id is unacceptable:
         # the table cell cannot hold 113 of them, so the rest get a section of
         # their own rather than a "…".
@@ -3704,18 +3762,17 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W(f"## 你的（当前或新）镜像仍缺少的更新（{len(backlog)}）")
             W("")
             W("已发布的 **stable** Fedora 安全更新，其构建比镜像内的更新——"
-              "即无论是否跳过本次更新都存在的暴露面，但你应当知情。")
+              "这些是源码构建差距，不代表镜像内的每个二进制都受影响。")
             W("")
-            W("| 软件包 | 镜像内版本 | 新 stable 构建 | 严重度 | 勘误 |")
+            W("| 软件包 | 镜像内版本 | 新 stable 构建 | 最高严重度 | 最新构建的勘误 |")
             W("|---|---|---|---|---|")
         else:
             W(f"## What your (current or new) image is still missing ({len(backlog)})")
             W("")
             W("Published **stable** Fedora security updates whose build is newer than the one in "
-              "the image — i.e. exposure that skipping this update does not change, but that you "
-              "may want to know about.")
+              "the image. These are source-build gaps, not proof that every binary is affected.")
             W("")
-            W("| package | in image | newer stable build | severity | erratum |")
+            W("| package | in image | newer stable build | max severity | latest build erratum |")
             W("|---|---|---|---|---|")
         for r in backlog[:25]:
             W(f"| `{r['name']}` | {r['have']} | **{r['want']}** | {r['severity'] or '?'} | {r.get('alias') or '—'} |")
@@ -3815,11 +3872,6 @@ BACKLOG_POOL = {
     "wireless-regdb", "linux-firmware", "runc", "crun", "cri-o",
     "podman", "skopeo", "composefs", "cryptsetup", "keyutils",
 }
-# Default for --backlog-candidates: every pool source the image has. The former 45
-# was fewer than the live image's 55 candidates, so the same ten (keyutils, krb5,
-# openvpn, podman, python-pip, qt6-qtbase, skopeo, unbound, wireguard-tools,
-# wireless-regdb) were cut off on every run and never audited at all.
-BACKLOG_CANDIDATES = len(BACKLOG_POOL)
 
 
 def _is_behind(p: dict, cand_version: str, cand_release: str,
@@ -3857,7 +3909,7 @@ def package_coverage(pkgs: dict) -> dict:
 
 
 def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
-                     limit: int = BACKLOG_CANDIDATES) -> tuple:
+                     limit: int | None = None) -> tuple:
     """Stable Fedora security errata whose build is newer than what the image ships.
 
     Returns (rows, coverage). The coverage numbers matter: `limit` truncates the
@@ -3868,38 +3920,40 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
     visible instead of quietly shrinking the audit.
     """
     want = {}
+    present = set()
+    eligible = set()
     for n, p in pkgs.items():
-        if not _src_matches_pool(p["src"], BACKLOG_POOL):
+        src = p["src"]
+        pool_entries = {src, re.sub(r"\.\d+$", "", src)} & BACKLOG_POOL
+        if not pool_entries:
             continue
+        present.update(pool_entries)
         if _is_third_party(p) and not re.search(r"\.secureblue\.\d+", p.get("release") or ""):
             continue
-        want.setdefault(p["src"], []).append((n, p))
+        eligible.update(pool_entries)
+        want.setdefault(src, []).append((n, p))
     # Security-sensitive sources first, as in classify_order(): `limit` and
     # --max-bodhi both cut this list from its end, and in plain name order the
     # live image's 55 candidates lost systemd, webkitgtk and xdg-desktop-portal
     # to the default limit of 45 on every single run.
     candidates = sorted(want, key=lambda s: (not _src_matches_pool(s, IMPORTANT_SRC), s))
+    # Multiple installed sources can map to one pool entry (e.g. python3.13
+    # and python3.14). An omitted limit must not drop either one.
     chosen = candidates[:limit]
-    # a pool entry counts as covered when some in-image source maps onto it
-    # (directly, or via the versioned-name rule: python3.14 -> python3)
-    covered = set()
-    for s in want:
-        if s in BACKLOG_POOL:
-            covered.add(s)
-        base = re.sub(r"\.\d+$", "", s)
-        if base != s and base in BACKLOG_POOL:
-            covered.add(base)
+    skipped_names = candidates[len(chosen):]
     cov = {**package_coverage(pkgs), "candidates": len(candidates), "checked": len(chosen),
-           "skipped": len(candidates) - len(chosen),
-           "skipped_names": candidates[limit:],
-           "pool_size": len(BACKLOG_POOL),
-           "pool_missing": sorted(BACKLOG_POOL - covered)}
+           "skipped": len(skipped_names), "skipped_names": skipped_names,
+           "pool_size": len(BACKLOG_POOL), "pool_missing": sorted(BACKLOG_POOL - present),
+           "pool_ineligible": sorted(present - eligible)}
     # Both spellings of the middle rank: Bodhi's API answers with its own words
     # (unspecified/low/medium/high/urgent) while the updateinfo mapping uses the
     # RHEL ones (Low/Moderate/Important/Critical). Listing only "moderate" made a
     # `medium` erratum rank 0 - i.e. sort *below* a `low` one.
     order = {"critical": 4, "urgent": 4, "important": 3, "high": 3,
              "moderate": 2, "medium": 2, "low": 1}
+    def with_epoch(evr, epoch):
+        return f"{epoch}:{evr}" if epoch not in (None, "0", 0) else evr
+
     rows = []
     queried = audit_failed = audit_skipped = 0
     mem = getattr(bodhi, "_mem", None)
@@ -3943,33 +3997,37 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
                         best = cand
                 if best is None:
                     continue
-                # full lists: the CLI preview and the report both clip *with a
-                # stated count*, and the JSON export must stay complete
+                cves, shared = _advisory_cve_scope(u)
+                have_epoch = _comparable_epoch(p)
+                want_epoch = best.get("epoch")
+
+                build = {
+                    "name": n,
+                    "have": with_epoch(_build_evr(p) if n != src else p["evr"], have_epoch),
+                    "want": with_epoch(f"{best['version']}-{best['release']}", want_epoch),
+                    "have_epoch": have_epoch, "want_epoch": want_epoch,
+                    "alias": u["alias"], "notes": u.get("notes") or "",
+                }
+                advisory = {**build, "severity": u.get("severity"),
+                            "cves": sorted(cves), "advisory_wide_cves": sorted(shared)}
                 if row is None:
-                    row = {"name": n, "src": src,
-                           "have": _build_evr(p) if n != src else p["evr"],
-                           "want": f"{best['version']}-{best['release']}",
-                           "_best": best,
-                           "alias": u["alias"], "severity": u.get("severity"),
-                           "cves": set(u.get("cves") or ()),
-                           "notes": u.get("notes") or ""}
+                    row = {**build, "src": src, "_best": best, "severity": u.get("severity"),
+                           "cves": cves, "advisory_wide_cves": shared, "advisories": [advisory]}
                 else:
-                    row["cves"].update(u.get("cves") or ())
+                    row["cves"].update(cves)
+                    row["advisory_wide_cves"].update(shared)
+                    row["advisories"].append(advisory)
                     if evr_cmp(row["_best"], best) < 0:
                         row["_best"] = best
-                        row["want"] = f"{best['version']}-{best['release']}"
-                        row["alias"] = u["alias"]
-                        if u.get("notes"):
-                            row["notes"] = u.get("notes") or ""
+                        row.update(build)
                     if order.get((u.get("severity") or "").lower(), 0) > \
                             order.get((row["severity"] or "").lower(), 0):
                         row["severity"] = u.get("severity")
-                        if not row["notes"] and u.get("notes"):
-                            row["notes"] = u.get("notes") or ""
                 break
         if row is not None:
             row.pop("_best", None)
             row["cves"] = sorted(row["cves"])
+            row["advisory_wide_cves"] = sorted(row["advisory_wide_cves"])
             rows.append(row)
     rows.sort(key=lambda r: -order.get((r["severity"] or "").lower(), 0))
     cov["checked"] = queried
@@ -4005,6 +4063,12 @@ def coverage_line(cov: dict) -> str:
              if cov.get("truncated") else "")
           + (f"；BACKLOG_POOL 中有 {len(cov['pool_missing'])} 个条目不在已解析的软件包表中"
              if cov.get("pool_missing") else ""))
+    if cov.get("pool_ineligible"):
+        excluded = cov["pool_ineligible"]
+        en += (f"; {len(excluded)} pool entries are installed but not eligible for Fedora "
+               f"matching (third-party RPMs: {clip_list(excluded, 6)})")
+        zh += (f"；{len(excluded)} 个候选条目已安装但不适用 Fedora 匹配"
+               f"（第三方 RPM：{clip_list(excluded, 6, lang='zh', joiner='，')}）")
     if cov.get("rpmdb_complete") is False:
         en += "; RPM inventory incomplete: missing packages or fields may hide updates"
         zh += "；RPM 包表不完整：缺失的软件包或字段可能掩盖更新"
@@ -4028,11 +4092,14 @@ def cmd_backlog(args):
     # --backlog-candidates caps how many source packages get audited, as it does
     # for `check --audit`; --max-bodhi only caps the API calls spent on them.
     rows, cov = security_backlog(pkgs, rel, bodhi,
-                                 limit=max(1, args.backlog_candidates))
+                                 limit=args.backlog_candidates)
     ver = img["annotations"].get("org.opencontainers.image.version", "?")
     print(f"{args.image}:{args.ref}  version 版本 {ver}  ({rel})")
     print(T(f"{len(rows)} package(s) in this image are behind a published STABLE security update",
             f"此镜像中有 {len(rows)} 个软件包落后于已发布的 STABLE 安全更新") + "\n")
+    if rows:
+        print(T("  newest candidate build and its alias; highest severity across matching errata",
+                "  显示最新候选构建及其勘误编号；严重度取匹配勘误中的最高值"))
     for r in rows:
         print(f"  {r['name']:28} {r['have']:>26}  ->  {r['want']:<26} "
               f"{(r['severity'] or '?'):9} {r['alias']}")
@@ -4220,7 +4287,7 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
         "version": cur["annotations"].get("org.opencontainers.image.version"),
         "inputhash": cur["annotations"].get("rpmostree.inputhash"),
         "kernel": cur["annotations"].get("ostree.linux"), "image": cur, "tags": [to]}}
-    cur_time = _ts_order(cur.get("created"))
+    cur_time = _image_order(cur)
     sig_pool = sigs
     cur_hex = (cur.get("index_digest") or "").partition(":")[2]
     if cur_hex in sigs:
@@ -4266,7 +4333,7 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
             # standalone rpmdb chunk" - on every later run too, as no state was
             # ever saved.
             continue
-        candidate_time = _ts_order(img.get("created"))
+        candidate_time = _image_order(img)
         if cur_time and (not candidate_time or candidate_time > cur_time):
             # Signature publication and image creation can happen in different
             # orders. A later image should never use up a slot in this history.
@@ -4311,7 +4378,7 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
             f"is normal and is not counted here)",
             f"遍历历史时有 {len(probe_failures)} 个构建引用无法解析：{shown}{more}"
             f"——此列表可能不完整（悬空的 .sig 标签是正常的，未计入）"))
-    out = sorted(recs.values(), key=lambda r: _ts_order(r.get("created")), reverse=True)
+    out = sorted(recs.values(), key=lambda r: _image_order(r["image"]), reverse=True)
     for i, r in enumerate(out):
         if i + 1 < len(out):
             prev = out[i + 1]
@@ -4327,8 +4394,10 @@ def cmd_history(args):
     reg = _registry(args)
     reg._token()
     hist_warnings: list = []
+    snapshot = getattr(args, "at_digest", None)
+    cur = resolve(reg, snapshot) if snapshot else None
     rows = build_history(reg, scan=args.scan, days=args.days, to=args.to,
-                         warn=hist_warnings)
+                         warn=hist_warnings, cur=cur)
     # The shared signature options apply to history too, not just to diff/check.
     if getattr(args, "cosign_pub", None) or getattr(args, "require_cosign", False):
         for row in rows:
@@ -4461,8 +4530,8 @@ def cmd_tags(args):
     print(f"  created 构建时间: {cur.get('created')}   kernel 内核: {cur['annotations'].get('ostree.linux')}")
     print(f"  chunks 分块: {len(cur['layers'])}  total 总量: {human(sum(l['size'] for l in cur['layers']))}")
     print(f"\ndated tags, newest first (probing the last {args.days} days; a missing day "
-          f"means no build was published then): / 日期标签，从新到旧（探测最近 {args.days} 天；"
-          f"缺失的日期表示当天没有发布构建）：")
+          f"means no dated tag was found for that day): / 日期标签，从新到旧（探测最近 {args.days} 天；"
+          f"缺失的日期表示未找到对应日期标签）：")
     now = time.time()
     probe_warnings: list = []
     for i in range(max(0, args.days)):  # day 0 is today (UTC): the tag most likely to be new
@@ -4738,7 +4807,7 @@ def orient(a: dict, b: dict, keep_order: bool = False) -> tuple:
     reversed pair reports "no CVE/erratum found" for an update that carries two
     dozen CVEs, and lists the fixes it *adds* as fixes it *removes*.
     """
-    ca, cb = _ts_order(a.get("created")), _ts_order(b.get("created"))
+    ca, cb = _image_order(a), _image_order(b)
     if keep_order or not ca or not cb or ca <= cb:
         return a, b, False
     return b, a, True
@@ -4911,8 +4980,8 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
         # larger one - `--max-bodhi 10 --audit` still made up to 45 calls) and one
         # shared answer cache, so a source package already looked up for the diff
         # costs nothing here.
-        n_cand = max(1, int(getattr(args, "backlog_candidates", BACKLOG_CANDIDATES)))
-        backlog, coverage = security_backlog(pb, rel, bodhi, limit=n_cand)
+        backlog, coverage = security_backlog(pb, rel, bodhi,
+                                              limit=getattr(args, "backlog_candidates", None))
     if bodhi is not None:
         bstate = {"failed": bodhi.failed, "skipped": bodhi.skipped,
                   "truncated": sorted(bodhi.truncated_src)}
@@ -4977,6 +5046,38 @@ def degrade_manifest_only_verdict(v: dict, ld: dict) -> dict:
     return v
 
 
+def _comparison_json(res: dict, from_label=None, to_label=None) -> dict:
+    """Shared reproducible output for interactive diffs and watch artifacts."""
+    a, b, d = res["a"], res["b"], res["diff"]
+    xc = res.get("xc") or {}
+    changed = []
+    for c in d["changed"]:
+        cls = c.get("cls") or {}
+        old, new = _evr_pair(c["old"], c["new"])
+        changed.append({"name": c["name"], "old": old, "new": new, "src": c["src"],
+                        "old_arch": c["old"].get("arch"), "new_arch": c["new"].get("arch"),
+                        "dir": c["dir"], "security": bool(cls.get("security")),
+                        "cves": cls.get("cves", []), "cves_dropped": cls.get("cves_dropped", []),
+                        "advisory_wide_cves": cls.get("advisory_wide_cves", []),
+                        "aliases": cls.get("aliases", []), "already_had": cls.get("already_had", []),
+                        "not_pushed": cls.get("not_pushed", []), "passed_over": cls.get("passed_over", []),
+                        "why": cls.get("why", [])})
+    return {"verdict": res["verdict"],
+            "from": a.get("ref") if from_label is None else from_label,
+            "to": b.get("ref") if to_label is None else to_label,
+            "from_digest": a["digest"], "digest": b["digest"],
+            "from_index_digest": a.get("index_digest"), "index_digest": b.get("index_digest"),
+            "version": (b.get("annotations") or {}).get("org.opencontainers.image.version", "?"),
+            "download_bytes": res["layers"]["download_bytes"],
+            "download_bytes_is_upper_bound": True,
+            "versions_known": xc.get("versions_known", d.get("count_a") != "?"),
+            "rpmdb_issues": d.get("rpmdb_issues"),
+            "changed": changed, "added": d.get("added", []), "removed": d.get("removed", []),
+            "silent_rebuilds": xc.get("silent_rebuilds", []),
+            "behind_stable_security": res.get("backlog") or [],
+            "backlog_coverage": res.get("backlog_coverage")}
+
+
 def cmd_diff(args):
     res = do_diff(args, args.a, args.b)
     md = render_markdown(f"{args.image}: {shortref(res['a']['ref'])} → {shortref(res['b']['ref'])}",
@@ -4989,31 +5090,7 @@ def cmd_diff(args):
     else:
         print(md)
     if args.json_out:
-        xc = res.get("xc") or {}
-        # in manifest-only mode nothing ever gets a "cls", so never index it
-        payload = {"verdict": res["verdict"],
-                   "from": res["a"]["ref"], "to": res["b"]["ref"],
-                   "from_digest": res["a"]["digest"], "digest": res["b"]["digest"],
-                   "download_bytes": res["layers"]["download_bytes"],
-                   "download_bytes_is_upper_bound": True,
-                   "versions_known": xc.get("versions_known", True),
-                   "changed": [{"name": c["name"],
-                                "old": _evr_pair(c["old"], c["new"])[0],
-                                "new": _evr_pair(c["old"], c["new"])[1], "src": c["src"],
-                                "dir": c["dir"],
-                                "security": bool((c.get("cls") or {}).get("security")),
-                                "cves": (c.get("cls") or {}).get("cves", []),
-                                "aliases": (c.get("cls") or {}).get("aliases", []),
-                                "already_had": (c.get("cls") or {}).get("already_had", []),
-                                "not_pushed": (c.get("cls") or {}).get("not_pushed", []),
-                                "passed_over": (c.get("cls") or {}).get("passed_over", []),
-                                "why": (c.get("cls") or {}).get("why", [])}
-                               for c in res["diff"]["changed"]],
-                   "silent_rebuilds": xc.get("silent_rebuilds", []),
-                   "behind_stable_security": res.get("backlog", []),
-                   "backlog_coverage": res.get("backlog_coverage"),
-                   "added": res["diff"]["added"], "removed": res["diff"]["removed"]}
-        _atomic_write_json(args.json_out, payload, indent=1)
+        _atomic_write_json(args.json_out, _comparison_json(res), indent=1)
     # Exit status reflects *execution*, not the verdict. This used to return
     # 1 for "consider" and 2 for "update-now", which turned an informational
     # recommendation into what every shell reads as an error (and broke any
@@ -5103,12 +5180,16 @@ def cmd_check(args):
     maybe_verify_resolved(reg, cur, args)
     ver = cur["annotations"].get("org.opencontainers.image.version", "?")
 
+    watched = {"watched_digest": cur["digest"], "watched_version": ver,
+               "watched_index_digest": cur.get("index_digest") or cur["digest"]}
+
     def save_state(extra=None):
         # `digest` is the per-arch (platform) digest - that is what a client of
         # --arch pulls and what every comparison in this file uses. `index_digest`
         # names the push. They are different strings and are never interchangeable.
         d = {**ident, "digest": cur["digest"], "index_digest": cur.get("index_digest"),
              "tag": args.to, "version": ver, "created": cur.get("created"),
+             "created_order": cur.get("created_order"),
              "inputhash": cur["annotations"].get("rpmostree.inputhash"),
              "ostree_commit": cur["annotations"].get("ostree.commit"),
              "checked": int(time.time())}
@@ -5132,10 +5213,10 @@ def cmd_check(args):
         _atomic_write_text(report, f"# No new build 无新构建\n\n{msg}\n")
         _atomic_write_json(report + ".json", {
             "verdict": {"level": "no-update", "headline": msg}, "version": ver,
-            "digest": cur["digest"], "download_bytes": 0})
+            "digest": cur["digest"], "download_bytes": 0, **watched})
         gh_outputs({"verdict": "no-update", "digest": cur["digest"], "summary": msg,
                     "download_bytes": 0, "report": report, "version": ver,
-                    "inputhash": cur["annotations"].get("rpmostree.inputhash") or ""})
+                    "inputhash": cur["annotations"].get("rpmostree.inputhash") or "", **watched})
         return 0
 
     # what do we compare against? 1) explicit --a  2) last digest we analysed
@@ -5200,60 +5281,62 @@ def cmd_check(args):
         else:
             ref_a = state_base_dig
             label_a = state_base_lbl
+    cur_time = _image_order(cur)
+    stream_maj = _stream_major(args.to, cur)
+
+    def is_earlier_candidate(candidate):
+        build_time = _image_order(candidate)
+        version = str((candidate.get("annotations") or {}).get("org.opencontainers.image.version") or "")
+        return (candidate.get("digest") != cur["digest"]
+                and bool(build_time and cur_time and build_time < cur_time)
+                and (not stream_maj or version.startswith(stream_maj + "."))
+                and (rpmdb_chunk(cur) is None or rpmdb_chunk(candidate) is not None))
+
+    def read_candidate(ref):
+        try:
+            return resolve(reg, ref)
+        except RegistryError as e:
+            if e.http_code != 404:
+                reason = e.http_code or type(e).__name__
+                hist_warnings.append(T(f"could not read candidate baseline {shortref(ref)} ({reason})",
+                                       f"无法读取候选基线 {shortref(ref)}（{reason}）"))
+            return None
+
     if not ref_a and hist:
-        # build_history rows carry the *index* digest in "digest"; comparing that
-        # against cur["digest"] (the platform digest) never matched, so the current
-        # build was never skipped and the baseline silently became the image itself -
-        # a first run then reported "no-change" with a 0-byte download.
-        for r in hist:
-            pd = r.get("platform_digest") or r["digest"]
-            if pd != cur["digest"] and (_ts_order(r.get("created")) or "9") <= (_ts_order(cur.get("created")) or "9"):
-                ref_a = pd
-                # the state file's label rule: a light resolve reads annotations
-                # only, and a build without the version one was titled `None @ ...`
-                label_a = _state_label(dict(r, digest=pd))
-                break
-    if not ref_a:
-        cur_time = _ts_order(cur.get("created"))
+        # History is a light scan: that row guarantees neither a readable config
+        # nor the same creation time as a full resolution of the OCI image.
+        for row in hist:
+            pd = row.get("platform_digest") or row["digest"]
+            if pd == cur["digest"]:
+                continue
+            candidate = read_candidate(pd)
+            if not candidate or not is_earlier_candidate(candidate):
+                continue
+            ref_a, label_a, prev = pd, _state_label(dict(row, digest=pd)), candidate
+            break
+    if not ref_a and cur_time:
         try:
             anchor = datetime.date.fromisoformat(cur_time[:10])
         except ValueError:
             anchor = datetime.datetime.now(datetime.timezone.utc).date()
-        stream_maj = _stream_major(args.to, cur)
         for i in range(22):
             day = (anchor - datetime.timedelta(days=i)).strftime("%Y%m%d")
             probe_tags = [day, f"{day}-{stream_maj}"] if stream_maj else [day]
-            for d in probe_tags:
-                dig = tag_exists(reg, d, warn=hist_warnings)
-                if not dig:
+            candidates = []
+            for tag in probe_tags:
+                dig = tag_exists(reg, tag, warn=hist_warnings)
+                if not dig or dig == cur.get("index_digest"):
                     continue
-                if dig == cur.get("index_digest"):
+                candidate = read_candidate(tag)
+                if candidate and candidate.get("index_digest") != dig:
+                    hist_warnings.append(T(f"candidate tag {tag} moved during the baseline probe; ignored",
+                                           f"基线探测期间标签 {tag} 已移动，已忽略"))
                     continue
-                try:
-                    cand = resolve(reg, d)
-                except (NoArchManifest, MalformedManifest):
-                    continue
-                except RegistryError as e:
-                    if e.http_code != 404:
-                        hist_warnings.append(T(
-                            f"could not read candidate baseline tag {d} "
-                            f"({e.http_code or 'network error'})",
-                            f"无法读取候选基线标签 {d}（{e.http_code or 'network error'}）"))
-                    continue
-                cand_ver = str((cand.get("annotations") or {}).get(
-                    "org.opencontainers.image.version") or "")
-                if stream_maj and not cand_ver.startswith(stream_maj + "."):
-                    continue
-                if cand.get("digest") == cur["digest"]:
-                    continue
-                if rpmdb_chunk(cur) is not None and rpmdb_chunk(cand) is None:
-                    continue
-                cand_time = _ts_order(cand.get("created"))
-                if cur_time and (not cand_time or cand_time > cur_time):
-                    continue
-                ref_a, label_a, prev = d, d, cand
-                break
-            if ref_a:
+                if candidate and is_earlier_candidate(candidate):
+                    candidates.append((tag, candidate))
+            if candidates:
+                ref_a, prev = max(candidates, key=lambda pair: _image_order(pair[1]))
+                label_a = ref_a
                 break
     if not ref_a:
         msg = T(f"new build ({ver}) but no earlier image available to diff against",
@@ -5265,9 +5348,9 @@ def cmd_check(args):
                                   f"Current 当前: {ver} {cur['digest'][:19]}...\n")
         _atomic_write_json(report + ".json", {
             "verdict": {"level": "unknown", "headline": msg},
-            "version": ver, "digest": cur["digest"]})
+            "version": ver, "digest": cur["digest"], **watched})
         gh_outputs({"verdict": "unknown", "digest": cur["digest"], "summary": msg,
-                    "download_bytes": 0, "report": report, "version": ver})
+                    "download_bytes": 0, "report": report, "version": ver, **watched})
         # Remember the checkpoint for a future build, not a successful analysis.
         # An unchanged digest must retry the missing baseline on the next run.
         save_state({"last_verdict": "unknown"})
@@ -5331,14 +5414,14 @@ def cmd_check(args):
     # explicit --a, a forced re-check of `prev_digest`, or a baseline that had to
     # replace a pruned one - there it miscounted and misnamed what was compared.
     seen = (state.get("created") or "") \
-        if not state_lost and prev["digest"] == state.get("digest") else ""
+        if not args.a and not state_lost and prev["digest"] == state.get("digest") else ""
     if seen:
         uniq, seen_pds = [], {cur["digest"], state.get("digest")}
-        seen_ord = _ts_order(seen)
-        cur_ord = _ts_order(cur.get("created"))
-        for r in sorted(hist, key=lambda x: _ts_order(x.get("created"))):
+        seen_ord = _image_order(state)
+        cur_ord = _image_order(cur)
+        for r in sorted(hist, key=lambda x: _image_order(x.get("image") or x)):
             pd = r.get("platform_digest") or r["digest"]
-            r_ord = _ts_order(r.get("created"))
+            r_ord = _image_order(r.get("image") or r)
             # same digest-space as above: index vs platform never compares equal,
             # which used to count the current build as an extra new one
             if (not pd or pd in seen_pds or not r_ord or r_ord <= seen_ord
@@ -5376,21 +5459,8 @@ def cmd_check(args):
                + f" | download 下载 {human(res['layers']['download_bytes'])}")
     print("\n" + "=" * 72, file=sys.stderr)
     print(summary, file=sys.stderr)
-    _atomic_write_json(report + ".json", {"verdict": v, "from": from_lbl, "to": to_lbl,
-               "from_digest": res["a"]["digest"], "digest": res["b"]["digest"],
-               "version": to_ver, "watched_digest": cur["digest"], "watched_version": ver,
-               "download_bytes": res["layers"]["download_bytes"],
-               "changed": [{"name": c["name"],
-                            "old": _evr_pair(c["old"], c["new"])[0],
-                            "new": _evr_pair(c["old"], c["new"])[1],
-                            "src": c["src"], "dir": c["dir"],
-                            "security": bool((c.get("cls") or {}).get("security")),
-                            "cves": (c.get("cls") or {}).get("cves", [])}
-                           for c in res["diff"]["changed"]],
-               # complete: the report's backlog table stops at 25 rows and refers
-               # to the JSON output for the rest - for `check`, that is this file
-               "behind_stable_security": res.get("backlog") or [],
-               "backlog_coverage": res.get("backlog_coverage")})
+    _atomic_write_json(report + ".json", {**_comparison_json(res, from_lbl, to_lbl),
+                                          **watched})
     prune_days = getattr(args, "prune_days", 0) or 0
     if prune_days > 0:
         pruned = prune_cache(getattr(args, "cache_dir", None)
@@ -5419,8 +5489,7 @@ def cmd_check(args):
     else:
         fail_reason = ""
     gh_outputs({"verdict": v["level"], "digest": res["b"]["digest"], "version": to_ver,
-                "from_digest": res["a"]["digest"], "watched_digest": cur["digest"],
-                "watched_version": ver,
+                "from_digest": res["a"]["digest"], **watched,
                 "download_bytes": res["layers"]["download_bytes"], "summary": summary,
                 "report": report,
                 # complete, not clipped: a workflow consumer must never see a
@@ -5473,9 +5542,9 @@ def add_common(p):
                         "不查询 Fedora Bodhi（仅按更新日志匹配 CVE）")
     p.add_argument("--max-bodhi", type=int, default=100,
                    help="cap on Bodhi API calls / Bodhi API 调用上限")
-    p.add_argument("--backlog-candidates", type=int, default=BACKLOG_CANDIDATES,
+    p.add_argument("--backlog-candidates", type=int, default=None,
                    help="with --audit: how many candidate source packages the "
-                        "'still behind' check may look at (it shares the --max-bodhi "
+                        "'still behind' check may look at (default: all candidates; shares the --max-bodhi "
                         "call budget) / 配合 --audit：'仍落后' 检查最多查看多少个候选源码包"
                         "（与 --max-bodhi 共用调用预算）")
     p.add_argument("--audit", action="store_true",
@@ -5548,6 +5617,8 @@ def main(argv=None):
     p.add_argument("--days", type=int, default=7,
                    help="also resolve this many dated tags to label rows (0 = off) / "
                         "同时解析这么多天的日期标签来标注行（0 = 关闭）")
+    p.add_argument("--at-digest", help="anchor the history at this resolved top-level sha256 digest "
+                   "instead of re-reading --to / 用已解析的顶层 sha256 摘要定位历史，而不重新读取 --to")
     p.set_defaults(func=cmd_history)
 
     p = sub.add_parser("check", help="stateful digest watch (for CI/cron) / 有状态 digest 监控（用于 CI/cron）")
@@ -5587,6 +5658,11 @@ def main(argv=None):
     p.set_defaults(func=cmd_check)
 
     args = ap.parse_args(argv)
+    if args.cmd == "history" and args.at_digest is not None:
+        if not _clean_sha256_header(args.at_digest) or args.at_digest != args.at_digest.strip():
+            ap.error(T("--at-digest requires sha256:<64 hex>", "--at-digest 需要 sha256:<64 位十六进制>"))
+    if args.backlog_candidates is not None and args.backlog_candidates < 1:
+        ap.error(T("--backlog-candidates must be positive", "--backlog-candidates 必须为正数"))
     if args.cmd == "backlog" and args.no_bodhi:
         ap.error(T("backlog requires Bodhi; --no-bodhi is incompatible",
                    "backlog 需要查询 Bodhi，不能与 --no-bodhi 同用"))

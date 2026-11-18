@@ -6,15 +6,23 @@ import re
 import subprocess
 import sys
 
-from resolve import SOURCE, URL, VERSION_PATTERN, parse_release_json, validate_run_metadata
+from resolve import MAX_BYTES, SOURCE, URL, VERSION_PATTERN, parse_release_json, validate, validate_run_metadata
 
 
 REVISION = re.compile(r'[0-9a-f]{40}')
 VERSION_FIELDS = ('MAJOR', 'MINOR', 'BUILD', 'PATCH')
 
 
+def read_metadata_json(path):
+    with path.open('rb') as source:
+        raw = source.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise ValueError(f'Oversized build metadata: {path.name}')
+    return parse_release_json(raw)
+
+
 def read_lock(root, workspace):
-    lock = parse_release_json((root / 'metadata/build-lock.json').read_bytes())
+    lock = read_metadata_json(root / 'metadata/build-lock.json')
     if not isinstance(lock, dict):
         raise ValueError('Invalid build-lock.json')
     repository, workflow_sha, run_id = (os.environ[key] for key in
@@ -35,6 +43,8 @@ def read_lock(root, workspace):
     version = lock.get('version')
     if not isinstance(version, str) or not VERSION_PATTERN.fullmatch(version):
         raise ValueError('Invalid version in build-lock.json')
+    if validate(read_metadata_json(root / 'metadata/chromiumdash.json')) != (version, revision):
+        raise ValueError('ChromiumDash snapshot does not match the build lock')
     return lock
 
 
@@ -45,12 +55,20 @@ def verify_source(root, lock):
         gitdir = repo / '.git'
         if repo.is_symlink() or not gitdir.is_dir() or gitdir.is_symlink():
             raise ValueError(f'{directory} is missing a real .git directory')
+        git = ['/usr/bin/git', '--no-optional-locks', '--no-replace-objects',
+               '-c', 'core.fsmonitor=false', '-c', 'core.filemode=true', '-C', str(repo)]
         fields = subprocess.check_output(
-            ['/usr/bin/git', '-C', str(repo), 'rev-parse', '--show-toplevel', 'HEAD^{commit}'],
-            env=git_env, text=True,
+            [*git, 'rev-parse', '--show-toplevel', 'HEAD^{commit}'], env=git_env, text=True,
         ).splitlines()
         if fields != [str(repo.resolve()), lock[field]]:
             raise ValueError(f'{directory} worktree or revision mismatch')
+        # HEAD alone does not prove the working files match. Build outputs,
+        # gclient dependency trees and other untracked inputs are not Git changes.
+        status = subprocess.check_output(
+            [*git, 'status', '--porcelain=v1', '--untracked-files=no', '--ignore-submodules=all'], env=git_env,
+        )
+        if status:
+            raise ValueError(f'{directory} has tracked changes at the locked revision')
 
     version = {}
     for line in (root / 'src/chrome/VERSION').read_text(encoding='utf-8').splitlines():
@@ -77,16 +95,18 @@ def verify_restore(root, workspace, stage):
     with (root / 'metadata/runners.jsonl').open('rb') as history:
         for n in range(int(stage)):
             line = history.readline(16 * 1024 + 1)
-            if not line or len(line) > 16 * 1024:
-                raise ValueError(f'Missing or oversized checkpoint record for stage {n:02d}')
+            if not line.endswith(b'\n') or len(line) > 16 * 1024:
+                raise ValueError(f'Missing, unterminated or oversized checkpoint record for stage {n:02d}')
             record = parse_release_json(line)
             if (not isinstance(record, dict) or record.get('stage') != f'{n:02d}'
                     or record.get('status') != 'running' or record.get('final_stage') is not False):
                 raise ValueError(f'Checkpoint must contain running stages 00 through {int(stage) - 1:02d}')
         if history.read(1):
             raise ValueError(f'Checkpoint has unexpected stages for resuming {stage}')
-    if (root / 'src/out/Release/args.gn').read_bytes() != (workspace / 'config/args.gn').read_bytes():
-        raise ValueError('GN arguments changed')
+    expected_args = (workspace / 'config/args.gn').read_bytes()
+    for args_path in ('src/out/Release/args.gn', 'metadata/args.gn'):
+        if (root / args_path).read_bytes() != expected_args:
+            raise ValueError(f'GN arguments changed: {args_path}')
     if not (root / 'src/out/Release/build.ninja').is_file():
         raise ValueError('Restored build tree is missing out/Release/build.ninja')
     for rel_tool in ('src/buildtools/linux64/gn', 'src/third_party/ninja/ninja'):

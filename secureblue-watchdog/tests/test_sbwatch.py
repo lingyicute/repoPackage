@@ -2974,13 +2974,9 @@ class TestTelegramPush(unittest.TestCase):
         code = workflow_python("Push to Telegram")
         sent = {}
 
-        class Resp:
-            def read(self_inner):
-                return reply
-
         def fake_urlopen(req, timeout=None):
             sent.update(json.loads(req.data.decode("utf-8")))
-            return Resp()
+            return io.BytesIO(reply)
 
         saved = S.urllib.request.urlopen
         saved_env = dict(os.environ)
@@ -2992,8 +2988,9 @@ class TestTelegramPush(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as d:
                 os.chdir(d)
-                with open("report.md", "w", encoding="utf-8") as fh:
-                    fh.write(report)
+                if report is not None:
+                    with open("report.md", "w", encoding="utf-8") as fh:
+                        fh.write(report)
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                     exec(compile(code, "telegram-step", "exec"), {"__name__": "__main__"})
         finally:
@@ -3015,8 +3012,8 @@ class TestTelegramPush(unittest.TestCase):
         self.assertEqual(text, "sum\n\n" + body)
 
     def test_a_missing_report_is_not_fatal(self):
-        text, err = self._push("", summary="sum")
-        self.assertEqual(text, "sum\n\n")
+        text, err = self._push(None, summary="sum")
+        self.assertEqual(text, "sum\n\n(no report)")
         self.assertNotIn("failed", err)
 
 
@@ -3271,7 +3268,7 @@ class TestTagsProbeIncludesToday(unittest.TestCase):
 
 
 class TestMultiArchIndexAnnotations(unittest.TestCase):
-    def test_index_and_descriptor_annotations_survive_light_resolve(self):
+    def test_light_resolve_does_not_mix_in_index_metadata(self):
         import hashlib
         plat = json.dumps({"layers": [], "annotations": {"ostree.linux": "7.2.6"}}).encode()
         idx = json.dumps({
@@ -3288,9 +3285,9 @@ class TestMultiArchIndexAnnotations(unittest.TestCase):
              "Content-Type": "application/vnd.oci.image.index.v1+json"}, idx)
         reg.get = lambda path, accept: plat
         out = reg.resolve("latest", light=True)
-        self.assertEqual(out["annotations"]["org.opencontainers.image.version"], "44.20260917.0")
+        self.assertNotIn("org.opencontainers.image.version", out["annotations"])
         self.assertEqual(out["annotations"]["ostree.linux"], "7.2.6")
-        self.assertEqual(out["created"], "2026-09-17T12:00:00Z")
+        self.assertEqual(out["created"], "")
 
 
 class TestRegistrySplit(unittest.TestCase):
@@ -3309,9 +3306,9 @@ class TestRegistrySplit(unittest.TestCase):
         S._registry(a).close()
         self.assertEqual(a.image, "quay.io/fedora/silverblue")
 
-    def test_trailing_colon_defaults_to_latest(self):
-        self.assertEqual(S.Registry._split("secureblue/x:"),
-                         ("ghcr.io", ("secureblue/x", "latest")))
+    def test_trailing_colon_is_not_an_implicit_latest(self):
+        with self.assertRaises(S.RegistryError):
+            S.Registry._split("secureblue/x:")
 
     def test_empty_repo_is_rejected(self):
         for bad in ("ghcr.io/", "foo/"):

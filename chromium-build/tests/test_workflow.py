@@ -135,6 +135,15 @@ class Resolution(unittest.TestCase):
         response.headers['Transfer-Encoding'] = 'chunked'
         with self.assertRaisesRegex(ValueError, 'both Content-Length and Transfer-Encoding'):
             resolve.fetch_release_json(opener=_FakeOpener([response]))
+        del response.headers['Content-Length']
+        self.assertEqual(resolve.fetch_release_json(opener=_FakeOpener([response])), b'[]')
+        response.headers['Transfer-Encoding'] = 'gzip'
+        with self.assertRaisesRegex(ValueError, 'Multiple ChromiumDash Transfer-Encoding'):
+            resolve.fetch_release_json(opener=_FakeOpener([response]))
+        del response.headers['Transfer-Encoding']
+        response.headers['Transfer-Encoding'] = 'gzip, chunked'
+        with self.assertRaisesRegex(ValueError, 'Unsupported ChromiumDash Transfer-Encoding'):
+            resolve.fetch_release_json(opener=_FakeOpener([response]))
 
 
 class Checkpoint(unittest.TestCase):
@@ -305,17 +314,10 @@ class Checkpoint(unittest.TestCase):
         self.assertEqual(len(self.names()), 3)
 
     def test_tar_metadata_round_trip(self):
-        # Runs pack.sh's own chmod, socket and tar commands (real GNU tar, no compression) on a
-        # tree with read-only and inaccessible nested dirs and a stale Unix socket.
+        # Use the production tar helpers with real files, without touching /mnt.
         import socket
 
-        pack = (ROOT / '.github/scripts/pack.sh').read_text()
-        chmod_pass = 'find "$CR_ROOT" -type d ! -perm -u+rwx -exec chmod u+rwx {} \\;'
-        socket_pass = 'find "$CR_ROOT" -mindepth 1 -type s -delete'
-        tar_cmd = ('tar --format=posix --pax-option=delete=atime,delete=ctime '
-                   '--remove-files -cf - -- "${entries[@]}"')
-        for command in (chmod_pass, socket_pass, tar_cmd):
-            self.assertIn(command, pack)
+        scripts = ROOT / '.github/scripts'
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             src = root / 'src'
@@ -347,16 +349,14 @@ class Checkpoint(unittest.TestCase):
             with socket.socket(socket.AF_UNIX) as sock:
                 sock.bind(str(src / 'run/stale.sock'))
             archive = root / 'test.tar'
-            subprocess.run(
-                ['bash', '-euc',
-                 f'{chmod_pass}\n{socket_pass}\n'
-                 'cd "$CR_ROOT" && shopt -s dotglob nullglob && entries=(*) && '
-                 f'{tar_cmd} > "$1"',
-                 '_', str(archive)],
-                env=dict(os.environ, CR_ROOT=str(src)), check=True)
+            env = dict(os.environ, RUNNER_TEMP=tmp)
+            harness = 'source "$1/common.sh"; source "$1/relay.sh"; '
+            subprocess.run(['bash', '-euc', harness + 'archive_relay_tree "$2" > "$3"',
+                            '_', str(scripts), str(src), str(archive)], env=env, check=True, timeout=10)
             self.assertTrue(src.exists())
             self.assertEqual(list(src.iterdir()), [])
-            subprocess.run(['tar', '--no-same-owner', '-xpf', str(archive), '-C', str(src)], check=True)
+            subprocess.run(['bash', '-euc', harness + 'extract_relay_tree "$2" < "$3"',
+                            '_', str(scripts), str(src), str(archive)], env=env, check=True, timeout=10)
             self.assertEqual((src / '.ninja_log').stat().st_mtime_ns, ns)
             self.assertEqual((src / '.ninja_log').read_text(), 'state')
             self.assertTrue((src / 'link').is_symlink())
@@ -470,6 +470,21 @@ class Supervisor(unittest.TestCase):
         self.assertRegex(p.stderr, r'failed:1; (?:\d+|unknown) MiB written to swap .* GiB left free')
         self.assertEqual((files['output'], files['root/metadata/runners.jsonl']), ('', ''))
 
+    def test_build_refuses_completion_with_a_child_in_a_new_session(self):
+        import shlex
+
+        child = 'import os,time; print(os.getpid(), flush=True); time.sleep(2)'
+        parent = (
+            'import subprocess,sys\n'
+            f'child = subprocess.Popen([sys.executable, "-c", {child!r}], '
+            'start_new_session=True, stdout=subprocess.PIPE)\n'
+            'assert int(child.stdout.readline()) == child.pid\n'
+        )
+        p, files = self.run_main(f'exec {shlex.quote(sys.executable)} -c {shlex.quote(parent)}')
+        self.assertNotEqual(p.returncode, 0)
+        self.assertRegex(p.stderr, r'failed:forced-process-cleanup\(\d+\)')
+        self.assertEqual((files['output'], files['root/metadata/runners.jsonl']), ('', ''))
+
     def test_cancellation_does_not_publish_status_or_leave_ninja_alive(self):
         for signum in (signal.SIGINT, signal.SIGTERM):
             with self.subTest(signal=signum), tempfile.TemporaryDirectory() as tmp:
@@ -483,9 +498,19 @@ class Supervisor(unittest.TestCase):
                 env = dict(os.environ, CR_ROOT=str(root), RUNNER_TEMP=str(tmp), STAGE='03',
                            GITHUB_RUN_ATTEMPT='1', GITHUB_OUTPUT=str(tmp / 'output'),
                            GITHUB_STEP_SUMMARY='')
-                with subprocess.Popen([sys.executable, str(ROOT / '.github/scripts/build.py')],
-                                      env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      text=True) as proc:
+                # Exercise the actual step and wrapper. Only redirect the fixed build root
+                # after sourcing common.sh, so the fixture never writes to /mnt.
+                wrappers = tmp / '.github/scripts'
+                wrappers.mkdir(parents=True)
+                (wrappers / 'build.sh').write_bytes((ROOT / '.github/scripts/build.sh').read_bytes())
+                (wrappers / 'common.sh').write_text(
+                    'source "$GITHUB_WORKSPACE/.github/scripts/common.sh"\n'
+                    'export CR_ROOT="$RUNNER_TEMP/root"\n')
+                workflow = (ROOT / '.github/workflows/chromium-stage.yml').read_text()
+                step = re.search(r'^        run: (.+scripts/build\.sh)$', workflow, re.M)[1]
+                with subprocess.Popen(['bash', '-e', '-c', step], cwd=tmp,
+                                      env={**env, 'GITHUB_WORKSPACE': str(ROOT)},
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc:
                     try:
                         pidfile = tmp / 'ninja.pid'
                         deadline = time.monotonic() + 4
@@ -493,9 +518,10 @@ class Supervisor(unittest.TestCase):
                             time.sleep(0.01)
                         sid = int(pidfile.read_text())
                         proc.send_signal(signum)
-                        _, stderr = proc.communicate(timeout=5)
+                        out, _ = proc.communicate(timeout=5)
                         self.assertNotEqual(proc.returncode, 0)
-                        self.assertIn('NOT checkpointing', stderr)
+                        self.assertIn('NOT checkpointing', out)
+                        self.assertEqual((tmp / 'chromium-logs/build.log').read_text(), out)
                         self.assertEqual((tmp / 'output').read_text(), '')
                         self.assertEqual(build._live_session_pids(sid), [])
                     finally:
@@ -548,6 +574,12 @@ class Retry(unittest.TestCase):
                      'git -C "$CR_ROOT/depot_tools" -c fetch.fsckObjects=true fetch',
                      'gclient sync', 'gclient runhooks'):
             self.assertIn('\nretry ' + step, fetch)
+
+    def test_fetch_records_declared_dependencies_and_actual_git_revisions(self):
+        fetch = (ROOT / '.github/scripts/fetch.sh').read_text()
+        self.assertIn('gclient revinfo > "$CR_ROOT/metadata/dependencies.txt"', fetch)
+        self.assertIn('gclient revinfo --actual --ignore-dep-type=cipd --ignore-dep-type=gcs', fetch)
+        self.assertIn('> "$CR_ROOT/metadata/git-dependencies.txt"', fetch)
 
 
 class StaticPolicy(unittest.TestCase):
@@ -938,7 +970,8 @@ class Hardening(unittest.TestCase):
         self.assertIn('\nenable_java_asserts = false\n', args_gn)
         self.assertIn('\ndebuggable_apks = false\n', args_gn)
         stage = (ROOT / '.github/workflows/chromium-stage.yml').read_text()
-        self.assertIn('| tee -i "$RUNNER_TEMP/chromium-logs/prepare.log"', stage)
+        self.assertIn('exec timeout --signal=INT --kill-after=120s 225m', stage)
+        self.assertIn('> >(tee -i "$RUNNER_TEMP/chromium-logs/prepare.log") 2>&1', stage)
 
     def test_release_apk_checks(self):
         import zipfile
@@ -947,8 +980,9 @@ class Hardening(unittest.TestCase):
         script = ROOT / '.github/scripts/apk.py'
         pin = ROOT / 'config/debug_signer_sha256.txt'
         fingerprint = pin.read_text().strip()
-        elf = b'\x7fELF\x02\x01\x01' + bytes(9) + b'\x03\x00\xb7\x00'
-        dex = b'dex\n039\x00'
+        elf = (b'\x7fELF\x02\x01\x01' + bytes(9) + b'\x03\x00\xb7\x00\x01\x00\x00\x00'
+               + bytes(28) + b'\x40\x00' + bytes(10))
+        dex = b'dex\n039\x00' + bytes(24) + b'\x70\x00\x00\x00' * 2 + b'\x78\x56\x34\x12' + bytes(68)
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -962,11 +996,14 @@ class Hardening(unittest.TestCase):
             signature = root / 'signature.txt'
             valid_signer = f'Number of signers: 1\nSigner #1 certificate SHA-256 digest: {fingerprint}\n'
 
-            def apk_fixture(dex_name='classes.dex', lib_name='lib/arm64-v8a/libchrome.so', lib=elf):
+            def apk_fixture(dex_name='classes.dex', dex_data=dex, lib_name='lib/arm64-v8a/libchrome.so',
+                            lib=elf, extra_lib=None):
                 with zipfile.ZipFile(apk, 'w') as zf:
                     zf.writestr('AndroidManifest.xml', b'manifest')
-                    zf.writestr(dex_name, dex)
+                    zf.writestr(dex_name, dex_data)
                     zf.writestr(lib_name, lib)
+                    if extra_lib:
+                        zf.writestr(extra_lib, elf)
 
             def run_check(badging, signer=valid_signer, tool=aapt2):
                 signature.write_text(signer)
@@ -987,6 +1024,8 @@ class Hardening(unittest.TestCase):
             for badging, message in ((good + '\napplication-debuggable', 'debuggable'),
                                      (good.split('\nnative-code:')[0], 'missing native-code'),
                                      (good.replace('arm64-v8a', 'armeabi-v7a'), 'arm64-v8a'),
+                                     (good + " 'armeabi-v7a'", 'only arm64-v8a'),
+                                     (good + "\nalt-native-code: 'x86_64'", 'only arm64-v8a'),
                                      (good.replace('org.chromium.chrome', 'org.example.app'), 'package name'),
                                      (good.replace('158.0.8127.36', '158.0.8127.99'), 'versionName mismatch'),
                                      (good.replace("versionCode='1234' ", ''), 'positive versionCode')):
@@ -1006,7 +1045,10 @@ class Hardening(unittest.TestCase):
 
             for changes, message in (({'dex_name': 'assets/nested.dex'}, 'classes.dex'),
                                      ({'lib_name': 'lib/arm64-v8a/nested/libchrome.so'}, 'native library'),
-                                     ({'lib': elf[:-2] + b'\x3e\x00'}, 'non-AArch64 shared object')):
+                                     ({'dex_data': dex[:8]}, 'truncated DEX header'),
+                                     ({'extra_lib': 'lib/armeabi-v7a/libchrome.so'}, 'outside arm64-v8a'),
+                                     ({'lib': elf[:20]}, 'truncated ELF header'),
+                                     ({'lib': elf[:18] + b'\x3e\x00' + elf[20:]}, 'non-AArch64 shared object')):
                 apk_fixture(**changes)
                 p = run_check(good)
                 self.assertNotEqual(p.returncode, 0)
@@ -1192,8 +1234,10 @@ class Hardening(unittest.TestCase):
             (cr / 'depot_tools').mkdir(parents=True)
             for repo in (cr / 'src', cr / 'depot_tools'):
                 subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+                (repo / 'tracked.txt').write_text('locked\n')
+                subprocess.run(['git', '-C', str(repo), 'add', 'tracked.txt'], check=True)
                 subprocess.run(['git', '-C', str(repo), '-c', 'user.name=t', '-c', 'user.email=t@t',
-                                'commit', '-q', '--allow-empty', '-m', 'init'], check=True)
+                                'commit', '-q', '-m', 'init'], check=True)
             src_sha = subprocess.check_output(['git', '-C', str(cr / 'src'), 'rev-parse', 'HEAD'], text=True).strip()
             dep_head = subprocess.check_output(['git', '-C', str(cr / 'depot_tools'), 'rev-parse', 'HEAD'], text=True).strip()
             ws = Path(tmp) / 'ws'
@@ -1201,6 +1245,7 @@ class Hardening(unittest.TestCase):
             (ws / 'config/depot_tools_revision.txt').write_text(dep_head + '\n')
             (ws / 'config/args.gn').write_bytes(b'is_debug = false\n')
             (cr / 'src/out/Release/args.gn').write_bytes(b'is_debug = false\n')
+            (cr / 'metadata/args.gn').write_bytes(b'is_debug = false\n')
             (cr / 'src/out/Release/build.ninja').write_text('')
             for rel in ('src/buildtools/linux64/gn', 'src/third_party/ninja/ninja'):
                 tool = cr / rel
@@ -1215,6 +1260,10 @@ class Hardening(unittest.TestCase):
                 'version': '158.0.8127.36',
             }
             (cr / 'metadata/build-lock.json').write_text(json.dumps(lock))
+            snapshot = cr / 'metadata/chromiumdash.json'
+            release = dict(channel='Stable', platform='Android', version=lock['version'],
+                           hashes={'chromium': src_sha})
+            snapshot.write_text(json.dumps([release]))
             env = dict(os.environ, CR_ROOT=str(cr), GITHUB_WORKSPACE=str(ws),
                        GITHUB_REPOSITORY='o/r', GITHUB_RUN_ID='1', GITHUB_SHA='c' * 40, STAGE='01')
             prior = dict(stage='00', status='running', final_stage=False, run_attempt='1')
@@ -1222,6 +1271,32 @@ class Hardening(unittest.TestCase):
             records.write_text(json.dumps(prior) + '\n')
             p = subprocess.run(command, env=env, capture_output=True, text=True)
             self.assertEqual(p.returncode, 0, p.stderr)
+
+            def assert_rejects(message):
+                result = subprocess.run(command, env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+
+            # An otherwise valid final JSON value needs a separator before appending.
+            records.write_text(json.dumps(prior))
+            assert_rejects('unterminated')
+            records.write_text(json.dumps(prior) + '\n')
+
+            snapshot.write_text(json.dumps([{**release, 'version': '158.0.8127.37'}]))
+            assert_rejects('ChromiumDash snapshot does not match')
+            snapshot.write_text(json.dumps([release]))
+            (cr / 'metadata/args.gn').write_text('is_debug = true\n')
+            assert_rejects('GN arguments changed: metadata/args.gn')
+            (cr / 'metadata/args.gn').write_bytes(b'is_debug = false\n')
+            tracked_src = cr / 'src/tracked.txt'
+            tracked_src.write_text('edited without changing HEAD\n')
+            assert_rejects('src has tracked changes')
+            tracked_src.write_text('locked\n')
+            (cr / 'depot_tools/tracked.txt').write_text('staged edit\n')
+            subprocess.run(['git', '-C', str(cr / 'depot_tools'), 'add', 'tracked.txt'], check=True)
+            assert_rejects('depot_tools has tracked changes')
+            subprocess.run(['git', '-C', str(cr / 'depot_tools'), 'restore', '--source=HEAD',
+                            '--staged', '--worktree', 'tracked.txt'], check=True)
 
             p = subprocess.run(command, env={**env, 'STAGE': '02'}, capture_output=True, text=True)
             self.assertNotEqual(p.returncode, 0)
@@ -1308,6 +1383,16 @@ class Hardening(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn('failed or were cancelled: part-01.', summary)
         self.assertNotIn('unverified-apk-*', summary)
+
+    def test_common_disallows_depot_tools_bootstrap_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            names = ['CUSTOM_CIPD_CLIENT', 'DEPOT_TOOLS_DIR', 'DEPOT_TOOLS_UNAME_S', 'VPYTHON_BYPASS']
+            env = dict(os.environ, RUNNER_TEMP=tmp, **dict.fromkeys(names, 'inherited'))
+            p = subprocess.run(['bash', '-c', 'source "$1/common.sh"; shift; '
+                                'for name in "$@"; do [[ ! -v "$name" ]] || exit 1; done',
+                                '_', str(ROOT / '.github/scripts'), *names],
+                               env=env, capture_output=True, text=True, timeout=5)
+            self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_common_xdg_isolation_and_interruptible_backoff(self):
         import time
