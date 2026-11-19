@@ -353,7 +353,7 @@ h1{font-size:38px;font-weight:800;letter-spacing:1px}
 
   <section class="board-wrap" id="boardWrap">
     <canvas id="board" tabindex="0" role="application" aria-label="15×15 连珠棋盘。使用方向键或 WASD 移动光标，空格或回车落子" aria-describedby="boardHelp"></canvas>
-    <p class="sr-only" id="boardHelp">黑棋先行且有三三、四四、长连三种禁手，禁手点在棋盘上以叉号标出。坐标的列是 A 到 P（跳过 I），行是自棋盘底部向上数的 1 到 15。每一手棋的坐标、手数与轮到哪一方，以及光标所在格与禁手情况，都会由本页的实时状态区播报。</p>
+    <p class="sr-only" id="boardHelp">黑棋先行且有三三、四四、长连三种禁手，禁手点在棋盘上以叉号标出。坐标的列是 A 到 O（不跳过 I），行是自棋盘底部向上数的 1 到 15。每一手棋的坐标、手数与轮到哪一方，以及光标所在格与禁手情况，都会由本页的实时状态区播报。</p>
   </section>
 
   <section class="tools">
@@ -408,6 +408,9 @@ const LS={
   set(k,v){try{localStorage.setItem('yirenju.'+k,JSON.stringify(v));}catch(e){}}
 };
 const ACCENTS={purple:'#a78bfa',blue:'#82aaff',teal:'#5edfd0',green:'#6fdc8c',yellow:'#ecc64f',orange:'#f6ad7b',pink:'#f17bb0',red:'#ef6f6f'};
+/* 色名只出现在色块的 title / aria-label 里（浏览器提示与读屏播报，不经页面字体渲染）：
+   写成转义序列，源码里不出现这些字，内嵌字体子集就不必为它们加字形 */
+const ACCENT_NAME={purple:'\u7d2b\u8272',blue:'\u84dd\u8272',teal:'\u9752\u8272',green:'\u7eff\u8272',yellow:'\u9ec4\u8272',orange:'\u6a59\u8272',pink:'\u7c89\u8272',red:'\u7ea2\u8272'};
 /* 只认自有键：ACCENTS[a] 对 'constructor'、'toString'、'__proto__' 等原型键也为真 */
 const isAccent=a=>Object.prototype.hasOwnProperty.call(ACCENTS,a);
 const MODE_LABEL={'ai-easy':'简单','ai-medium':'中等','ai-hard':'困难','ai-expert':'专家','pvp':'双人'};
@@ -945,12 +948,6 @@ function hashFromBoard(){
   zh1=0;zh2=0;
   for(let x=0;x<N;x++)for(let y=0;y<N;y++)if(board[x][y]!==EMPTY)hashPlace(x,y,board[x][y]);
 }
-/* 胜负分归一化：胜负分携带深度加成（±(9000000+depth*1000)），直接入表会在跨深度
-   取回时漂移——同一条胜线在不同剩余深度下分值不同，会反过来偏爱慢胜/急败。
-   存表剥掉深度加成、取回按当前深度加回，使 TT 胜负分与发现深度无关。
-   |v|>8900000 一律按胜负分处理（百步内不变号），其余分值原样存取。 */
-function ttIn(v,d){return v>8900000?v-d*1000:v<-8900000?v+d*1000:v;}
-function ttOut(v,d){return v>8900000?v+d*1000:v<-8900000?v-d*1000:v;}
 /* 每个格点一个共享的 [x,y]：candidates() 不必再为每个候选点新分配坐标对。
    它是调用最频繁的函数之一（每个搜索结点的取胜点扫描、冲四着法与排序都要走一遍），
    原实现一次搜索要喂给 GC 海量短命的 [x,y]。调用方一律只读，切勿改写返回的坐标对。 */
@@ -1242,7 +1239,7 @@ function negamax(depth,alpha,beta,p,lastX,lastY){
   let ttMove=null;
   if(e&&e.k1===k1&&e.k2===k2&&e.dn===ttDraft){
     if(e.d>=depth){
-      const ev=ttOut(e.v,depth);
+      const ev=e.v;
       if(e.f===0)return ev;
       if(e.f===1&&ev<=alpha)return ev;
       if(e.f===2&&ev>=beta)return ev;
@@ -1302,19 +1299,19 @@ function negamax(depth,alpha,beta,p,lastX,lastY){
     }
   }
   if(searchAborted)return best;   /* 被时间截断的半截结果不写表，否则会污染同代其它结点 */
-  /* 胜负分不入表：qNode 返回的胜负分按 qd 计（见 qMate），并不携带 negamax 的 depth*1000 约定；
-     ttIn/ttOut 按 depth 归一化会使其取回时漂移 ±1000 的整数倍（实测：同一局面复用表后白方被杀线
-     分值从 -9000080 变为 -8999090，导致根节点在多条必输着法间的排序错误）。
-     胜负分局面重搜代价很小，直接不缓存即可保证结果与表的内容无关。 */
+  /* 胜负分不入表：negamax 的胜负分带 depth*1000 加成，qNode 的按 qd 计（见 qMate），两种约定并存，
+     无法用同一种深度归一化存取——旧版按 depth 归一化入表，qNode 的胜负分取回时漂移 ±1000 的整数倍
+     （实测：复用表后白方被杀线分值从 -9000080 变为 -8999090，根节点在多条必输着法间排序错误）。
+     胜负分局面重搜代价很小，不缓存即可保证结果与表的内容无关；表里因此只有普通估值，原样存取。 */
   if(Math.abs(best)>8900000)return best;
   if(!TT_DEPTH_PREF){
-    TT[ti]={k1,k2,dn:ttDraft,d:depth,v:ttIn(best,depth),f:best<=a0?1:(best>=beta?2:0),m:[bx,by]};
+    TT[ti]={k1,k2,dn:ttDraft,d:depth,v:best,f:best<=a0?1:(best>=beta?2:0),m:[bx,by]};
   }else{
     /* ⑲-d 深度优先替换：碰撞槽里不同局面的更深条目优先保留——
        无条件覆盖会让一次浅层搜索挤掉迭代加深最想复用的深层结果。 */
     const old=TT[ti];
     if(!old||(old.k1===k1&&old.k2===k2)||old.dn!==ttDraft||old.d<=depth)
-      TT[ti]={k1,k2,dn:ttDraft,d:depth,v:ttIn(best,depth),f:best<=a0?1:(best>=beta?2:0),m:[bx,by]};
+      TT[ti]={k1,k2,dn:ttDraft,d:depth,v:best,f:best<=a0?1:(best>=beta?2:0),m:[bx,by]};
   }
   return best;
 }
@@ -1788,8 +1785,8 @@ function stopTimer(){
 /* ================= HUD ================= */
 /* 屏幕阅读器状态播报：canvas 本身不提供棋盘语义，用 aria-live 区域
    逐手播报坐标、手数、轮次、禁手拒绝、悔棋与终局。 */
-const LETTERS='ABCDEFGHJKLMNOP';          /* 列坐标跳过 I，与围棋记谱一致 */
-/* 记谱惯例：列为 A–P（跳过 I），行号自棋盘底部向上数，与 RIF 记谱一致 */
+/* RIF 记谱：列为 A–O（不像围棋记谱那样跳过 I），行号自棋盘底部向上数，天元即 H8 */
+const LETTERS='ABCDEFGHIJKLMNO';
 const coordLabel=(x,y)=>(LETTERS[x]||'?')+(N-y);
 const sideName=p=>p===BLACK?'黑棋':'白棋';
 let announceTid=0;
@@ -2212,7 +2209,7 @@ function showPalette(){
   $('btnPalette').classList.add('active');
   const cur=document.documentElement.dataset.accent;
   const sw=Object.entries(ACCENTS).map(([k,c])=>`
-    <button class="swatch ${k===cur?'sel':''}" data-accent="${k}" aria-pressed="${k===cur}" style="background:${c};color:${c}" title="${k}">
+    <button class="swatch ${k===cur?'sel':''}" data-accent="${k}" aria-pressed="${k===cur}" style="background:${c};color:${c}" title="${ACCENT_NAME[k]}" aria-label="${ACCENT_NAME[k]}">
       ${k===cur?'<svg class="ck" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.8l4.8 4.7L19.5 6.8"/></svg>':''}
     </button>`).join('');
   openDialog(`
@@ -2347,7 +2344,7 @@ function eventCell(e){
   return {x,y};
 }
 const FOUL_LABEL={'33':'三三禁手','44':'四四禁手','overline':'长连禁手'};
-/* 人类（仅黑方）落子入口：连珠禁手校验，违规则拒绝落子并提示 */
+/* 人类落子入口（人机与双人共用）：轮到黑方时先做连珠禁手校验，违规则拒绝落子并提示 */
 function tryHumanPlace(c){
   if(dialogOpenFlag||!c||over||aiThinking)return false;
   if(mode!=='pvp'&&turn!==humanP)return false;

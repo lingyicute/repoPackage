@@ -37,7 +37,7 @@ await page.waitForTimeout(300);
 
 /* 1. 品牌 */
 ok('title 含 YiRenju',(await page.title()).includes('YiRenju'),await page.title());
-ok('brand-name=YIRenju',(await page.textContent('.brand-name')).trim()==='YiRenju');
+ok('brand-name=YiRenju',(await page.textContent('.brand-name')).trim()==='YiRenju');
 ok('h1=五子棋 · 连珠',(await page.textContent('h1')).includes('五子棋 · 连珠'),await page.textContent('h1'));
 ok('subtitle 无连珠规则小字',!(await page.textContent('#subtitle')).includes('连珠规则'));
 ok('菜单首项=什么是连珠？',(await page.textContent('.menu .menu-item')).includes('什么是连珠'));
@@ -91,7 +91,7 @@ await page.evaluate(()=>{setMode('ai-easy');newGame();});
 
 /* P0 回归：执白 + 存档停在人类回合时刷新页面，恢复后不得冻结（aiThinking 不得卡死） */
 await page.evaluate(()=>{
-  history.length=0; /* 阻止 visibilitychange/beforeunload 在 reload 时用内存对局覆盖刚写入的存档 */
+  history.length=0; /* 阻止 visibilitychange/pagehide 在 reload 时用内存对局覆盖刚写入的存档 */
   localStorage.setItem('yirenju.settings',JSON.stringify({side:'W',mode:'ai-easy'}));
   localStorage.setItem('yirenju.session',JSON.stringify({mode:'ai-easy',over:false,side:'W',elapsed:0,
     moves:[{x:7,y:7},{x:8,y:8},{x:7,y:9}]}));
@@ -144,16 +144,16 @@ await page.locator('#board').focus();
 await page.evaluate(()=>{cursor={x:7,y:7};kbdCursor=false;});
 await page.keyboard.press('ArrowRight');
 await waitAnn('光标');
-ok('方向键移动光标有播报',(await page.$eval('#a11yStatus',e=>e.textContent)).includes('光标 J8'));
-ok('列字母跳过 I',await page.evaluate(()=>{
-  const o=[];for(let x=0;x<15;x++)o.push(coordLabel(x,0)[0]);return o.join('')==='ABCDEFGHJKLMNOP';
+ok('方向键移动光标有播报',(await page.$eval('#a11yStatus',e=>e.textContent)).includes('光标 I8'));
+ok('列字母为 RIF 记谱的 A–O（不跳过 I）',await page.evaluate(()=>{
+  const o=[];for(let x=0;x<15;x++)o.push(coordLabel(x,0)[0]);return o.join('')==='ABCDEFGHIJKLMNO';
 }));
 await page.evaluate(()=>{setMode('pvp');newGame();placeAt(0,14,turn);});
 await waitAnn('A1');
 ok('左下角播报 A1（行号自底部起算）',(await page.$eval('#a11yStatus',e=>e.textContent)).includes('A1'));
 await page.evaluate(()=>placeAt(14,0,turn));
-await waitAnn('P15');
-ok('右上角播报 P15',(await page.$eval('#a11yStatus',e=>e.textContent)).includes('P15'));
+await waitAnn('O15');
+ok('右上角播报 O15',(await page.$eval('#a11yStatus',e=>e.textContent)).includes('O15'));
 ok('同批播报合并而非丢弃（新局+落子都保留）',await page.evaluate(async()=>{
   setMode('pvp');newGame();placeAt(7,7,1);
   await new Promise(r=>setTimeout(r,150));
@@ -295,6 +295,13 @@ ok('配色弹窗自动聚焦当前色块且关闭后归还焦点至棋盘',await
   const focusedInDlg=document.activeElement&&document.activeElement.dataset.accent==='green';
   closeDialog();applyAccent('purple');
   return focusedInDlg&&document.activeElement===document.getElementById('board');
+}));
+ok('配色色块的提示与读屏名称为中文色名',await page.evaluate(()=>{
+  showPalette();
+  const sw=[...dialog.querySelectorAll('.swatch')];
+  const names=sw.map(b=>b.getAttribute('aria-label')).join(),titled=sw.every(b=>b.title===b.getAttribute('aria-label'));
+  closeDialog();
+  return titled&&names==='紫色,蓝色,青色,绿色,黄色,橙色,粉色,红色';
 }));
 ok('新弹窗从顶部开始，不沿用上一个弹窗的滚动位置',await page.evaluate(async()=>{
   dialog.style.maxHeight='160px';      /* 桌面视口下内容放得下，压低高度上限以制造滚动 */
