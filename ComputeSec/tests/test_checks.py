@@ -175,6 +175,10 @@ def test_hsi_attr_tails_have_no_ambiguity():
     ("efi", "disable_early_pci_dma,no_disable_early_pci_dma", "disable_early_pci_dma", False),
     ("efi", "no_disable_early_pci_dma,disable_early_pci_dma", "disable_early_pci_dma", False),
     ("efi", "no_disable_early_pci_dma", "disable_early_pci_dma", False),
+    ("efi", "nochunk, disable_early_pci_dma", "disable_early_pci_dma", False),
+    ("efi", ["no_disable_early_pci_dma", "disable_early_pci_dma"], "disable_early_pci_dma", True),
+    ("efi", ["disable_early_pci_dma", "no_disable_early_pci_dma"], "disable_early_pci_dma", False),
+    ("efi", ["disable_early_pci_dma", "noruntime"], "disable_early_pci_dma", True),
     # dracut getargbool：只有 0 / no / off 为假，false / n / OFF 都仍然是真
     ("rd.shell", "0", "0", True),
     ("rd.shell", "no", "0", True),
@@ -664,6 +668,8 @@ def test_cmdline_params_are_arch_scoped(monkeypatch):
     ("6.17.9", "", "full", "missing"),
     # 6.18 起：on 即完整保护，full 不再识别（被忽略并打印警告）
     ("6.18.0-rc3", "rodata=on", "on", "ok"),
+    ("6.18.0", "rodata=1", "on", "ok"),
+    ("6.17.9", "rodata=1", "full", "wrong"),
     ("6.18.2-200.fc43.aarch64", "rodata=full", "on", "wrong"),
     ("7.3.1", "rodata=on", "on", "ok"),
     # 解析不出版本时退回 full：它在任何内核上都不会降低保护
@@ -1225,6 +1231,11 @@ def test_cmdline_stops_at_double_dash_and_handles_quotes(monkeypatch):
     ('a=1 "b=2 c" d', [("a", "1"), ("b", "2 c"), ("d", None)]),
     ('k="x y" z', [("k", "x y"), ("z", None)]),
     ("quiet -- init_on_alloc=1", [("quiet", None)]),
+    ('quiet "--" init_on_alloc=1', [("quiet", None)]),
+    ('mitigations="auto,nosmt', [("mitigations", "auto,nosmt")]),
+    ('"slab_nomerge', [("slab_nomerge", None)]),
+    ('"init_on_alloc="', [("init_on_alloc", "")]),
+    ('foo="" bar=--',[("foo", ""), ("bar", "--")]),
     ("a  \t b=", [("a", None), ("b", "")]),
     ("", []),
 ])
@@ -1238,3 +1249,199 @@ def test_sysctl_item_actual_text_distinguishes_sandbox_netns():
     assert "快照" not in item.actual_text
     gap = checks.SysctlItem("k", "1", "eq", {}, "unverified", "", source="快照缺失")
     assert gap.actual_text == "（您提供的快照中没有这一项）"
+
+
+def test_cmdline_later_efi_token_overrides_earlier_no_disable(monkeypatch):
+    monkeypatch.setattr(checks, "arch", lambda: "x86_64")
+    monkeypatch.setattr(checks, "cpu_vendor", lambda: "intel")
+    monkeypatch.setattr(checks, "read", lambda p, default="": (
+        "efi=no_disable_early_pci_dma efi=disable_early_pci_dma" if p == "/proc/cmdline" else default
+    ))
+    by_key = {i.key: i for i in checks.get_cmdline_report().items}
+    assert by_key["efi"].status == "ok"
+
+
+def test_cmdline_bare_rdshell_and_ssh_auto_override_disabled(monkeypatch):
+    monkeypatch.setattr(checks, "arch", lambda: "x86_64")
+    monkeypatch.setattr(checks, "cpu_vendor", lambda: "intel")
+    for line in ("rd.shell=0 rd.shell systemd.ssh_auto=no systemd.ssh_auto",
+                 "rd.shell=0 rdshell systemd.ssh_auto=f"):
+        monkeypatch.setattr(checks, "read", lambda p, default="", ln=line: ln if p == "/proc/cmdline" else default)
+        by_key = {i.key: i for i in checks.get_cmdline_report().items}
+        assert by_key["rd.shell"].status == "wrong"
+        want_ssh = "ok" if line.endswith("=f") else "wrong"
+        assert by_key["systemd.ssh_auto"].status == want_ssh
+    assert checks._cmdline_value_ok("init_on_alloc", "t", "1") is True
+    assert checks._cmdline_value_ok("ia32_emulation", "f", "0") is True
+    assert checks._cmdline_value_ok("init_on_alloc", " 1", "1") is False
+
+
+@pytest.mark.parametrize("line,want", [
+    ("hash_pointers=always no_hash_pointers", "wrong"),
+    ("no_hash_pointers hash_pointers=always", "ok"),
+    ("hash_pointers=always hash_pointers", "wrong"),
+    ("no_hash_pointers", "wrong"),
+])
+def test_cmdline_no_hash_pointers_interaction(monkeypatch, line, want):
+    monkeypatch.setattr(checks, "arch", lambda: "x86_64")
+    monkeypatch.setattr(checks, "cpu_vendor", lambda: "intel")
+    monkeypatch.setattr(checks, "read", lambda p, default="": line if p == "/proc/cmdline" else default)
+    by_key = {i.key: i for i in checks.get_cmdline_report().items}
+    assert by_key["hash_pointers"].status == want
+
+
+@pytest.mark.parametrize("val,want", [
+    ("pt,nopt,force", True),
+    ("force,pt,nopt", True),
+    ("nopt,pt,force", False),
+    ("off,nopt,force", False),
+])
+def test_iommu_nopt_overrides_earlier_pt(val, want):
+    assert checks._cmdline_value_ok("iommu", val, "force") is want
+
+
+def test_cmdline_bare_slab_debug_overrides_earlier_disabled(monkeypatch):
+    monkeypatch.setattr(checks, "arch", lambda: "x86_64")
+    monkeypatch.setattr(checks, "cpu_vendor", lambda: "intel")
+    monkeypatch.setattr(checks, "read", lambda p, default="": "slab_debug=- slab_debug" if p == "/proc/cmdline" else default)
+    by_key = {i.key: i for i in checks.get_cmdline_report().items}
+    assert by_key["slab_debug"].status == "ok"
+
+
+def test_flatpak_shared_subsystems_ignores_other_sections(monkeypatch):
+    info = "[Application]\nname=x\n[Environment]\nshared=network;\n[Context]\nshared=ipc;\n"
+    monkeypatch.setattr(checks, "read", lambda p, default="": info if p == "/.flatpak-info" else default)
+    assert checks._flatpak_shared_subsystems() == {"ipc"}
+    assert checks._flatpak_shares_network() is False
+
+
+def test_sysctl_flatpak_net_missing_from_user_snapshot_is_snapshot_gap(monkeypatch):
+    hd = hostdata.HostData({"steps": {"sysctl": {"data": {"values": {"kernel.kptr_restrict": "2"}}}}})
+    monkeypatch.setattr(checks.hostdata, "CURRENT", hd)
+    monkeypatch.setattr(checks, "IN_FLATPAK", True)
+    monkeypatch.setattr(checks, "_flatpak_shares_network", lambda: False)
+    monkeypatch.setattr(checks, "_sysctl_from_proc", lambda k: ({k: "0"}, False))
+    rep = checks.get_sysctl_report()
+    by_key = {i.key: i for i in rep.all_items}
+    item = by_key["net.ipv4.tcp_syncookies"]
+    assert item.status == "unverified"
+    assert item.source == "快照缺失"
+    assert item.actual_text == "（您提供的快照中没有这一项）"
+
+
+def test_sysctl_native_denied_wildcard_does_not_resurrect_gone_iface(monkeypatch):
+    key = "net.ipv4.conf.*.accept_redirects"
+    hd = hostdata.HostData({"steps": {"sysctl": {"data": {"values": {
+        "net.ipv4.conf.eth0.accept_redirects": "0",
+        "net.ipv4.conf.eth1.accept_redirects": "0",
+        "net.ipv4.conf.tun0.accept_redirects": "1",  # 快照后已拆除的旧接口
+    }}}}})
+    monkeypatch.setattr(checks.hostdata, "CURRENT", hd)
+    monkeypatch.setattr(checks, "IN_FLATPAK", False)
+
+    def fake_proc(k):
+        if k == key:
+            return ({"net.ipv4.conf.eth0.accept_redirects": "0",
+                     "net.ipv4.conf.eth1.accept_redirects": None}, True)
+        return ({}, False)
+
+    monkeypatch.setattr(checks, "_sysctl_from_proc", fake_proc)
+    item = {i.key: i for i in checks.get_sysctl_report().all_items}[key]
+    assert item.status == "ok"
+    assert "net.ipv4.conf.tun0.accept_redirects" not in item.actual
+
+
+def test_sysctl_io_error_is_not_labelled_root_only(monkeypatch):
+    monkeypatch.setattr(checks.hostdata, "CURRENT", hostdata.HostData())
+    monkeypatch.setattr(checks, "IN_FLATPAK", False)
+    monkeypatch.setattr(
+        checks, "_sysctl_from_proc",
+        lambda k: ({k: None}, False) if k == "kernel.kptr_restrict" else ({}, False),
+    )
+    item = {i.key: i for i in checks.get_sysctl_report().all_items}["kernel.kptr_restrict"]
+    assert item.status == "unknown"
+    assert item.source == "读取失败"
+    assert "root" not in item.actual_text
+
+
+def test_hsi_rejects_bool_flags_and_malformed_json(monkeypatch):
+    assert checks._flags_to_set(True) == set()
+    assert checks._result_to_str(True) == "unknown"
+    items = checks._normalize_attrs([
+        "not-a-dict",
+        {"AppstreamId": "org.fwupd.hsi.Iommu", "Flags": True, "HsiResult": True, "HsiLevel": "bad"},
+    ])
+    assert len(items) == 1
+    assert items[0].passed is False
+    assert items[0].result == "unknown"
+    assert items[0].level == 0
+
+    monkeypatch.setattr(checks, "run", lambda cmd, **_: (0, "[]"))
+    rep = checks.get_hsi()
+    assert rep.ok is False
+
+
+@pytest.mark.parametrize("kw,text,want", [
+    ("timi", "optimized server board", False),
+    ("timi", "timi tm1701", True),
+    ("omen", "momentum workstation", False),
+    ("omen", "omen by hp laptop 16", True),
+    ("asus", "pegasus motherboard", False),
+    ("asus", "asus_x570", True),
+    ("acer", "tracer mini pc", False),
+    ("intel", "intellistation m pro", False),
+    ("hp", "hp_probook_450", True),
+    ("redmibook", "redmibook pro 15", True),
+    ("imac", "imac21,1", True),
+])
+def test_vendor_kw_match_letter_boundary(kw, text, want):
+    assert checks._vendor_kw_match(kw, text) is want
+
+
+def test_ntfs_partitions_ignores_fuseblk_confirmed_non_windows_by_udev(monkeypatch):
+    monkeypatch.setattr(checks.hostdata, "CURRENT", hostdata.HostData())
+    monkeypatch.setattr(checks, "run", lambda *_: (None, ""))
+    monkeypatch.setattr(checks.glob, "glob", lambda _: ["/run/udev/data/b8:1", "/run/udev/data/b8:2"])
+
+    def fake_read(path, default=""):
+        if path == "/run/udev/data/b8:1":
+            return "E:ID_FS_TYPE=exfat\nE:DEVNAME=/dev/sda1\n"
+        if path == "/run/udev/data/b8:2":
+            return "E:ID_FS_TYPE=ntfs\nE:DEVNAME=/dev/sda2\nE:ID_FS_LABEL=Win Data\n"
+        if path == "/proc/mounts":
+            return (
+                r"/dev/sda1 /media/USB\040Stick fuseblk rw 0 0" + "\n"
+                r"/dev/sdb1 /media/Win\040Disk ntfs3 rw 0 0" + "\n"
+            )
+        return default
+
+    monkeypatch.setattr(checks, "read", fake_read)
+    found, _ = checks._ntfs_partitions()
+    assert not any("/dev/sda1" in x for x in found)
+    assert any("Win Data" in x for x in found)
+    assert any("/media/Win Disk" in x for x in found)
+
+
+@pytest.mark.parametrize("raw", ["inf 0", "nan 0", "-5 0", ""])
+def test_check_uptime_rejects_non_finite_or_negative(monkeypatch, raw):
+    monkeypatch.setattr(checks, "read", lambda p, default="": raw if p == "/proc/uptime" else default)
+    assert checks.check_uptime().status == "unknown"
+
+
+def test_flatpak_and_lsusb_ignore_failed_command_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(checks, "_flatpak_app_dirs", lambda: [str(tmp_path / "missing")])
+    monkeypatch.setattr(checks, "run", lambda cmd, **_: (1, "error: org.freedesktop.Portal failed\n"))
+    apps, src = checks._flatpak_apps()
+    assert apps == set() and src == ""
+
+    monkeypatch.setattr(checks.glob, "glob", lambda _: [])
+    monkeypatch.setattr(checks, "run", lambda cmd, **_: (1, "Bus 001 Device 001: ID 046d:c52b Logitech\n"))
+    devs, usrc = checks._usb_devices()
+    assert devs == [] and usrc == ""
+
+
+def test_cpu_model_tolerates_malformed_model_name_line(monkeypatch):
+    monkeypatch.setattr(checks, "read", lambda p, default="": (
+        "model name without colon\nmodel name\t: Test CPU\n" if p == "/proc/cpuinfo" else default
+    ))
+    assert checks.cpu_model() == "Test CPU"

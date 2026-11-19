@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ComputeSec — 看懂你的 Linux 有多安全</title>
 <meta name="description" content="ComputeSec：基于 GTK4 / libadwaita / Python 的 Linux 桌面安全评估工具。读取系统状态，对比安全基线，用通俗语言解释每一项检查，并给出可直接复制的修复方法。">
-<link rel="icon" href="/icon.svg">
+<link rel="icon" href="icon.svg">
 <link rel="preload" href="fonts/nebulove-subset.woff2" as="font" type="font/woff2" crossorigin>
 <style>
   /* ---------- Material 3 tokens ---------- */
@@ -17,19 +17,40 @@
     --shape-xl: 28px;
     --shape-full: 999px;
 
+    --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
     --motion-standard: cubic-bezier(0.2, 0, 0, 1);
     --motion-emph: cubic-bezier(0.05, 0.7, 0.1, 1);
 
     --elev-1: 0 1px 2px rgba(0,0,0,.14), 0 1px 3px 1px rgba(0,0,0,.08);
     --elev-2: 0 1px 2px rgba(0,0,0,.14), 0 2px 6px 2px rgba(0,0,0,.10);
     --elev-3: 0 4px 8px 3px rgba(0,0,0,.12), 0 1px 3px rgba(0,0,0,.20);
+
+    /* 禁用 JavaScript（如 Tor Browser 高安全模式）时的静态配色兜底 */
+    --primary: #1b6d3c; --on-primary: #ffffff; --primary-container: #a5f5b9; --on-primary-container: #00210b; --inverse-primary: #89d89f;
+    --secondary: #4f6353; --secondary-container: #d2e8d4; --on-secondary-container: #0d1f13;
+    --tertiary: #3a646f; --tertiary-container: #beeaf6; --on-tertiary-container: #001f26;
+    --error-container: #ffdad6; --on-error-container: #410002;
+    --surface: #f6fbf3; --surface-container-lowest: #ffffff; --surface-container-low: #f0f5ee; --surface-container: #ebefe8; --surface-container-high: #e5eae2; --surface-container-highest: #dfe4dd;
+    --on-surface: #181d18; --on-surface-variant: #414941; --inverse-surface: #2c322d; --inverse-on-surface: #edf2ea;
+    --outline: #717971; --outline-variant: #c1c9bf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --primary: #89d89f; --on-primary: #003919; --primary-container: #005228; --on-primary-container: #a5f5b9; --inverse-primary: #1b6d3c;
+      --secondary: #b6ccb8; --secondary-container: #384b3c; --on-secondary-container: #d2e8d4;
+      --tertiary: #a2ceda; --tertiary-container: #204c57; --on-tertiary-container: #beeaf6;
+      --error-container: #93000a; --on-error-container: #ffdad6;
+      --surface: #101510; --surface-container-lowest: #0b0f0b; --surface-container-low: #181d18; --surface-container: #1c211c; --surface-container-high: #262b26; --surface-container-highest: #313631;
+      --on-surface: #dfe4dd; --on-surface-variant: #c1c9bf; --inverse-surface: #dfe4dd; --inverse-on-surface: #2c322d;
+      --outline: #8b938a; --outline-variant: #414941;
+    }
   }
 
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
   body {
     margin: 0;
-    font-family: var(--font);
     background: var(--surface);
     color: var(--on-surface);
     line-height: 1.6;
@@ -329,7 +350,7 @@
   .swatch.active::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid var(--on-surface); }
   .fab {
     position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 60; width: 56px; height: 56px; border-radius: 16px; border: none;
-    background: var(--tertiary-container); color: var(--on-tertiary-container); box-shadow: var(--elev-3); cursor: pointer; display: grid; place-items: center; overflow: hidden; position: fixed; transition: box-shadow .2s, transform .2s;
+    background: var(--tertiary-container); color: var(--on-tertiary-container); box-shadow: var(--elev-3); cursor: pointer; display: grid; place-items: center; overflow: hidden; transition: box-shadow .2s, transform .2s;
   }
   .fab:hover { box-shadow: 0 6px 14px 4px rgba(0,0,0,.14), 0 2px 4px rgba(0,0,0,.2); transform: translateY(-1px); }
   .fab svg { width: 24px; height: 24px; fill: currentColor; }
@@ -388,6 +409,7 @@
     font-family: "Nebulove", system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   }
 </style>
+<noscript><style>.page-loader,.fab,.palette-pop,.copy{display:none!important}.reveal{opacity:1!important;transform:none!important}.pane{display:block!important;margin-bottom:.75rem}</style></noscript>
 </head>
 <body>
 
@@ -401,7 +423,7 @@
 <header class="appbar" id="appbar">
   <div class="wrap inner">
     <a class="brand" href="#top">
-      <img src="/icon.svg" alt="ComputeSec 图标">
+      <img src="icon.svg" alt="ComputeSec 图标">
       ComputeSec
     </a>
     <nav class="nav">
@@ -428,7 +450,7 @@
     <div class="wrap hero-grid">
       <div>
         <div class="hero-icon">
-          <img src="/icon.svg" alt="">
+          <img src="icon.svg" alt="">
         </div>
         <h1 class="display">看懂你的 Linux<br>到底有<span>多安全</span>。</h1>
         <p class="lead body-lg">ComputeSec 是一个基于 GTK4 的 Linux 桌面安全评估工具。它读取你的系统状态，与安全基线对比，用通俗的语言解释每一项检查的意义与缺失的危害，并给出可以直接复制粘贴的修复方法。做得好的地方会用绿色告诉你：继续保持！🤗</p>
@@ -453,7 +475,7 @@
       </div>
       <div class="shot-frame reveal">
         <div class="shot-bar"><i></i><i></i><i></i></div>
-        <img src="/screenshot.webp" alt="ComputeSec 应用截图" loading="eager">
+        <img src="screenshot.webp" alt="ComputeSec 应用截图" loading="eager">
         <div class="score">
           <b>68</b>
           <div>综合评分<br><small style="opacity:.75">立即实施强化！</small></div>
@@ -623,8 +645,8 @@
           <h3 class="title-lg" style="margin: .35rem 0 .75rem;">Flatpak</h3>
           <p class="req">在 <a href="https://github.com/lingyicute/ComputeSec/releases" target="_blank" rel="noopener" style="color: var(--primary); font-weight:500;">Releases</a> 下载对应架构的 <code>.flatpak</code>，或在本地构建。</p>
           <div class="tabs" role="tablist" data-tabs="flatpak">
-            <button class="tab active" role="tab" data-tab="release">从 Release 安装</button>
-            <button class="tab" role="tab" data-tab="build">本地构建</button>
+            <button class="tab active" role="tab" aria-selected="true" data-tab="release">从 Release 安装</button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="build">本地构建</button>
           </div>
           <div class="pane active" data-pane="release">
             <pre class="code"><button class="copy" aria-label="复制"><svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg></button><span class="k">flatpak</span> install --user ./ComputeSec-x86_64.flatpak
@@ -664,9 +686,9 @@
           <p class="req">适合想随时跟进最新代码的开发者。此方式下程序直接以您的用户权限运行，<strong>没有沙箱隔离</strong>；日常使用请选择方式一。</p>
           <p class="req">依赖：Python ≥ 3.12、PyGObject、GTK 4、libadwaita ≥ 1.4（Fedora 39+ / Ubuntu 24.04+ / Debian 13+ / Arch），以及 <code>fwupd</code>（用于 HSI）。</p>
           <div class="tabs" role="tablist" data-tabs="distro">
-            <button class="tab active" role="tab" data-tab="fedora">Fedora</button>
-            <button class="tab" role="tab" data-tab="debian">Debian / Ubuntu</button>
-            <button class="tab" role="tab" data-tab="arch">Arch</button>
+            <button class="tab active" role="tab" aria-selected="true" data-tab="fedora">Fedora</button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="debian">Debian / Ubuntu</button>
+            <button class="tab" role="tab" aria-selected="false" data-tab="arch">Arch</button>
           </div>
           <div class="pane active" data-pane="fedora">
             <pre class="code"><button class="copy" aria-label="复制"><svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg></button><span class="c"># Fedora</span>
@@ -693,8 +715,7 @@
 <span class="k">python3</span> run.py</pre>
           </div>
           <p class="req" style="margin-top:1rem;">想让它出现在应用菜单里、并让任务栏 / Dock 正确显示图标（Wayland 下需要 <code>.desktop</code> 文件与 App ID 匹配）：</p>
-          <pre class="code"><button class="copy" aria-label="复制"><svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg></button><span class="k">python3</span> run.py --install     <span class="c"># 安装 .desktop 与 SVG 图标到 ~/.local/share</span>
-<span class="k">python3</span> run.py --uninstall   <span class="c"># 移除</span></pre>
+          <pre class="code"><button class="copy" aria-label="复制"><svg viewBox="0 0 24 24"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg></button><span class="k">python3</span> run.py --install     <span class="c"># 安装 .desktop 与 SVG 图标（移除用 --uninstall）</span></pre>
         </article>
       </div>
     </div>
@@ -713,20 +734,27 @@
             <tbody>
               <tr><td>--system-talk-name=org.freedesktop.fwupd</td><td>通过 D-Bus 读取 HSI 结果</td></tr>
               <tr><td>--system-talk-name=org.freedesktop.hostname1</td><td>读取宿主机的发行版名称、内核版本与机型（沙箱内 /etc/os-release 是 runtime 的字段）</td></tr>
+              <tr><td>--share=network</td><td>读取 kernel.org 的 mainline / stable 版本号，并共享宿主机 /proc/sys/net 视图</td></tr>
               <tr><td>--filesystem=/var/lib/flatpak:ro<br>--filesystem=~/.local/share/flatpak:ro</td><td>统计已安装的 Flatpak 应用</td></tr>
-              <tr><td>--filesystem=/run/udev:ro<br>--filesystem=/boot/efi:ro<br>--filesystem=/efi:ro</td><td>检测 NTFS 分区与 Windows 引导器</td></tr>
+              <tr><td>--filesystem=/run/udev:ro<br>--filesystem=/boot:ro<br>--filesystem=/efi:ro</td><td>检测 NTFS / BitLocker 分区与 Windows 引导器</td></tr>
             </tbody>
           </table>
         </div>
         <div class="reveal">
           <span class="label kicker">项目结构</span>
           <h2 class="headline" style="margin:.6rem 0 .75rem;">小而清晰的代码组织</h2>
-          <p class="body" style="margin-bottom:1.25rem;">四个 Python 模块各司其职：窗口与导航、页面构建、数据采集比对、知识库。</p>
+          <p class="body" style="margin-bottom:1.25rem;">模块职责清晰：命令行入口、窗口与向导、数据采集比对、版本线核对与知识库。</p>
 <pre class="tree"><span class="d">run.py</span>                  <span class="c">启动器（克隆运行 / Flatpak 内为 /app/bin/computesec）</span>
 <span class="d">computesec/</span>
+  ├── cli.py            <span class="c">命令行参数与桌面集成</span>
   ├── main.py           <span class="c">应用与窗口、导航、后台检测线程</span>
   ├── ui.py             <span class="c">五个页面的构建</span>
+  ├── wizard.py         <span class="c">分步数据采集向导</span>
   ├── checks.py         <span class="c">数据采集与比对（fwupd、cmdline、sysctl、DMI、Flatpak、uptime、USB、NTFS）</span>
+  ├── hostdata.py       <span class="c">宿主机快照解析、校验与缓存</span>
+  ├── kernelver.py      <span class="c">内核版本线检查（kernel.org mainline / stable）</span>
+  ├── hostinfo.py       <span class="c">宿主机身份信息（hostname1 / os-release）</span>
+  ├── xdg.py            <span class="c">XDG 数据目录与原子缓存写入</span>
   └── data.py           <span class="c">知识库：HSI 说明、内核参数、sysctl、厂商信誉</span>
 <span class="d">data/</span>
   └── <span class="c">图标和构建信息</span>
@@ -809,7 +837,7 @@
 
 <!-- Material You seed color picker -->
 <div class="palette-pop" id="palettePop" role="group" aria-label="选择主题色"></div>
-<button class="fab" id="paletteFab" aria-label="更换主题色" title="更换主题色（Material You 动态取色）">
+<button class="fab" id="paletteFab" aria-expanded="false" aria-controls="palettePop" aria-label="更换主题色" title="更换主题色（Material You 动态取色）">
   <svg viewBox="0 0 24 24"><path d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg>
 </button>
 
@@ -974,8 +1002,10 @@
     });
     pop.appendChild(b);
   });
-  fab.addEventListener('click', e => { e.stopPropagation(); pop.classList.toggle('open'); });
-  document.addEventListener('click', e => { if (!pop.contains(e.target)) pop.classList.remove('open'); });
+  const setPopOpen = open => { pop.classList.toggle('open', open); fab.setAttribute('aria-expanded', String(open)); };
+  fab.addEventListener('click', e => { e.stopPropagation(); setPopOpen(!pop.classList.contains('open')); });
+  document.addEventListener('click', e => { if (!pop.contains(e.target) && !fab.contains(e.target)) setPopOpen(false); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && pop.classList.contains('open')) { setPopOpen(false); fab.focus(); } });
 
   apply();
 
@@ -999,8 +1029,9 @@
     const container = group.parentElement;
     group.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', () => {
-        group.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        group.querySelectorAll('.tab').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
         tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
         container.querySelectorAll('.pane').forEach(p => {
           // only panes belonging to this tab group (siblings following the group)
           if (group.querySelector(`[data-tab="${p.dataset.pane}"]`)) {

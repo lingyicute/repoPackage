@@ -120,6 +120,7 @@ class CollectWizard(Adw.Window):
         self.primary_btn.set_sensitive(sensitive)
         self.back_btn.set_sensitive(sensitive)
         self.skip_btn.set_sensitive(sensitive)
+        self.copy_cmd_btn.set_sensitive(sensitive)
 
     def go(self, index):
         self._busy = False
@@ -220,15 +221,18 @@ class CollectWizard(Adw.Window):
 
     # -- 动作 ------------------------------------------------------------
     def toast(self, text):
-        self.toasts.add_toast(Adw.Toast.new(text))
+        self.toasts.add_toast(Adw.Toast.new(GLib.markup_escape_text(str(text))))
 
     def on_copy_command(self, _b):
         # 介绍页（-1）与完成页（len(steps)）上按钮只是隐藏，仍做一次边界守卫，
         # 避免将来因焦点/快捷键变化被触发时抛 IndexError。
         if not hostdata.valid_step_index(self.index):
             return
+        disp = Gdk.Display.get_default()
+        if disp is None:
+            return
         step = self.steps[self.index]
-        Gdk.Display.get_default().get_clipboard().set(step.command)
+        disp.get_clipboard().set(step.command)
         self.toast("命令已复制，请到终端中粘贴执行")
 
     def on_skip(self, _b):
@@ -253,17 +257,21 @@ class CollectWizard(Adw.Window):
         self._busy = True
         self._set_controls_sensitive(False)
         self.set_status("正在读取剪贴板…", "dim-label")
+        disp = Gdk.Display.get_default()
+        if disp is None:
+            self._busy = False
+            self._set_controls_sensitive(True)
+            self.set_status("无法读取剪贴板：没有可用的显示连接。", "error")
+            return
         step_index = self.index
-        clipboard = Gdk.Display.get_default().get_clipboard()
-        clipboard.read_text_async(None, self._on_clipboard_text, step_index)
+        disp.get_clipboard().read_text_async(None, self._on_clipboard_text, step_index)
 
     def _on_clipboard_text(self, clipboard, result, step_index=None):
         if self._finished:
             return
         idx = self.index if step_index is None else step_index
-        if idx != self.index or not (0 <= idx < len(self.steps)):
-            self._busy = False
-            self._set_controls_sensitive(True)
+        # 已切到其它步骤时，go() 已重置当前步状态；旧回调不得解锁新一步正在进行的读取。
+        if idx != self.index or not hostdata.valid_step_index(idx):
             return
         try:
             text = clipboard.read_text_finish(result)

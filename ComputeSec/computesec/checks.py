@@ -3,6 +3,7 @@
 
 import glob
 import json
+import math
 import os
 import platform
 import re
@@ -25,10 +26,15 @@ def _flatpak_shared_subsystems():
     text = read("/.flatpak-info")
     if not text:
         return set()
-    m = re.search(r"^shared=(.*)$", text, re.M)
-    if not m:
-        return set()
-    return {x.strip() for x in m.group(1).split(";") if x.strip()}
+    in_context = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            in_context = line == "[Context]"
+            continue
+        if in_context and line.startswith("shared="):
+            return {x.strip() for x in line.split("=", 1)[1].split(";") if x.strip()}
+    return set()
 
 
 def _flatpak_shares_network():
@@ -92,10 +98,9 @@ def cpu_vendor():
 def cpu_model():
     lines = read("/proc/cpuinfo").splitlines()
     for line in lines:
-        if line.lower().startswith("model name"):
-            val = line.split(":", 1)[1].strip()
-            if val:
-                return val
+        k, sep, val = line.partition(":")
+        if sep and k.strip().lower() == "model name" and val.strip():
+            return val.strip()
     for prefix in ("hardware", "cpu model", "uarch", "processor"):
         for line in lines:
             k, sep, val = line.partition(":")
@@ -199,6 +204,8 @@ class HsiReport:
 
 def _flags_to_set(v):
     s = set()
+    if isinstance(v, bool):
+        return s
     if isinstance(v, int):
         for bit, name in data.HSI_FLAG_BITS.items():
             if v & bit:
@@ -211,6 +218,8 @@ def _flags_to_set(v):
 
 
 def _result_to_str(v):
+    if isinstance(v, bool):
+        return "unknown"
     if isinstance(v, int):
         return data.HSI_RESULT_ENUM.get(v, "unknown")
     return str(v or "unknown")
@@ -267,13 +276,21 @@ def _lookup_hsi_info(aid):
 def _normalize_attrs(raw):
     items = []
     for a in raw:
-        aid = a.get("AppstreamId", "")
+        if not isinstance(a, dict):
+            continue
+        aid = str(a.get("AppstreamId") or "")
         flags = _flags_to_set(a.get("Flags", 0))
         result = _result_to_str(a.get("HsiResult", 0))
         info = _lookup_hsi_info(aid)
+        raw_lvl = a.get("HsiLevel", 0)
+        try:
+            level = 0 if isinstance(raw_lvl, bool) else int(raw_lvl or 0)
+        except (TypeError, ValueError):
+            level = 0
         items.append(HsiItem(
-            id=aid, name=info.get("name") or a.get("Name", aid), summary=a.get("Summary") or a.get("Description", ""),
-            level=int(a.get("HsiLevel", 0) or 0), result=result, flags=flags, uri=a.get("Uri", ""), info=info,
+            id=aid, name=str(info.get("name") or a.get("Name") or aid),
+            summary=str(a.get("Summary") or a.get("Description") or ""),
+            level=level, result=result, flags=flags, uri=str(a.get("Uri") or ""), info=info,
             passed="success" in flags, obsoleted="obsoleted" in flags))
     items.sort(key=lambda i: (i.passed, i.level, i.name))
     return items
@@ -301,8 +318,9 @@ def get_hsi() -> HsiReport:
                 host_id = pres.unpack()[0] or ""
             except Exception:
                 pass
-        if raw:
-            return HsiReport(ok=True, source="fwupd D-Bus", host_id=host_id, items=_normalize_attrs(raw))
+        items = _normalize_attrs(raw) if raw else []
+        if items:
+            return HsiReport(ok=True, source="fwupd D-Bus", host_id=str(host_id or ""), items=items)
     except Exception:
         pass
     # 2) fwupdmgr CLI
@@ -310,6 +328,8 @@ def get_hsi() -> HsiReport:
     if out.strip():
         try:
             j = json.loads(out)
+            if not isinstance(j, dict):
+                j = {}
             raw = None
             for key in ("SecurityAttributes", "HostSecurityAttributes", "Attributes"):
                 if isinstance(j.get(key), list):
@@ -320,13 +340,15 @@ def get_hsi() -> HsiReport:
                     if isinstance(v, list) and v and isinstance(v[0], dict) and "AppstreamId" in v[0]:
                         raw = v
                         break
-            if raw:
-                host_id = j.get("HostSecurityId", "")
+            items = _normalize_attrs(raw) if raw else []
+            if items:
+                raw_hid = j.get("HostSecurityId")
+                host_id = raw_hid if isinstance(raw_hid, str) else ""
                 if not host_id:
                     _, txt = run(["fwupdmgr", "security"])
                     m = re.search(r"HSI:\S+(?:\s*\([^)]*\))?", txt or "")
                     host_id = m.group(0) if m else ""
-                return HsiReport(ok=True, source="fwupdmgr", host_id=host_id, items=_normalize_attrs(raw))
+                return HsiReport(ok=True, source="fwupdmgr", host_id=host_id, items=items)
         except ValueError:
             pass
     err = "无法获取 HSI 数据。请确认已安装并启动 fwupd（sudo systemctl start fwupd）。"
@@ -389,6 +411,8 @@ _CMDLINE_KEY_ALIASES = {
     # mm/slab_common.c：__setup_param("slub_nomerge", …, setup_slab_nomerge, 0)，
     # 旧名与 slab_nomerge 走同一个处理函数，早年的加固指南写的都是旧名。
     "slub_nomerge": "slab_nomerge",
+    # dracut 99base：getargbool 0 rd.shell -d -y rdshell，旧名同样控制紧急 shell。
+    "rdshell": "rd.shell",
 }
 # 内核用 kstrtobool 解析的 early_param 型布尔参数，on/1/y 与 off/0/n 等价。
 # 这类参数必须写成 key=value；省略 = 的裸 token 无效（内核保持默认值）。
@@ -398,7 +422,6 @@ _CMDLINE_BOOL_KEYS = {
     "kpti", "random.trust_bootloader", "random.trust_cpu",
     "randomize_kstack_offset", "irqchip.gicv3_pseudo_nmi",
     "ia32_emulation",   # arch/x86/entry/common.c: kstrtobool，off/0/n 等价
-    "systemd.ssh_auto", # systemd parse_boolean：1/y/yes/true/on 与 0/n/no/false/off 等价
 }
 # dracut 的 getargbool 不是 kstrtobool：只有 0 / no / off（区分大小写）为假，其余任何值
 # （包括 false、n、OFF）都算真，所以 rd.shell=false 并没有关掉 initramfs 的 shell。
@@ -412,14 +435,16 @@ _CMDLINE_MODULE_BOOL_KEYS = {
     # mm/shuffle.c 用 module_param_cb 注册、底层走 param_set_bool（FL_NOARG），
     # 因此裸 token 同样等价于真，归类应与上面的 module_param(bool) 一致。
     "page_alloc.shuffle",
+    # systemd ssh-generator.c：value ? parse_boolean(value) : 1，裸 token 会重新置真。
+    "systemd.ssh_auto",
 }
 # 处理函数按逗号逐个解析子选项、且多次出现时依次累加的参数（efi_parse_options、
 # intel_iommu_setup、parse_amd_iommu_options、x86 iommu_setup 都是
 # `while (*str) { strncmp…; str += strcspn(str, ","); }`）。同名 token 出现多次时
 # 要按顺序拼起来，只保留最后一个会丢掉前面已经生效的选项。
-_CMDLINE_COMMA_KEYS = {"efi", "intel_iommu", "amd_iommu", "iommu"}
-_BOOL_TRUE = {"1", "on", "y", "yes", "true"}
-_BOOL_FALSE = {"0", "off", "n", "no", "false"}
+_CMDLINE_COMMA_KEYS = {"intel_iommu", "amd_iommu", "iommu"}
+_BOOL_TRUE = {"1", "on", "y", "yes", "true", "t"}
+_BOOL_FALSE = {"0", "off", "n", "no", "false", "f"}
 
 # mitigations= 的合法取值及缓解强度。kernel/cpu.c 的 mitigations_parse_cmdline()
 # 对三个值做 strcmp 精确匹配（"nosmt,auto" 等非常规顺序会被整体忽略并保持默认），
@@ -430,9 +455,10 @@ _PROC_MEM_RANK = {"always": 0, "ptrace": 1, "never": 2}
 
 
 def _iter_cmdline_tokens(cmdline):
-    """按内核 lib/cmdline.c next_arg() 的规则切分 /proc/cmdline。
+    """按内核 lib/cmdline.c next_arg() 与 kernel/params.c parse_args() 切分 /proc/cmdline。
 
-    双引号内空白不拆分，遇到 `--` 即停止（其后参数交给 init 而非内核），并剥离外层双引号。
+    双引号内空白不拆分，先剥离参数/值外层双引号（含末尾未闭合的起始引号），
+    再在无值参数等于 `--` 时停止（其后参数交给 init 而非内核）。
     """
     n = len(cmdline)
     i = 0
@@ -441,33 +467,47 @@ def _iter_cmdline_tokens(cmdline):
             i += 1
         if i >= n:
             break
+        quoted = cmdline[i] == '"'
+        if quoted:
+            i += 1
+        in_quote = quoted
         start = i
-        in_quote = False
+        equals = -1
         while i < n and (in_quote or not cmdline[i].isspace()):
-            if cmdline[i] == '"':
+            ch = cmdline[i]
+            if equals < 0 and ch == "=":
+                equals = i
+            if ch == '"':
                 in_quote = not in_quote
             i += 1
-        tok = cmdline[start:i]
-        if tok == "--":
-            break
-        if len(tok) >= 2 and tok[0] == '"' and tok[-1] == '"':
-            tok = tok[1:-1]
-        if "=" in tok:
-            k, v = tok.split("=", 1)
-            if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
-                v = v[1:-1]
-            yield k, v
+        end = i
+        if equals < 0:
+            if quoted and end > start and cmdline[end - 1] == '"':
+                end -= 1
+            param = cmdline[start:end]
+            if param == "--":
+                break
+            yield param, None
         else:
-            yield tok, None
+            param = cmdline[start:equals]
+            vstart, vend = equals + 1, end
+            if vstart < vend and cmdline[vstart] == '"':
+                vstart += 1
+                if vend > vstart and cmdline[end - 1] == '"':
+                    vend -= 1
+            elif quoted and vend > vstart and cmdline[end - 1] == '"':
+                vend -= 1
+            yield param, cmdline[vstart:vend]
 
 
 def _cmdline_bool_norm(v):
-    low = v.strip().lower()
+    # kstrtobool() 与 systemd parse_boolean() 都不跳过首尾空白（如 " 1" 返回 -EINVAL）。
+    low = v.lower()
     if low in _BOOL_TRUE:
         return "1"
     if low in _BOOL_FALSE:
         return "0"
-    return v.strip()
+    return v
 
 
 def _iommu_opts_ok(nk, opts, expected):
@@ -500,14 +540,19 @@ def _iommu_opts_ok(nk, opts, expected):
         # 后者覆盖前者（"forcesac" 同样以 force 开头，内核也会置 force_iommu）；
         # off 关闭 IOMMU，pt 让设备直通、绕过地址转换。
         forced = False
+        passthrough = False
         for o in opts:
-            if o.startswith(("off", "pt")):
+            if o.startswith("off"):
                 return False
-            if o.startswith("force"):
+            if o.startswith("pt"):
+                passthrough = True
+            elif o.startswith("nopt"):
+                passthrough = False
+            elif o.startswith("force"):
                 forced = True
             elif o.startswith("noforce"):
                 forced = False
-        return forced
+        return forced and not passthrough
     return False
 
 
@@ -531,11 +576,18 @@ def _cmdline_value_ok(key, actual, expected):
     if actual == expected:
         return True
     if nk == "efi":
-        # drivers/firmware/efi/libstub/efi-stub-helper.c：对 efi= 的值先后各做一次
-        # parse_option_str(val, "disable_early_pci_dma") / (val, "no_disable_early_pci_dma")，
-        # 后者命中即置回 false——与二者在逗号列表里的先后无关，no_ 形式总是赢。
-        opts = {x.strip() for x in actual.split(",") if x.strip()}
-        return expected in opts and f"no_{expected}" not in opts
+        # drivers/firmware/efi/libstub/efi-stub-helper.c：每遇到一个 efi= token 就依次检查
+        # parse_option_str(val, "disable_early_pci_dma") 与 "no_disable_early_pci_dma"；
+        # 同一 token 内 no_ 总是赢，跨多个 efi= token 时后出现的覆盖先前状态，且子选项不裁空白。
+        tokens = actual if isinstance(actual, (list, tuple)) else (actual,)
+        enabled = False
+        for tok in tokens:
+            opts = set(tok.split(","))
+            if expected in opts:
+                enabled = True
+            if f"no_{expected}" in opts:
+                enabled = False
+        return enabled
     if nk in ("intel_iommu", "amd_iommu", "iommu"):
         return _iommu_opts_ok(nk, [x for x in actual.split(",") if x], expected)
     if nk == "slab_debug":
@@ -557,6 +609,9 @@ def _cmdline_value_ok(key, actual, expected):
         rank_a = _PROC_MEM_RANK.get(actual)
         rank_e = _PROC_MEM_RANK.get(expected)
         return rank_a is not None and rank_e is not None and rank_a >= rank_e
+    if nk == "rodata" and expected == "on":
+        # 6.18+ ARM64 走 init/main.c set_debug_rodata() -> kstrtobool()；6.17 及更早期望 full，仅精确匹配。
+        return _cmdline_bool_norm(actual) == "1"
     if nk in _CMDLINE_DRACUT_BOOL_KEYS:
         return (actual in _DRACUT_FALSE) == (expected in _DRACUT_FALSE)
     # l1tf= 由内核在固定选项列表（off/flush/flush,nosmt/flush,nowarn/full/full,force）
@@ -569,10 +624,17 @@ def _cmdline_value_ok(key, actual, expected):
 def get_cmdline_report() -> CmdlineReport:
     cmdline = read("/proc/cmdline").strip()
     present = {}
+    efi_tokens = []
     for k, v in _iter_cmdline_tokens(cmdline):
         nk = _CMDLINE_KEY_ALIASES.get(_norm_key(k), _norm_key(k))
+        # lib/vsprintf.c：no_hash_pointers 等价于 hash_pointers=never，后出现会覆盖 always。
+        if nk == "no_hash_pointers":
+            nk, v = "hash_pointers", "never"
         if v is not None:
-            if nk in _CMDLINE_COMMA_KEYS and present.get(nk):
+            if nk == "efi":
+                efi_tokens.append(v)
+                present[nk] = ",".join(efi_tokens)
+            elif nk in _CMDLINE_COMMA_KEYS and present.get(nk):
                 present[nk] = f"{present[nk]},{v}"
             else:
                 present[nk] = v
@@ -582,7 +644,16 @@ def get_cmdline_report() -> CmdlineReport:
             # 裸 token 被 parse_efi_cmdline(NULL) 拒绝并保持原值——丢掉带值形式只会
             # 让已知信息消失。module_param(bool) 例外：内核按最后一次出现生效，
             # 裸 token 等价于真，必须照旧覆盖才能与内核结论一致。
-            if present.get(nk) is not None and nk not in _CMDLINE_MODULE_BOOL_KEYS:
+            # hash_pointers 裸 token 在 hash_pointers_mode_parse(NULL) 中退回 auto，会覆盖 always。
+            # mm/slub.c setup_slub_debug()：后置裸 slab_debug 会启用 DEBUG_DEFAULT_FLAGS (FZPU)，
+            # 若先前值已达标则保留原字面量展示，若未达标（如 slab_debug=-）则按裸 token 覆盖。
+            if nk == "slab_debug" and present.get(nk) is not None:
+                if _cmdline_value_ok("slab_debug", present[nk], "FZ"):
+                    continue
+            elif (present.get(nk) is not None
+                    and nk not in _CMDLINE_MODULE_BOOL_KEYS
+                    and nk not in _CMDLINE_DRACUT_BOOL_KEYS
+                    and nk != "hash_pointers"):
                 continue
             present[nk] = None
     ar, cv = arch(), cpu_vendor()
@@ -606,7 +677,7 @@ def get_cmdline_report() -> CmdlineReport:
             status = "na"
         elif actual is MISSING:
             status = "missing"
-        elif _cmdline_value_ok(p["key"], actual, exp):
+        elif _cmdline_value_ok(p["key"], efi_tokens if nk == "efi" and efi_tokens else actual, exp):
             status = "ok"
         else:
             status = "wrong"
@@ -646,7 +717,7 @@ class SysctlItem:
             # 沙箱网络隔离时用户可能根本没提供过快照，不能说「您提供的快照中没有」。
             return "（沙箱网络隔离，无法验证）" if self.source == "沙箱网络隔离" else "（您提供的快照中没有这一项）"
         if self.status == "unknown":
-            return "（无法读取，需要 root 权限）"
+            return "（无法读取）" if self.source == "读取失败" else "（无法读取，需要 root 权限）"
         if not self.actual:
             return "（内核不支持）"
         vals = {v for v in self.actual.values()}
@@ -655,7 +726,7 @@ class SysctlItem:
         # 多个接口的值不一样时逐个列出。None 必须在这里也翻译成人话：此前只有
         # 「所有接口同一个值」的分支做了翻译，混合情形下界面上会出现「eth0=None」。
         return ", ".join(
-            f"{k.split('.')[-2]}={_sysctl_value_text(v)}"
+            f"{(k.split('.')[-2] if '.' in k else k)}={_sysctl_value_text(v)}"
             for k, v in sorted(self.actual.items()))
 
 
@@ -752,7 +823,7 @@ def _sysctl_from_proc(key):
         except PermissionError:
             actual[k] = None
             unreadable = True
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             actual[k] = None
     return actual, unreadable
 
@@ -785,9 +856,10 @@ def get_sysctl_report() -> SysctlReport:
                 actual = dict(supplied)
                 source = "用户提供"
                 unreadable = False
-            elif net_isolated:
-                # Flatpak 没有共享宿主网络：沙箱内的 net.* 属于独立的网络命名空间，
-                # 数值来自新 netns 的默认值，与宿主机的加固状态无关。
+            elif net_isolated and not user_values:
+                # Flatpak 没有共享宿主网络且用户尚未提供快照：沙箱内的 net.* 属于独立的
+                # 网络命名空间，数值来自新 netns 的默认值，与宿主机的加固状态无关。
+                # 若用户已提供快照而仍缺此项，则交由下方「快照缺失」分支统一说明。
                 actual, source, snapshot_gap = {}, "沙箱网络隔离", "沙箱网络隔离"
                 unreadable = False
             elif supplied:
@@ -801,14 +873,21 @@ def get_sysctl_report() -> SysctlReport:
                 # （net.ipv4.conf.*.…）读到了一部分、又没有权限错误时，快照里多出来的
                 # 键只能是采集之后消失的接口（VPN 断开、容器退出、拔掉的网卡）：补回来
                 # 就成了用户怎么改都消不掉的「未设置」。
-                gone_only = bool(actual) and not unreadable
-                filled = {} if gone_only else {k: v for k, v in supplied.items() if actual.get(k) is None}
+                if not actual:
+                    filled = dict(supplied)
+                elif unreadable and any(v is None for v in actual.values()):
+                    # 仅补 /proc 中确实存在但因权限读不到的键，不把快照里已消失的旧接口带回来。
+                    filled = {k: v for k, v in supplied.items() if k in actual and actual[k] is None}
+                elif unreadable:
+                    filled = {k: v for k, v in supplied.items() if actual.get(k) is None}
+                else:
+                    filled = {}
                 if filled:
                     # 这些键在 /proc 里读不到（多半是 EACCES），用快照补上。
                     actual = {**actual, **filled}
                     age = hd.step_age_text("sysctl")
                     source = f"用户提供（{age}）" if age else "用户提供"
-                    unreadable = False
+                    unreadable = any(v is None for v in actual.values())
             elif IN_FLATPAK and user_values and not (
                     unreadable and not any(v is not None for v in actual.values())):
                 # 沙箱内的 /proc/sys 不是宿主机视图（可能被屏蔽、改写或加了命名空间），
@@ -827,8 +906,10 @@ def get_sysctl_report() -> SysctlReport:
                      for v in actual.values()):
                 status = "missing"
             elif unreadable or any(v is None for v in actual.values()):
-                # 部分接口读不到时，不能凭其余接口的正确值宣称整项已加固。
+                # 部分接口读不到时，不能凭其余接口的正确值宣称整项已加固；非权限错误（如 EIO）单独标记来源。
                 status = "unknown"
+                if not unreadable and source == "proc":
+                    source = "读取失败"
             else:
                 status = "ok"
             items.append(SysctlItem(key=key, expected=e["value"], cmp=cmp, actual=actual, status=status,
@@ -858,9 +939,11 @@ class HardwareReport:
 
 
 def _vendor_kw_match(kw, text):
-    # 短缩写（如 "hp"、"msi"）按单词边界匹配，避免把 "touchpad" 等含 "hp" 的普通单词误判为 HP
-    if len(kw) <= 3 and kw.isalnum():
-        return bool(re.search(rf"\b{re.escape(kw)}\b", text))
+    # 短词（如 hp、msi、asus、acer、omen、timi、intel）按字母边界匹配，
+    # 避免 optimized->timi、momentum->omen、pegasus->asus、touchpad->hp 等子串误判，
+    # 同时不把下划线当字母（hp_laptop、asus_x570 仍能命中）。
+    if len(kw) <= 5 and kw.isalnum():
+        return bool(re.search(rf"(?<![a-z]){re.escape(kw)}(?![a-z])", text))
     return kw in text
 
 
@@ -965,7 +1048,7 @@ def _flatpak_apps():
             pass
     if not apps:
         rc, out = run(["flatpak", "list", "--app", "--columns=application"])
-        if out:
+        if rc == 0 and out:
             apps.update(name.strip() for name in out.splitlines() if name.strip() and "." in name)
             source = "flatpak list"
         elif rc == 0 and not source:
@@ -993,6 +1076,8 @@ def check_uptime() -> HabitCheck:
     try:
         secs = float(read("/proc/uptime").split()[0])
     except (ValueError, IndexError):
+        return HabitCheck("uptime", "系统运行时间", "unknown", "无法读取 /proc/uptime", [], "")
+    if not math.isfinite(secs) or secs < 0:
         return HabitCheck("uptime", "系统运行时间", "unknown", "无法读取 /proc/uptime", [], "")
     days, rem = divmod(int(secs), 86400)
     hours, rem = divmod(rem, 3600)
@@ -1037,11 +1122,12 @@ def _usb_devices():
     if devs:
         return devs, "sysfs"
     rc, out = run(["lsusb"])
-    for line in out.splitlines():
-        m = re.match(r"Bus \d+ Device \d+: ID ([0-9a-f]{4}):([0-9a-f]{4})\s*(.*)", line, re.I)
-        if m:
-            devs.append(dict(vid=m.group(1).lower(), pid=m.group(2).lower(),
-                             product=m.group(3), manufacturer="", cls=""))
+    if rc == 0:
+        for line in out.splitlines():
+            m = re.match(r"Bus \d+ Device \d+: ID ([0-9a-f]{4}):([0-9a-f]{4})\s*(.*)", line, re.I)
+            if m:
+                devs.append(dict(vid=m.group(1).lower(), pid=m.group(2).lower(),
+                                 product=m.group(3).strip(), manufacturer="", cls=""))
     return devs, ("lsusb" if devs else "")
 
 
@@ -1173,6 +1259,11 @@ def _ntfs_from_lsblk_json(j):
     return found
 
 
+def _unescape_mount_field(s):
+    """解码 /proc/mounts 中的八进制转义（如空格 \040、反斜杠 \134）。"""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
+
+
 def _ntfs_partitions():
     """返回 (命中的分区行, 数据来源)。
 
@@ -1202,36 +1293,51 @@ def _ntfs_partitions():
     if not source:
         has_udev_fs = False
         seen_devices = set()
+        non_win_devices = set()
+        fs_pat = "|".join(re.escape(t) for t in data.WINDOWS_FS_TYPES)
         for f in sorted(glob.glob("/run/udev/data/b*")):
             content = read(f)
-            if "E:ID_FS_TYPE=" in content:
-                has_udev_fs = True
-            m_fs = re.search(r"^E:ID_FS_TYPE=(%s)\s*$" % "|".join(data.WINDOWS_FS_TYPES),
-                             content, re.M | re.I)
-            if m_fs:
-                name = re.search(r"^E:DEVNAME=(\S+)", content, re.M)
-                devname = name.group(1) if name else ""
-                if not devname:
-                    uevent = read(f"/sys/dev/block/{os.path.basename(f)[1:]}/uevent")
-                    m_dev = re.search(r"^DEVNAME=(\S+)", uevent, re.M)
-                    devname = f"/dev/{m_dev.group(1)}" if m_dev else f
-                label = re.search(r"^E:ID_FS_LABEL=(\S+)", content, re.M)
-                line = f"{devname}  标签: {label.group(1) if label else '-'}"
-                if m_fs.group(1).lower() == data.BITLOCKER_FS_TYPE:
+            m_any = re.search(r"^E:ID_FS_TYPE=([^\r\n]+)$", content, re.M)
+            if not m_any:
+                continue
+            fstype = m_any.group(1).strip()
+            if not fstype:
+                continue
+            has_udev_fs = True
+            name = re.search(r"^E:DEVNAME=(\S+)", content, re.M)
+            devname = name.group(1) if name else ""
+            if not devname:
+                uevent = read(f"/sys/dev/block/{os.path.basename(f)[1:]}/uevent")
+                m_dev = re.search(r"^DEVNAME=(\S+)", uevent, re.M)
+                devname = f"/dev/{m_dev.group(1)}" if m_dev else f
+            if re.fullmatch(fs_pat, fstype, re.I):
+                label = re.search(r"^E:ID_FS_LABEL=([^\r\n]+)$", content, re.M)
+                lbl_txt = label.group(1).strip() if label and label.group(1).strip() else "-"
+                line = f"{devname}  标签: {lbl_txt}"
+                if fstype.lower() == data.BITLOCKER_FS_TYPE:
                     line += "  （BitLocker 加密）"
                 found.append(line)
                 seen_devices.add(devname)
                 source = "udev"
+            elif devname:
+                non_win_devices.add(devname)
         if has_udev_fs and not source:
             source = "udev"
         # udev 数据库可能缺少后挂载设备的记录；即使已有 udev 数据，也必须用挂载表补全。
+        # 但 fuseblk 也用于 exfat-fuse / fuse-ext2 等非 NTFS 文件系统，不能覆盖 udev 已确认为非 Windows 的设备。
         for line in read("/proc/mounts").splitlines():
             parts = line.split()
-            if len(parts) > 2 and (parts[2] in ("ntfs", "ntfs3", "fuse.ntfs", "fuse.ntfs-3g")
-                                   or (parts[2] == "fuseblk" and parts[0].startswith("/dev/"))):
-                if parts[0] not in seen_devices:
-                    found.append(f"{parts[0]} 挂载于 {parts[1]} ({parts[2]})")
-                    seen_devices.add(parts[0])
+            if len(parts) <= 2:
+                continue
+            dev = _unescape_mount_field(parts[0])
+            mp = _unescape_mount_field(parts[1])
+            fstype = parts[2]
+            is_ntfs_mount = fstype in ("ntfs", "ntfs3", "fuse.ntfs", "fuse.ntfs-3g")
+            is_unknown_fuseblk = (fstype == "fuseblk" and dev.startswith("/dev/")
+                                  and dev not in non_win_devices)
+            if (is_ntfs_mount or is_unknown_fuseblk) and dev not in seen_devices:
+                found.append(f"{dev} 挂载于 {mp} ({fstype})")
+                seen_devices.add(dev)
         source = f"{source} + /proc/mounts" if source else "/proc/mounts"
     return found, source
 
@@ -1330,13 +1436,13 @@ def _safe(fn, fallback):
 
 
 def collect() -> Report:
-    ident = _safe(hostinfo.get_identity, lambda e: hostinfo.HostIdentity(dbus_error=str(e)))
+    ident = _safe(lambda: hostinfo.get_identity(refresh=True), lambda e: hostinfo.HostIdentity(dbus_error=str(e)))
     return Report(
         hsi=_safe(get_hsi, lambda e: HsiReport(ok=False, error=f"检测时出错：{e}")),
         cmdline=_safe(get_cmdline_report, lambda e: CmdlineReport(arch=arch(), cpu=cpu_vendor(), cmdline=f"读取失败：{e}", items=[])),
         sysctl=_safe(get_sysctl_report, lambda e: SysctlReport(arch=arch(), groups=[])),
         hardware=_safe(get_hardware, lambda e: HardwareReport("", "", "", "", "", "", data.DEFAULT_VENDOR, "")),
         habits=_safe(get_habits, lambda e: HabitsReport(checks=[HabitCheck("err", "检测出错", "unknown", str(e), [], "")])),
-        arch=arch(), cpu=cpu_model(), os_name=ident.os_name, kernel=ident.kernel, in_flatpak=IN_FLATPAK,
+        arch=_safe(arch, lambda _e: ""), cpu=_safe(cpu_model, lambda _e: ""), os_name=ident.os_name, kernel=ident.kernel, in_flatpak=IN_FLATPAK,
         identity=ident, hostdata=hostdata.CURRENT, kernel_support=kernelver.CURRENT,
     )

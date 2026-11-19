@@ -561,6 +561,12 @@ async function main() {
   assert.strictEqual(parseExpected(`b3sum.txt: ${sha256}`).entries.length, 1);
   assert.strictEqual(parseExpected(`hmac-sha256-notes.txt: ${sha256}`).entries.length, 1);
   assert.strictEqual(parseExpected(`SHA256 (hmac.c) = ${sha256}`).entries[0].algorithm, 'SHA-256');
+  // Hash、Checksum 这类中性词出现在 BSD 标记或 xxsum 前缀的位置时，同样只按长度推断，不算不支持的算法。
+  for (const line of [`Checksum ${sha256}  file.txt`, `Hash (file.txt) = ${sha256}`, `checksum ${sha256} *file.txt`]) {
+    const parsed = parseExpected(line);
+    assert.deepStrictEqual(parsed.entries.map(entry => [entry.algorithm, entry.hex, entry.file]), [[null, sha256, 'file.txt']], line);
+    assert.deepStrictEqual(parsed.unsupported, [], line);
+  }
   assert.strictEqual(parseExpected(`BLAKE2b / SHA-512: ${sha256}${sha256}`).entries[0].algorithm, 'SHA-512');
   for (const sample of [`SHA-256: ${sha256.slice(1)}`, `SHA-256: ${spaced.slice(0, -1)}`, `SHA-256: ${spaced.slice(1)}`]) {
     const truncated = parseExpected(sample);
@@ -604,6 +610,16 @@ async function main() {
   const normalized = parseExpected(`${sha256}  café.iso\n${'f'.repeat(64)}  cafe\u0301.iso`);
   assert.strictEqual(entriesForFile(normalized.entries, 'café.iso').entries[0].hex, sha256);
   assert.strictEqual(entriesForFile(normalized.entries, 'cafe\u0301.iso').entries[0].hex, 'f'.repeat(64));
+  // 粘贴的校验行常带行尾空格或多余的前导空格；只有精确和 NFC 都对不上时才忽略首尾空白，精确匹配仍然优先。
+  for (const line of [`${sha256}  ubuntu.iso `, `${sha256}  ubuntu.iso\t`, `${sha256}   ubuntu.iso`, `${sha256} LICENSE `]) {
+    const padded = parseExpected(line);
+    const scopedPadded = entriesForFile(padded.entries, line.includes('LICENSE') ? 'LICENSE' : 'ubuntu.iso', padded.files);
+    assert.strictEqual(scopedPadded.issue, null, line);
+    assert.strictEqual(scopedPadded.entries.length, 1, line);
+  }
+  const exactFirst = parseExpected(`${sha256}  ubuntu.iso \n${'f'.repeat(64)}  ubuntu.iso`);
+  assert.deepStrictEqual(entriesForFile(exactFirst.entries, 'ubuntu.iso', exactFirst.files).entries.map(entry => entry.hex), ['f'.repeat(64)]);
+  assert.strictEqual(entriesForFile(exactFirst.entries, 'ubuntu.iso ', exactFirst.files).entries[0].hex, sha256);
   const unusable = parseExpected(`SHA256 (a.iso) = ${sha256.slice(1)}\n${sha256}  b.iso`);
   assert.strictEqual(entriesForFile(unusable.entries, 'a.iso', unusable.files).issue, 'unusable');
   const base64 = parseExpected(`sha256sum ${Buffer.from(sha256, 'hex').toString('base64')} *other.iso`);
@@ -616,6 +632,37 @@ async function main() {
   assert.deepStrictEqual(parseExpected(`${sha256} LICENSE`).entries.map(entry => entry.file), ['LICENSE']);
   assert.deepStrictEqual(parseExpected(`sha256sum ${sha256}\t说明`).entries.map(entry => [entry.algorithm, entry.file]), [['SHA-256', '说明']]);
   assert.strictEqual(parseExpected(`${sha256} *`).invalid, true); // 不是名为 * 的单空格条目。
+  // 算法名后带冒号、再接文件名的写法也要认出文件名，不能把文件名当成摘要的一部分而报“摘要无效”。
+  for (const [line, algorithm, hex, file] of [
+    [`SHA256: ${sha256}  release.iso`, 'SHA-256', sha256, 'release.iso'],
+    [`sha256: ${sha256} release.iso`, 'SHA-256', sha256, 'release.iso'],
+    [`SHA-256：${sha256} *release.iso`, 'SHA-256', sha256, 'release.iso'],
+    [`sha256sum: ${sha256}  release.iso`, 'SHA-256', sha256, 'release.iso'],
+    [`MD5: ${md5}\tC:\\dl\\release.iso`, 'MD5', md5, 'release.iso'],
+    [`SHA256: ${sha256}  ${md5}`, 'SHA-256', sha256, md5],
+    [`SHA256: ${sha256}`, 'SHA-256', sha256, '']
+  ]) {
+    const parsed = parseExpected(line);
+    assert.deepStrictEqual(parsed.entries.map(entry => [entry.algorithm, entry.hex, entry.file]), [[algorithm, hex, file]], line);
+    assert.strictEqual(parsed.invalid, false, line);
+  }
+  assert.strictEqual(parseExpected(`SHA256: ${sha256.slice(0, 56)}  release.iso`).malformed.strayLength, 56);
+  // 带算法标签的分组摘要后面也可以跟文件名，不能只取第一组当摘要。
+  for (const line of [`sha256sum ${spaced}  release.iso`, `SHA256: ${spaced}  release.iso`, `SHA-256: ${sha256.match(/.{4}/g).join(':')}  release.iso`]) {
+    const parsed = parseExpected(line);
+    assert.deepStrictEqual(parsed.entries.map(entry => [entry.algorithm, entry.hex, entry.file]), [['SHA-256', sha256, 'release.iso']], line);
+  }
+  assert.strictEqual(parseExpected(`sha256sum ${spaced.slice(0, -1)}  release.iso`).malformed.strayLength, 63);
+  // 从标准输入计算时 coreutils 打印 -，OpenSSL 打印 (stdin)：都不是文件名，应当比对当前文件。
+  for (const line of [`${sha256}  -`, `${sha256} *-`, `${sha256} -`, `\\${sha256}  -`, `SHA2-256(stdin)= ${sha256}`, `(stdin)= ${sha256}`, `SHA256 (stdin) = ${sha256}`]) {
+    const parsed = parseExpected(line);
+    assert.deepStrictEqual(parsed.entries.map(entry => [entry.hex, entry.file]), [[sha256, '']], line);
+    assert.deepStrictEqual(parsed.files, [], line);
+    assert.strictEqual(parsed.invalid, false, line);
+    assert.strictEqual(entriesForFile(parsed.entries, 'download.iso', parsed.files).entries.length, 1, line);
+  }
+  assert.strictEqual(parseExpected(`SHA2-256(stdin)= ${sha256}`).entries[0].algorithm, 'SHA-256');
+  assert.strictEqual(parseExpected(`${sha256}  ./-`).entries[0].file, '-'); // 明确写成路径的才是文件名。
   assert.strictEqual(parseExpected(`SHA-256 ${sha256} / ${sha256}`).invalid, true);
   // 分隔符后是另一段十六进制（分组哈希的后续片段）时不能当成文件名。
   assert.deepStrictEqual(parseExpected(`${sha256.slice(0, 32)} ${sha256.slice(32)}`).entries, [{algorithm: null, hex: sha256, file: ''}]);

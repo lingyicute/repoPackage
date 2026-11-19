@@ -10,7 +10,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'sha256-iDnhUlyAE+38tXFfALFW8Qzn0vop6N//Oxs1fnhroPQ=' 'sha256-Ah0jqK1GAt9TJDq8gctGjuZVq2rM3/8Ut0cWSuSI+aY='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+    content="default-src 'none'; script-src 'sha256-iDnhUlyAE+38tXFfALFW8Qzn0vop6N//Oxs1fnhroPQ=' 'sha256-V/Z110wpSR48vjwvUp+2A2HtQ1nxlaY4EvMJubM/PiQ='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#f7f5fa">
   <title>Hashroom 文件摘要小助手 by lingyicute</title>
@@ -2445,15 +2445,16 @@
       return {algorithm, strayLength: hex.length};
     }
 
-    function labelledField(label, value, tagged = false) {
+    function labelledField(label, value) {
       label = label.replace(/^--/, '');
       const names = [...new Set(findAlgorithmNames(label).map(canonicalAlgorithm))];
       const foreign = findAlgorithmNames(label, UNSUPPORTED_PATTERN).find(name => !names.length || /^hmac/i.test(name));
       if (foreign) return {unsupported: foreign};
       if (names.length > 1) return {};
       const result = digestField(value, names[0]);
+      // Hash、Checksum 这类中性词不是算法名；即使出现在 BSD 标记或 xxsum 前缀的位置，也只按长度推断。
       const neutral = /^(?:(?:hash|digest|checksum)(?: value)?|(?:哈希|散列|摘要)(?:值)?|校验[和值])$/i.test(label);
-      if (!names.length && (tagged || !neutral)) return result.hex ? {unsupported: label.slice(0, 80)} : {};
+      if (!names.length && !neutral) return result.hex ? {unsupported: label.slice(0, 80)} : {};
       return result;
     }
 
@@ -2489,7 +2490,7 @@
     }
 
     function parseDigestLine(content, tag) {
-      if (tag) return [labelledField(tag, content, true)];
+      if (tag) return [labelledField(tag, content)];
       if (hexValue(content)) return [digestField(content)];
       const tokens = content.trim().split(/\s+/);
       if (tokens.length <= MAX_NAMES_PER_LINE) {
@@ -2526,6 +2527,8 @@
         // 只在明显是 Windows 路径时把 \ 当分隔符。POSIX 上未转义的反斜杠也可能是文件名的一部分。
         name = name.replace(/\\/g, '/');
       }
+      // coreutils 的 - 和 OpenSSL 的 (stdin) 表示从标准输入计算，不是文件名，按未注明文件名处理。
+      if (name === '-' || name === 'stdin') return {file: '', path: '', invalidFile: false};
       const path = name.replace(/^(?:\.\/)+/, '');
       const file = path.slice(path.lastIndexOf('/') + 1);
       return {file, path, invalidFile: invalidFile || !file};
@@ -2534,14 +2537,16 @@
     function splitChecksumLine(line, allowPosix = true) {
       const escaped = line.startsWith('\\');
       const text = escaped ? line.slice(1) : line;
-      const bsd = text.match(/^([A-Za-z][\w/-]*)\s*\(([\s\S]*)\)\s*=\s*([\s\S]*)$/);
+      // OpenSSL 1.x 从标准输入计算时不打印算法名，只有 (stdin)= 摘要。
+      const bsd = text.match(/^([A-Za-z][\w/-]*)?\s*\(([\s\S]*)\)\s*=\s*([\s\S]*)$/);
       if (bsd) return {tag: bsd[1], content: bsd[3], ...checksumFile(bsd[2], escaped)};
       // POSIX cksum 的十进制校验和、大小和可选文件名即使恰好都是十六进制字符，也不能按本工具的摘要比对。
       const posix = allowPosix && !escaped && text.match(/^(0|[1-9]\d{0,9}) (?:0|[1-9]\d*)(?: ([\s\S]*))?$/);
       if (posix && Number(posix[1]) <= 0xffffffff) {
         return {tag: 'POSIX cksum', content: posix[1], ...(posix[2] ? checksumFile(posix[2]) : {})};
       }
-      const prefixed = text.match(/^([a-z][\w/-]*)[ \t]+([\s\S]*)$/i);
+      // 算法名后面可以带冒号再接摘要和文件名，如 `SHA256: 摘要  文件`。
+      const prefixed = text.match(/^([a-z][\w/-]*)(?:[:：][ \t]*|[ \t]+)([\s\S]*)$/i);
       const tag = prefixed && (/sum$/i.test(prefixed[1]) || findAlgorithmNames(prefixed[1]).length ||
         findAlgorithmNames(prefixed[1], UNSUPPORTED_PATTERN).length) ? prefixed[1] : undefined;
       const payload = tag ? prefixed[2] : text;
@@ -2562,12 +2567,12 @@
           return {tag, content: sum[1], ...checksumFile(name, escaped)};
         }
       }
-      // 首个双字符分隔符之后是文件名；不要把文件名开头的十六进制词吞进摘要。
-      const grouped = text.match(/^([0-9a-fx:：,，_\t \-]*?[0-9a-f])[ \t]{2}([\s\S]+)$/i);
+      // 首个双字符分隔符之后是文件名；不要把文件名开头的十六进制词吞进摘要。带算法标签时分组摘要在标签之后。
+      const grouped = payload.match(/^([0-9a-fx:：,，_\t \-]*?[0-9a-f])[ \t]{2}([\s\S]+)$/i);
       if (!escaped && grouped && /^[0-9a-f]{2,16}[ \t:：,，_\-]/i.test(grouped[1]) && /[./\\]/.test(grouped[2])) {
         const hex = hexValue(grouped[1]);
         const groups = grouped[1].trim().split(/[\t :：,，_\-]+/);
-        if (hex && (HASH_LENGTHS.has(hex.length) || groups.length > 2)) return {content: grouped[1], ...checksumFile(grouped[2])};
+        if (hex && (HASH_LENGTHS.has(hex.length) || groups.length > 2)) return {tag, content: grouped[1], ...checksumFile(grouped[2])};
       }
       if (escaped) return {invalidFile: true};
       // 表格或手写的清单也可能只用一个空格或制表符分隔；不能把下一组十六进制当作文件名。
@@ -2599,6 +2604,11 @@
       if (!matches.length) {
         const name = fileName.normalize('NFC');
         matches = named.filter(record => record.file.normalize('NFC') === name);
+      }
+      if (!matches.length) {
+        // 从网页或文档粘贴的校验行常带着行尾空格；精确和 NFC 都对不上时，再忽略文件名首尾空白比一次。
+        const name = fileName.normalize('NFC').trim();
+        matches = named.filter(record => record.file.normalize('NFC').trim() === name);
       }
       const paths = new Set(matches.map(record => record.path));
       const [path] = paths;

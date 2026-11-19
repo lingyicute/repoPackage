@@ -236,7 +236,8 @@ function readZip(buf){const u8=new Uint8Array(buf),dv=new DataView(buf),bad=()=>
     if(out.length!==f.usize||crc32(out)!==f.crc)bad();return out},
     text(name){const d=this.get(name);if(!d)return null;
       // OPC 的 XML 部件也允许 UTF-16；部件内容编码与 ZIP 条目名称编码无关。
-      const le=d[0]===0xFF&&d[1]===0xFE,be=d[0]===0xFE&&d[1]===0xFF;
+      const le=d[0]===0xFF&&d[1]===0xFE||d.length>=4&&d[0]!==0&&d[1]===0&&d[3]===0;
+      const be=d[0]===0xFE&&d[1]===0xFF||d.length>=4&&d[0]===0&&d[1]!==0&&d[2]===0;
       try{return new TextDecoder(le?'utf-16le':be?'utf-16be':'utf-8',{fatal:true}).decode(d)}catch(e){bad()}
     },names:Object.keys(files)}}
 
@@ -264,7 +265,9 @@ function shiftFormula(f,dr,dc){if(!dr&&!dc)return f;
   // 跳过字符串、工作表限定符与结构化引用。后者的列名可以恰好形如 A1，也可以嵌套括号。
   const tokens=/("(?:[^"]|"")*"|'(?:[^']|'')*'|[\p{L}\p{N}_.]+(?::[\p{L}\p{N}_.]+)?!)|(\[)|(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![\p{L}\p{N}_.(!])|(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![\p{L}\p{N}_.(!])|(\$?)(\d+):(\$?)(\d+)(?![\p{L}\p{N}_.(!])|[\p{L}\p{N}_.]+/gu;
   // XFE1、A1048577 等超出网格的词可以是 Excel 名称，而不是待平移的引用。
-  const moveCol=(name,delta)=>{const base=colIndex(name.toUpperCase()),i=base+delta;return base<16384&&i>=0&&i<16384?(delta?(name===name.toLowerCase()?colName(i).toLowerCase():colName(i)):name):null};
+  // 共享公式的相对引用越过网格边界时会环绕到另一端；原本越界的名称则不是引用。
+  const wrap=(n,size)=>(n%size+size)%size;
+  const moveCol=(name,delta)=>{const base=colIndex(name.toUpperCase());if(base>=16384)return null;const i=wrap(base+delta,16384);return delta?(name===name.toLowerCase()?colName(i).toLowerCase():colName(i)):name};
   const validRow=n=>n>=1&&n<=1048576;
   let m,pos=0,out='';
   while((m=tokens.exec(f))){
@@ -275,8 +278,8 @@ function shiftFormula(f,dr,dc){if(!dr&&!dc)return f;
     if(locked||(m.index>0&&/[\p{L}\p{N}_.]/u.test(f[m.index-1])))continue;
     let next=raw;
     if(xc!=null){const a=moveCol(xc,xa?0:dc),b=moveCol(xd,xb?0:dc);if(a&&b)next=xa+a+':'+xb+b}
-    else if(yr!=null){const a=+yr+(ya?0:dr),b=+yd+(yb?0:dr);if(validRow(+yr)&&validRow(+yd)&&validRow(a)&&validRow(b))next=ya+a+':'+yb+b}
-    else if(col!=null){const c=moveCol(col,ca?0:dc),r=+row+(ra?0:dr);if(c&&validRow(+row)&&validRow(r))next=ca+c+ra+r}
+    else if(yr!=null){if(validRow(+yr)&&validRow(+yd)){const a=wrap(+yr-1+(ya?0:dr),1048576)+1,b=wrap(+yd-1+(yb?0:dr),1048576)+1;next=ya+a+':'+yb+b}}
+    else if(col!=null){const c=moveCol(col,ca?0:dc);if(c&&validRow(+row)){const r=wrap(+row-1+(ra?0:dr),1048576)+1;next=ca+c+ra+r}}
     if(next!==raw){out+=f.slice(pos,m.index)+next;pos=tokens.lastIndex}
   }
   return out+f.slice(pos);
@@ -299,7 +302,7 @@ function serialToDate(v,d1904,timeOnly=v>=0&&v<1&&!d1904,compat=true,precision=0
   }
   return sec?date+' '+time:date;
 }
-function serialToElapsed(v,precision=0){const ticks=Math.round(Math.abs(v)*86400*10**precision);return Number.isSafeInteger(ticks)?(v<0?'-':'')+clockText(ticks,precision):String(v)}
+function serialToElapsed(v,precision=0){const ticks=Math.round(Math.abs(v)*86400*10**precision);return Number.isSafeInteger(ticks)?(ticks&&v<0?'-':'')+clockText(ticks,precision):String(v)}
 function customDateKind(format){
   const bare=format.replace(/"[^"]*"|[\\_*]./g,'');
   if(/\[(?:h+|m+|s+)\]/i.test(bare))return 'elapsed';
@@ -321,7 +324,7 @@ function customNumberStyle(format){
   }
   parts.push(format.slice(start));
   const sections=parts.slice(0,3).map(part=>{
-    const style=dateNumberStyle(part),prefix=/^(?:\[[^\]]*\]\s*)*/.exec(part)[0];
+    const style=dateNumberStyle(part),prefix=/^\s*(?:\[[^\]]*\]\s*)*/.exec(part)[0];
     const m=/\[(<=|>=|<>|<|>|=)([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\]/i.exec(prefix);
     if(!m)return {style};
     const rhs=+m[2],op=m[1];return {style,test:n=>op==='<'?n<rhs:op==='>'?n>rhs:op==='<='?n<=rhs:op==='>='?n>=rhs:op==='='?n===rhs:n!==rhs};
@@ -483,7 +486,23 @@ function midSnake(a,b,a0,a1,b0,b1,eq,lim=MYERS_LIMIT){const N=a1-a0,M=b1-b0,MAX=
     for(let k=-d;k<=d;k+=2){let x=(k===-d||(k!==d&&vb[off+k-1]<vb[off+k+1]))?vb[off+k+1]:vb[off+k-1]+1,y=x-k;const xs=x,ys=y;while(x<N&&y<M&&eq(a[a1-1-x],b[b1-1-y])){x++;y++}vb[off+k]=x;if(!odd){const kf=delta-k;if(kf>=-d&&kf<=d&&x+vf[off+kf]>=N)return{x:N-x,y:M-y,u:N-xs,v:M-ys}}}}return null}
 const WORD_RE=/[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF]|(?:(?![\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF])[\p{L}\p{M}\p{N}_])+|\s+|[^\s\p{L}\p{M}\p{N}_]/gu;
 const INLINE_MAX_TOKENS=20000;
+// 对整段文字做大小写转换，再把比较结果映回原字符：希腊词尾 Σ 有上下文规则，İ 还会展开为两个码点。
+function projectedCaseDiff(l,r,ws,big){
+  const project=raw=>{const key=raw.toLowerCase(),map=new Uint32Array(key.length),marks=new Uint8Array(raw.length);let k=0;
+    for(let i=0;i<raw.length;){const ch=String.fromCodePoint(raw.codePointAt(i));for(let n=ch.toLowerCase().length;n--;)map[k++]=i;i+=ch.length}return {raw,key,map,marks}};
+  const a=project(l),b=project(r),tk=s=>big?(s.match(WORD_RE)||[]):ws?(s.match(/\s+|[^\s]/gu)||[]):Array.from(s);
+  const A=tk(a.key),B=tk(b.key),fold=s=>ws&&!s.trim()?' ':s,na=A.map(fold),nb=B.map(fold);
+  let ops;if(A.length+B.length>INLINE_MAX_TOKENS){let p=0,q=0;while(p<A.length&&p<B.length&&na[p]===nb[p])p++;while(q<A.length-p&&q<B.length-p&&na[A.length-1-q]===nb[B.length-1-q])q++;
+    ops=[];for(let i=0;i<p;i++)ops.push([EQ,i,i]);for(let i=p;i<A.length-q;i++)ops.push([DEL,i,-1]);for(let i=p;i<B.length-q;i++)ops.push([INS,-1,i]);for(let i=0;i<q;i++)ops.push([EQ,A.length-q+i,B.length-q+i]);
+  }else ops=diffSeq(na,nb);
+  let ap=0,bp=0;const mark=(p,start,token)=>{if(ws&&!token.trim())return;for(let i=start;i<start+token.length;i++)p.marks[p.map[i]]=1};
+  for(const [op,i,j] of ops){if(op!==INS){if(op===DEL)mark(a,ap,A[i]);ap+=A[i].length}if(op!==DEL){if(op===INS)mark(b,bp,B[j]);bp+=B[j].length}}
+  const out=[],add=(t,x,y)=>{const last=out[out.length-1];if(last&&last.t===t){last.a+=x;last.b+=y}else out.push({t,a:x,b:y})};
+  for(const [p,side] of [[a,'a'],[b,'b']])for(let i=0;i<p.raw.length;){const ch=String.fromCodePoint(p.raw.codePointAt(i)),t=p.marks[i]?(side==='a'?DEL:INS):EQ;add(t,side==='a'?ch:'',side==='b'?ch:'');i+=ch.length}
+  return out;
+}
 function inlineDiff(l,r){const ws=opts.ignoreWs,big=l.length+r.length>400,tk=s=>big?(s.match(WORD_RE)||[]):ws?(s.match(/\s+|[^\s]/gu)||[]):Array.from(s),A=tk(l),B=tk(r);
+  if(opts.ignoreCase&&([A,B].some(tokens=>tokens.some(x=>x.toLowerCase().length!==x.length))||A.map(x=>x.toLowerCase()).join('')!==l.toLowerCase()||B.map(x=>x.toLowerCase()).join('')!==r.toLowerCase()))return projectedCaseDiff(l,r,ws,big);
   /* 忽略大小写时按小写比较 token（显示仍用原文）：否则仅大小写不同的字符会被高亮成改动，与“忽略大小写差异”自相矛盾 *//* 忽略空白时，连续空白按一个空格比较，且只剩空白的差异不再标成改动：否则“a  b”与“a b”之间多出的空格会被高亮，与“忽略空白”自相矛盾 */const fold=x=>x.map(s=>{if(ws&&!s.trim())s=' ';return opts.ignoreCase?s.toLowerCase():s}),na=fold(A),nb=fold(B);
   if(A.length+B.length>INLINE_MAX_TOKENS){// 超长单元格（最长 32767 字符）：只裁掉公共前后缀，中间整体标记为改动，避免 Myers 的 O(ND) 卡死页面（与文本页一致）
     let p=0;while(p<A.length&&p<B.length&&na[p]===nb[p])p++;let q=0;while(q<A.length-p&&q<B.length-p&&na[A.length-1-q]===nb[B.length-1-q])q++;
@@ -634,7 +653,7 @@ function renderDetails(side){const wb=WB[side],sel=SEL[side],det=$('det'+side);c
   det.innerHTML=`<label>${t('sheet')} <select data-sheet>${wb.sheets.map((s,i)=>`<option value="${i}" ${i===sel.sheet?'selected':''}>${esc(s.name)}${s.hidden?` (${esc(t('hiddenSheet'))})`:''}</option>`).join('')}</select></label><label title="${esc(t('headerTip'))}">${t('headerLine')} <input type="number" min="1" data-header value="${sel.header+1}"></label><span style="color:var(--fg2)">${t(body.length===1?'nRows1':'nRows',{n:body.length})} × ${t(cols===1?'nCols1':'nCols',{n:cols})}</span>${sel.auto&&sel.header>0?`<span class="note">${esc(t('headerDetected',{line:sel.header+1}))}</span>`:''}`;
   if(fq)det.querySelector(fq).focus();det.querySelector('[data-sheet]').onchange=e=>{const prev=sel.sheet;let ok=true;sel.sheet=+e.target.value;$('err'+side).textContent='';/* 选中的工作表损坏读不出来时退回原来的表并给出提示，而不是停在一张一比较就报错的表上 */try{autoHeader(side)}catch(err){console.error(err);ok=false;$('err'+side).textContent=t('parseError',{name:wb.sheets[sel.sheet].name,msg:err.message});sel.sheet=prev}renderDetails(side);if(ok&&RES)run()};det.querySelector('[data-header]').onchange=e=>{sel.header=Math.max(0,Math.floor(+e.target.value||1)-1);sel.auto=false;renderDetails(side);if(RES)run()};
   const pv=$('prev'+side);pv.classList.remove('hidden');const rows=body.slice(0,30);let h='<table><tr><th></th>';for(let c=0;c<Math.min(cols,40);c++)h+=`<th>${colName(c)}</th>`;h+='</tr>';rows.forEach((r,i)=>{h+=`<tr class="${i===sel.header&&opts.mode==='table'?'hdr':''}"><th>${i+1}</th>`;for(let c=0;c<Math.min(cols,40);c++)h+=`<td title="${esc(r[c]?.f||'')}">${esc(cellText(r[c]))}</td>`;h+='</tr>'});pv.innerHTML=h+'</table>'}
-$('swapBtn').onclick=()=>{if(!WB.A||!WB.B)return;cancelLoads();[WB.A,WB.B]=[WB.B,WB.A];[NAMES.A,NAMES.B]=[NAMES.B,NAMES.A];[SEL.A,SEL.B]=[SEL.B,SEL.A];for(const s of ['A','B']){$('name'+s).textContent=NAMES[s];renderDetails(s)}if(RES)run()};
+$('swapBtn').onclick=()=>{if(!WB.A||!WB.B)return;cancelLoads();[WB.A,WB.B]=[WB.B,WB.A];[NAMES.A,NAMES.B]=[NAMES.B,NAMES.A];[SEL.A,SEL.B]=[SEL.B,SEL.A];for(const s of ['A','B']){$('name'+s).textContent=NAMES[s];$('err'+s).textContent='';renderDetails(s)}if(RES)run()};
 $('findBtn').onclick=()=>{if(!WB.A||!WB.B)return notice(t('needTwo'));if(run())$('result').scrollIntoView({behavior:'smooth',block:'start'})};
 function clearResult(){RES=null;expanded.clear();$('result').classList.add('hidden');$('exportModal').close();$('gridWrap').replaceChildren()}
 function run(){if(!WB.A||!WB.B)return false;

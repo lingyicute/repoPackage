@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
+import sys
 import time
 
 # Exit statuses Ninja returns after handling SIGINT itself (it removes the
@@ -35,6 +37,10 @@ def monotonic_now():
 DEAD_PROC_STATES = frozenset({'Z', 'X', 'x'})
 
 
+def _is_ascii_uint(text):
+    return text.isascii() and text.isdigit()
+
+
 def compute_jobs(cpu_count=None, mem_kib=None):
     if cpu_count is None:
         cpu_count = os.cpu_count() or 1
@@ -45,7 +51,10 @@ def compute_jobs(cpu_count=None, mem_kib=None):
         mem_line = next((line for line in lines if line.startswith('MemTotal:')), None)
         if mem_line is None:
             raise RuntimeError('MemTotal missing from /proc/meminfo')
-        mem_kib = int(mem_line.split()[1])
+        parts = mem_line.split()
+        if len(parts) != 3 or parts[2] != 'kB' or not _is_ascii_uint(parts[1]):
+            raise RuntimeError(f'Unexpected MemTotal entry in /proc/meminfo: {mem_line!r}')
+        mem_kib = int(parts[1])
     elif isinstance(mem_kib, bool) or not isinstance(mem_kib, int) or mem_kib < 0:
         raise ValueError('mem_kib must be a non-negative integer')
     # Public repos typically have more RAM/CPU than private standard runners.
@@ -63,7 +72,7 @@ def _has_live_thread(proc_dir):
     except OSError:
         return False
     for tid in tids:
-        if not tid.isdigit():
+        if not _is_ascii_uint(tid):
             continue
         try:
             tstat = (proc_dir / 'task' / tid / 'stat').read_text(encoding='utf-8', errors='replace')
@@ -73,6 +82,13 @@ def _has_live_thread(proc_dir):
         except (OSError, ValueError, IndexError):
             pass
     return False
+
+
+def _is_live_proc(proc_dir, fields):
+    if fields[0] not in DEAD_PROC_STATES:
+        return True
+    return (fields[0] == 'Z' and len(fields) > 17 and _is_ascii_uint(fields[17])
+            and int(fields[17]) > 1 and _has_live_thread(proc_dir))
 
 
 def _proc_fields(proc_dir):
@@ -86,7 +102,7 @@ def _proc_fields(proc_dir):
 
 def _proc_entries(proc_root='/proc'):
     for entry in os.listdir(proc_root):
-        if not entry.isdigit():
+        if not _is_ascii_uint(entry):
             continue
         proc_dir = Path(proc_root, entry)
         try:
@@ -114,18 +130,13 @@ def _is_adopted(pid, fields, protected_children):
 
 
 def _belongs_to_build(pid, fields, sid, protected_children):
-    return fields[3] == str(sid) or _is_adopted(pid, fields, protected_children)
+    return pid != os.getpid() and (fields[3] == str(sid) or _is_adopted(pid, fields, protected_children))
 
 
 def _live_session_pids(sid, proc_root='/proc', protected_children=None):
     pids = []
     for pid, proc_dir, fields in _proc_entries(proc_root):
-        if not _belongs_to_build(pid, fields, sid, protected_children):
-            continue
-        if fields[0] not in DEAD_PROC_STATES:
-            pids.append(pid)
-        elif (fields[0] == 'Z' and len(fields) > 17 and fields[17].isdigit()
-              and int(fields[17]) > 1 and _has_live_thread(proc_dir)):
+        if _belongs_to_build(pid, fields, sid, protected_children) and _is_live_proc(proc_dir, fields):
             pids.append(pid)
     return pids
 
@@ -146,12 +157,15 @@ def kill_session(sid, timeout=CLEANUP_TIMEOUT_SECONDS, protected_children=None):
             continue
         saw_empty = False
         for pid in pids:
+            proc_dir = Path('/proc', str(pid))
             try:
                 fd = os.pidfd_open(pid)
                 try:
-                    # Recheck ownership after opening the handle, before signalling.
-                    fields = _proc_fields(Path('/proc', str(pid)))
-                    if _belongs_to_build(pid, fields, sid, protected_children):
+                    # Recheck ownership and liveness after opening: pidfd_send_signal
+                    # succeeds on an already-dead zombie, which must not count as forced.
+                    fields = _proc_fields(proc_dir)
+                    if (_belongs_to_build(pid, fields, sid, protected_children)
+                            and _is_live_proc(proc_dir, fields)):
                         signal.pidfd_send_signal(fd, signal.SIGKILL)
                         killed.add(pid)
                 finally:
@@ -252,6 +266,44 @@ def supervise(command, seconds, grace=STOP_GRACE_SECONDS, env=None, cancel_signa
     return result
 
 
+def log_status(line):
+    """Best-effort supervisor log; a dead log tee must not abort a finished stage."""
+    try:
+        print(line, flush=True)
+    except OSError:
+        pass
+
+
+def append_runner_record(root, stage, record):
+    meta_dir = root / 'metadata'
+    if meta_dir.is_symlink():
+        raise RuntimeError('Build metadata directory must not be a symlink')
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    history = meta_dir / 'runners.jsonl'
+    payload = (json.dumps(record, allow_nan=False) + '\n').encode('utf-8')
+    fd = os.open(history, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise RuntimeError('runners.jsonl must be a regular file')
+        if stage == '00' and st.st_size != 0:
+            raise RuntimeError('Stage 00 found pre-existing runners.jsonl history')
+        if st.st_size > 0:
+            os.lseek(fd, -1, os.SEEK_END)
+            if os.read(fd, 1) != b'\n':
+                raise RuntimeError('Existing runners.jsonl record is missing its trailing newline')
+        os.lseek(fd, 0, os.SEEK_END)
+        view = memoryview(payload)
+        written = 0
+        while written < len(view):
+            n = os.write(fd, view[written:])
+            if n <= 0:
+                raise OSError('Short write to runners.jsonl')
+            written += n
+    finally:
+        os.close(fd)
+
+
 def summarize(line):
     """Append to the Actions job summary; a diagnostic must never fail the build."""
     path = os.environ.get('GITHUB_STEP_SUMMARY')
@@ -346,7 +398,7 @@ def main():
     os.chdir(root / 'src')
     env = dict(os.environ)
     env.setdefault('NINJA_STATUS', '[%f/%t %es] ')
-    print(f'Building locally, jobs={jobs}, budget={remaining/60:.0f} minutes, final={final_stage}', flush=True)
+    log_status(f'Building locally, jobs={jobs}, budget={remaining/60:.0f} minutes, final={final_stage}')
     t0 = monotonic_now()
     swap_before = swapped_out_bytes()
     status = supervise(['third_party/ninja/ninja', '-C', 'out/Release',
@@ -372,17 +424,22 @@ def main():
                   final_stage=final_stage, budget_minutes=round(remaining / 60, 1),
                   setup_seconds=setup, elapsed_seconds=elapsed, status=status,
                   swap_out_mib=swap_mib, disk_free_gib=disk_free)
-    meta_dir = root / 'metadata'
-    meta_dir.mkdir(parents=True, exist_ok=True)
-    with (meta_dir / 'runners.jsonl').open('a', encoding='utf-8') as f:
-        f.write(json.dumps(record) + '\n')
+    append_runner_record(root, stage, record)
     check_cancelled(cancel_signal)
     with open(output_path, 'a', encoding='utf-8') as f:
         f.write(f'status={status}\n')
-    print(f'Stage result: {status} ({elapsed:.1f}s)', flush=True)
+    log_status(f'Stage result: {status} ({elapsed:.1f}s)')
     summarize(f'- Stage {stage}: `{status}` after compiling for {elapsed / 60:.1f} min with -j{jobs}; '
               f'setup before compiling (runner prep, then fetch or download and restore) took {setup / 60:.1f} min.')
     summarize(f'- Stage {stage} resources: {usage}.')
+    try:
+        sys.stdout.flush()
+    except OSError:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
 
 
 if __name__ == '__main__':

@@ -289,10 +289,12 @@ test('decodeBuf: 无 BOM 的 UTF-16 含 é、中文等非 ASCII 字符时同样�
   }
 });
 
-test('excel.shiftFormula: 平移后越过最后一行（1048576）的单元格引用保持原样，与整行 / 整列引用的处理一致', () => {
-  assert.equal(excel.shiftFormula('A1048576+B2', 5, 0), 'A1048576+B7');
+test('excel.shiftFormula: 共享公式的相对引用在工作表边界环绕', () => {
+  assert.equal(excel.shiftFormula('A1048576+B2', 5, 0), 'A5+B7');
   assert.equal(excel.shiftFormula('A$1048576+A1048571', 5, 1), 'B$1048576+B1048576');
-  assert.equal(excel.shiftFormula('SUM(1048576:1048576)', 1, 0), 'SUM(1048576:1048576)');
+  assert.equal(excel.shiftFormula('SUM(1048576:1048576)', 1, 0), 'SUM(1:1)');
+  assert.equal(excel.shiftFormula('A1+B1+SUM(A:C)+SUM(1:3)', -1, -1), 'XFD1048576+A1048576+SUM(XFD:B)+SUM(1048576:2)');
+  assert.equal(excel.shiftFormula("'Sheet 1'!XFD1048576+$XFD$1048576", 1, 1), "'Sheet 1'!A1+$XFD$1048576");
 });
 
 test('excel.normalize: 日期统一成 ISO；x/y/yyyy 在第二位大于 12 时按 月/日/年，其余按 日/月/年', () => {
@@ -383,7 +385,7 @@ test('excel.shiftFormula: 共享公式按位移平移相对引用，$ 锁定、�
   assert.equal(s('1E5+A1', 0, 1), '1E5+B1');
   assert.equal(s('Z9+AA1', 0, 1), 'AA9+AB1');
   assert.equal(s('A1+B2', 0, 0), 'A1+B2');
-  assert.equal(s('A1', -1, 0), 'A1');
+  assert.equal(s('A1', -1, 0), 'A1048576');
 });
 
 test('diffSeq: 差异量很大且重复元素很多时有代价上限，结果仍可还原两侧序列且很快返回', () => {
@@ -753,8 +755,8 @@ test('excel.shiftFormula: 整列（A:A）与整行（1:1）引用同样按位移
   assert.equal(s('Sheet2!A:A+A1', 1, 1), 'Sheet2!B:B+B2');
   assert.equal(s('\'A:B\'!A1&"1:1"', 1, 0), '\'A:B\'!A2&"1:1"');
   assert.equal(s('JAN:MAR!A1', 1, 1), 'JAN:MAR!B2');
-  // 平移后越界的引用保持原样
-  assert.equal(s('SUM(XFD:XFD)', 0, 1), 'SUM(XFD:XFD)');
+  // 平移后越界的相对引用环绕至网格另一端
+  assert.equal(s('SUM(XFD:XFD)', 0, 1), 'SUM(A:A)');
 });
 
 test('image.autoAlign: 沿用并带回调用方当前的翻转状态；带翻转时不走 OpenCV（仿射估计不含镜像）', async () => {
@@ -1043,6 +1045,7 @@ test('Excel 数值时间：格式精度决定小数秒，跨秒及午夜正确�
   assert.equal(serialToDate(0.5 + 0.2 / 86400, false, true, true, 1), '12:00:00.2');
   assert.equal(serialToDate(1 - 0.0004 / 86400, false, true, true, 3), '00:00:00');
   assert.equal(serialToElapsed(-(90001.125 / 86400), 3), '-25:00:01.125');
+  assert.equal(serialToElapsed(-(0.1 / 86400)), '00:00:00');
 });
 
 test('Excel 自定义数值格式：只按实际生效的格式段识别日期', () => {
@@ -1056,6 +1059,9 @@ test('Excel 自定义数值格式：只按实际生效的格式段识别日期',
   assert.equal(conditional(1).kind, 'date');
   assert.deepEqual({ ...conditional(0.5) }, { kind: 'time', precision: 3 });
   assert.equal(conditional(-2).kind, '');
+  const spaced = customNumberStyle(' [>=1]yyyy-mm-dd;0.00');
+  assert.equal(spaced(1).kind, 'date');
+  assert.equal(spaced(0).kind, '');
 });
 
 test('XLSX 部件路径：以当前部件目录为基准解析相对路径', () => {
@@ -1319,4 +1325,42 @@ test('表格导入预算：收集 CSV 字段和 XLSX 单元格时即拒绝超限
   const rows = [row('3', cell('A3'), cell('B3', 'data'))];
   assert.equal(readRows(rows, [], 2).rows[2][1].v, 'data');
   assert.throws(() => readRows(rows, [], 1), /importTooLarge/);
+});
+
+
+test('共享公式：工作表读取器展开跨边界的相对引用', () => {
+  const { node, row, readRows } = worksheet;
+  const f = (r, text) => node('c', { r }, [node('f', { t: 'shared', si: '1' }, [], text)]);
+  const { rows } = readRows([row('1', f('A1', ''), f('B1', 'A1+$XFD$1'))]);
+  assert.equal(rows[0][0].f, '=XFD1+$XFD$1');
+});
+
+
+test('XLSX XML：没有 BOM 的显式 UTF-16LE 和 UTF-16BE 部件也能正确解码', async () => {
+  const xml = '<?xml version="1.0" encoding="UTF-16LE"?><worksheet>中文 😀</worksheet>';
+  const le = Buffer.from(xml, 'utf16le'), beXml = xml.replace('UTF-16LE', 'UTF-16BE');
+  const be = Buffer.from(beXml, 'utf16le').swap16();
+  const zip = zipLib.readZip(await zipLib.zipStore([{name:'le',data:le},{name:'be',data:be}]).arrayBuffer());
+  assert.equal(zip.text('le'), xml);
+  assert.equal(zip.text('be'), beXml);
+});
+
+
+test('Excel 行内高亮：整段大小写转换支持词尾西格玛和多码点展开', () => {
+  const old = {...excel.opts};
+  try {
+    for (const ws of [false, true]) {
+      Object.assign(excel.opts, {ignoreCase:true, ignoreWs:ws});
+      for (const [a,b] of [['ΟΣ a','ος b'],['İ a','i\u0307 b'],['😀 ΟΣ a','😀 ος b']]) {
+        const segs = excel.inlineDiff(a,b);
+        assert.equal(segs.map(s=>s.a).join(''), a);
+        assert.equal(segs.map(s=>s.b).join(''), b);
+        assert.equal(segs.filter(s=>s.t===1).map(s=>s.a).join(''), 'a');
+        assert.equal(segs.filter(s=>s.t===2).map(s=>s.b).join(''), 'b');
+      }
+      const partial = excel.inlineDiff('İ x','i x');
+      assert.equal(partial.map(s=>s.a).join(''), 'İ x');
+      assert.equal(partial.filter(s=>s.t===1).map(s=>s.a).join(''), 'İ');
+    }
+  } finally { Object.assign(excel.opts, old); }
 });

@@ -42,7 +42,7 @@ FETCH_TIMEOUT = 6.0
 MAX_RESPONSE_BYTES = 1_000_000
 
 # 内核 release 串：6.1.158+ / 7.2.12-200.fc44.x86_64 / 6.18.0-rc3 / 7.3
-_RELEASE_RE = re.compile(r"^(\d+)\.(\d+)(?:\.(\d+))?")
+_RELEASE_RE = re.compile(r"^([0-9]+)\.([0-9]+)(?:\.([0-9]+)|(?![0-9.]))")
 _UPSTREAM_RELEASE_RE = re.compile(r"[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:-rc[0-9]+)?")
 
 TIER_ZH = {
@@ -95,8 +95,8 @@ def parse_releases_json(text):
     releases = doc.get("releases")
     if not isinstance(releases, list):
         return "", ""
-    mainline = newest_stable = ""
-    maintained = []
+    mainline = ""
+    stables, maintained = [], []
     for rel in releases:
         if not isinstance(rel, dict):
             continue
@@ -107,14 +107,14 @@ def parse_releases_json(text):
         if moniker == "mainline" and not mainline:
             mainline = version
         elif moniker == "stable":
-            newest_stable = newest_stable or version
-            if rel.get("iseol") is not True and parse_release(version) is not None:
+            stables.append(version)
+            if rel.get("iseol") is not True:
                 maintained.append(version)
     # stable 可能同时有两条：新分支出了 .1 之后，上一条还会再维护两三周才标成 EOL
     # （iseol=true）。classify() 拿这里的 stable 当「受支持」的门槛，所以取仍在维护的
     # 最旧一条；只认最新一条会把还在上游维护期内的内核判成「旧分支」——Fedora 等
-    # 发行版此时多半还停在这条线上。全部标了 EOL 时退回最新的那条。
-    stable = min(maintained, key=parse_release) if maintained else newest_stable
+    # 发行版此时多半还停在这条线上。全部标了 EOL 时退回版本号最高的那条。
+    stable = min(maintained, key=parse_release) if maintained else (max(stables, key=parse_release) if stables else "")
     return mainline, stable
 
 
@@ -187,11 +187,15 @@ class KernelSupport:
         return TIER_ZH.get(self.tier, TIER_ZH["unknown"])
 
     def age_text(self, now=None):
-        """版本号是多久以前拿到的；没有时间戳时返回空串。"""
-        if not self.checked_at:
+        """版本号是多久以前拿到的；没有时间戳或数值非法时返回空串。"""
+        ts = self.checked_at
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts <= 0:
             return ""
-        now = int(time.time()) if now is None else int(now)
-        secs = max(0, now - int(self.checked_at))
+        try:
+            cur = int(time.time()) if now is None else int(now)
+            secs = max(0, cur - int(ts))
+        except (TypeError, ValueError, OverflowError):
+            return ""
         if secs < 60:
             return "刚刚"
         if secs < 3600:
@@ -217,11 +221,16 @@ class KernelSupport:
                 return None
         if d.get("tier", "unknown") not in TIER_ZH:
             return None
-        if isinstance(d.get("checked_at"), bool):
+        raw_ts = d.get("checked_at", 0)
+        if raw_ts is None:
+            raw_ts = 0
+        if isinstance(raw_ts, bool) or not isinstance(raw_ts, (int, float)):
             return None
         try:
-            checked_at = int(d.get("checked_at") or 0)
-        except (TypeError, ValueError, OverflowError):     # int(Infinity) 抛的是 OverflowError
+            checked_at = int(raw_ts)
+        except (ValueError, OverflowError):     # int(NaN/Infinity) 抛 ValueError/OverflowError
+            return None
+        if checked_at < 0:
             return None
         return cls(release=d.get("release", ""), mainline=d.get("mainline", ""),
                    stable=d.get("stable", ""), tier=d.get("tier", "unknown"),
@@ -261,6 +270,8 @@ def _default_fetcher(url, timeout):
     MAX_RESPONSE_BYTES 防止过大响应，deadline 防止持续滴流；二者互不替代。
     DNS、重定向及响应头解析仍受 urllib 的行为约束，不宣称严格的全链路截止时间。
     """
+    if not isinstance(url, str) or not url.lower().startswith("https://"):
+        raise ValueError(f"拒绝请求非 https 地址：{url}")
     req = urllib.request.Request(url, headers={"User-Agent": "ComputeSec"})
     deadline = time.monotonic() + timeout
     with _urlopen(req, timeout) as resp:
@@ -286,7 +297,7 @@ def _default_fetcher(url, timeout):
             if size > MAX_RESPONSE_BYTES:
                 raise ValueError(f"响应超过 {MAX_RESPONSE_BYTES} 字节，不像是 releases.json")
             chunks.append(chunk)
-        return b"".join(chunks).decode("utf-8", "replace")
+        return b"".join(chunks).decode("utf-8-sig", "replace")
 
 
 def fetch_versions(fetcher=None, timeout=FETCH_TIMEOUT, url=RELEASES_URL):
@@ -384,8 +395,10 @@ def fetch_failed_text(st):
     以前所有拿不到结论的情形都写成"没能连上 kernel.org"，可是本机 release 解析
     失败时网络明明是好的，这会把用户引向错误的方向（去查代理、DNS、防火墙）。
     """
-    if st.have_upstream and st.release and not st.parsed:
-        return f"无法解析本机内核版本串「{st.release}」，因此无法判断它属于哪条版本线。"
+    if st.have_upstream and not st.parsed:
+        if st.release:
+            return f"无法解析本机内核版本串「{st.release}」，因此无法判断它属于哪条版本线。"
+        return "未能读取本机内核版本号，因此无法判断它属于哪条版本线。"
     return ("无法从 kernel.org 取得 mainline / stable 版本号"
             "（离线、代理拦截，或 Flatpak 的 network 权限已被收回）。")
 
@@ -395,7 +408,9 @@ def recheck_result_text(st):
     if not st.have_upstream:
         return "未能连上 kernel.org，内核版本线仍未核对"
     if not st.parsed:
-        return f"已取得上游版本号，但无法解析本机内核「{st.release}」，版本线仍未核对"
+        prefix = "未能连上 kernel.org，且" if st.error else "已取得上游版本号，但"
+        target = f"无法解析本机内核「{st.release}」" if st.release else "未能读取本机内核版本号"
+        return f"{prefix}{target}，版本线仍未核对"
     if st.error:
         return f"未能连上 kernel.org，继续沿用 {st.age_text() or '较早'}取得的版本号"
     return f"已重新核对内核版本线：{st.tier_text}"

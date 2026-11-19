@@ -321,3 +321,64 @@ def test_install_desktop_replaces_readonly_icon_left_by_older_version(tmp_path, 
 
     assert cli.install_desktop(launcher=["/opt/computesec"]) is True
     assert old.read_text(encoding="utf-8") == "<svg/>"
+
+
+def test_xdg_display_dir_trailing_slash_symlink_and_nan(monkeypatch, tmp_path):
+    import stat
+    from computesec import xdg
+
+    monkeypatch.setenv("HOME", str(tmp_path) + "/")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert xdg.display_dir() == "~/.local/share/computesec"
+
+    # 不跟随符号链接 chmod 目标目录
+    target = tmp_path / "real"
+    target.mkdir(mode=0o755)
+    target.chmod(0o755)
+    xdg_root = tmp_path / "xdg"
+    xdg_root.mkdir()
+    (xdg_root / "computesec").symlink_to(target)
+    monkeypatch.setenv("XDG_DATA_HOME", str(xdg_root))
+    xdg.data_dir()
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+
+    # NaN 不写入缓存且不破坏旧文件
+    cache = tmp_path / "c.json"
+    xdg.atomic_write_json(str(cache), {"ok": 1})
+    xdg.atomic_write_json(str(cache), {"bad": float("nan")})
+    assert cache.read_text(encoding="utf-8") == '{"ok": 1}'
+
+
+def test_share_roots_include_default_scheme(monkeypatch):
+    """Debian/Ubuntu 默认 posix_local 将 data-files 装到 /usr/local，不能漏掉。"""
+    orig = cli.sysconfig.get_path
+    monkeypatch.setattr(cli.sysconfig, "get_path",
+                        lambda name, *args: "/usr/local" if (name == "data" and not args) else orig(name, *args))
+    assert "/usr/local" in cli._share_roots()
+
+
+def test_cli_replaces_readonly_desktop_and_symlink_and_handles_braces_in_prog(tmp_path, monkeypatch, capsys):
+    data_home = _prepare(tmp_path, monkeypatch)
+    root, src_icon = _readonly_source_tree(tmp_path)
+    monkeypatch.setattr(cli, "__file__", str(root / "computesec" / "cli.py"))
+
+    apps_dir = data_home / "applications"
+    icon_dir = data_home / "icons" / "hicolor" / "scalable" / "apps"
+    apps_dir.mkdir(parents=True)
+    icon_dir.mkdir(parents=True)
+
+    # 只读旧 .desktop 与指向源文件的软链都应被安全替换为独立普通文件
+    old_desktop = apps_dir / (cli.APP_ID + ".desktop")
+    old_desktop.write_text("[Desktop Entry]\nExec=old\n", encoding="utf-8")
+    os.chmod(old_desktop, 0o444)
+    icon_dst = icon_dir / (cli.APP_ID + ".svg")
+    icon_dst.symlink_to(src_icon)
+
+    assert cli.install_desktop(launcher=["/opt/computesec"]) is True
+    assert not icon_dst.is_symlink()
+    assert "Exec=/opt/computesec" in old_desktop.read_text(encoding="utf-8")
+
+    # prog 含花括号时 --help 不抛 KeyError/ValueError，sys.argv 为空时也不抛 IndexError
+    monkeypatch.setattr(cli.sys, "argv", [])
+    assert cli.main(["--help"], prog="cs{1}") == 0
+    assert "cs{1}" in capsys.readouterr().out

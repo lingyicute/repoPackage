@@ -480,3 +480,34 @@ def test_save_tightens_leftover_tmp_file(tmp_path, monkeypatch):
     hd.set("sysctl", {"values": {"kernel.ostype": "Linux"}})
     hd.save()
     assert (os.stat(d / hostdata.CACHE_NAME).st_mode & 0o777) == 0o600
+
+
+def test_sysctl_lookup_wildcard_matches_single_nonempty_segment():
+    hd = hostdata.HostData({"steps": {"sysctl": {"data": {"values": {
+        "net.ipv4.conf.eth0.rp_filter": "1",
+        "net.ipv4.conf.eth0/100.rp_filter": "1",
+        "net.ipv4.conf..rp_filter": "0",
+        "net.ipv4.conf.a.b.rp_filter": "0",
+    }}}}})
+    got = hd.sysctl_lookup("net.ipv4.conf.*.rp_filter")
+    assert set(got) == {"net.ipv4.conf.eth0.rp_filter", "net.ipv4.conf.eth0/100.rp_filter"}
+
+
+def test_hostdata_rejects_bool_index_negative_ts_and_bad_meta_or_size():
+    assert hostdata.valid_step_index(True) is False
+    assert hostdata.valid_step_index(False) is False
+    assert hostdata.valid_step_index(0) is True
+    assert hostdata._payload_ok({"collected_at": -1}) is False
+    assert hostdata._payload_ok({"steps": {"sysctl": {"at": -5, "data": {"values": {}}}}}) is False
+    assert hostdata._payload_ok({"steps": {"sysctl": {"at": True, "data": {"values": {}}}}}) is False
+    assert hostdata._payload_ok({"steps": {"sysctl": {"data": {"values": {}, "meta": []}}}}) is False
+    assert hostdata._payload_ok({"steps": {"sysctl": {"data": {"values": {}, "meta": {"denied": True}}}}}) is False
+    assert hostdata._lsblk_data_ok({"blockdevices": [{"name": "sda", "fstype": None, "size": {"bad": 1}}]}) is False
+    assert hostdata._lsblk_data_ok({"blockdevices": [{"name": "sda", "fstype": None, "size": 1024}]}) is True
+    assert hostdata.HostData({"collected_at": -10}).age_text == ""
+
+
+def test_hostdata_set_recovers_from_non_dict_steps():
+    hd = hostdata.HostData({"steps": ["corrupt"]})
+    hd.set("sysctl", {"values": {"kernel.ostype": "Linux"}})
+    assert hd.sysctl_values == {"kernel.ostype": "Linux"}

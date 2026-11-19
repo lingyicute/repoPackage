@@ -11,6 +11,7 @@
 
 import json
 import os
+import stat
 import tempfile
 
 
@@ -33,8 +34,9 @@ def data_dir(name="computesec", create=True):
         return d
     try:
         os.makedirs(d, mode=0o700, exist_ok=True)
-        # 旧版本以 0755 创建，这里顺手收紧（仅本程序的私有目录）。
-        if (os.stat(d).st_mode & 0o077) != 0:
+        # 旧版本以 0755 创建，这里顺手收紧（仅真实目录，避免跟随符号链接改写外部目录权限）。
+        st = os.lstat(d)
+        if stat.S_ISDIR(st.st_mode) and (st.st_mode & 0o077) != 0:
             os.chmod(d, 0o700)
     except OSError:
         pass
@@ -48,9 +50,9 @@ def display_dir(name="computesec"):
     ``~/.local/share/computesec/``：遵守 XDG 规范的用户会把 XDG_DATA_HOME 指到
     别处，写死之后那句提示就是错的。只算路径，不碰文件系统。
     """
-    d = data_dir(name, create=False)
-    home = os.path.expanduser("~")
-    if home and home != os.sep and (d == home or d.startswith(home + os.sep)):
+    d = os.path.normpath(data_dir(name, create=False))
+    home = os.path.expanduser("~").rstrip(os.sep)
+    if home and (d == home or d.startswith(home + os.sep)):
         return "~" + d[len(home):]
     return d
 
@@ -63,10 +65,10 @@ def atomic_write_json(path, payload):
                 mode="w", encoding="utf-8", dir=os.path.dirname(os.path.abspath(path)),
                 prefix=f".{os.path.basename(path)}.", suffix=".tmp", delete=False) as stream:
             tmp = stream.name
-            json.dump(payload, stream)
+            json.dump(payload, stream, allow_nan=False)
         os.replace(tmp, path)
         tmp = None      # 已被替换成正式文件，不再有临时文件需要清理
-    except OSError:
+    except (OSError, ValueError):
         pass
     finally:
         if tmp is not None:

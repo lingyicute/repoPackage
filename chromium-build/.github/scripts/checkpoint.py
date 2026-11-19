@@ -70,10 +70,23 @@ def _open_regular_ro(path):
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             raise ValueError(BAD_LAYOUT)
+        os.set_blocking(fd, True)
         return os.fdopen(fd, 'rb')
     except BaseException:
         os.close(fd)
         raise
+
+
+def _read_exact(stream, buf):
+    total = 0
+    while total < len(buf):
+        n = stream.readinto(buf[total:])
+        if n == 0:
+            return False
+        if n is None or not 0 < n <= len(buf) - total:
+            raise OSError('Invalid read from checkpoint part')
+        total += n
+    return True
 
 
 def _manifest_bytes(directory):
@@ -128,7 +141,7 @@ def _verify_and_open(path, entry):
         prefixes = []
         while remaining:
             block = view[:min(remaining, len(view))]
-            if f.readinto(block) != len(block):
+            if not _read_exact(f, block):
                 raise ValueError(MISMATCH)
             h.update(block)
             # These prefix digests are trusted only if the whole part matches
@@ -272,7 +285,7 @@ def restore_stream(directory, expected, out_stream):
                     remaining = expected_size
                     for prefix in prefixes:
                         block = view[:min(remaining, len(view))]
-                        if f.readinto(block) != len(block):
+                        if not _read_exact(f, block):
                             raise ValueError(MISMATCH)
                         h.update(block)
                         if not hmac.compare_digest(h.copy().digest(), prefix):
@@ -313,7 +326,7 @@ def main():
         raise ValueError('Usage: checkpoint.py <hash|pack-stream|restore-stream> <directory> [--chunk-size N]')
     operation, directory = args[0], args[1]
     if operation == 'hash' and len(args) == 2:
-        print(digest(directory))
+        print(digest(directory), flush=True)
     elif operation == 'pack-stream' and len(args) in (2, 4):
         chunk_size = CHUNK_SIZE
         if len(args) == 4:
@@ -327,7 +340,7 @@ def main():
         elapsed = max(time.monotonic() - t0, 1e-6)
         rate = total / (1024 * 1024) / elapsed
         report(f'Packed {count} checkpoint part(s), {total} bytes ({total / 2**30:.2f} GiB) in {elapsed:.1f}s ({rate:.1f} MiB/s)')
-        print(sha256)
+        print(sha256, flush=True)
     elif operation == 'restore-stream' and len(args) == 2:
         t0 = time.monotonic()
         count, total = restore_stream(directory, os.environ.get('EXPECTED_SHA256', ''), sys.stdout.buffer)

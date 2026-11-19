@@ -26,29 +26,41 @@ export GIT_TERMINAL_PROMPT=0
 export PYTHONUNBUFFERED=1
 export PATH="$CR_ROOT/depot_tools:/usr/bin:/bin:/usr/sbin:/sbin"
 unset GIT_CACHE_PATH CCACHE_DIR CCACHE_PREFIX GOOGLE_APPLICATION_CREDENTIALS \
-  CUSTOM_CIPD_CLIENT DEPOT_TOOLS_DIR DEPOT_TOOLS_UNAME_S VPYTHON_BYPASS \
+  CUSTOM_CIPD_CLIENT CIPD_SERVICE_URL CIPD_HTTP_USER_AGENT_PREFIX \
+  DEPOT_TOOLS_DIR DEPOT_TOOLS_UNAME_S DEPOT_TOOLS_BOOTSTRAP_PYTHON3 \
+  DEPOT_TOOLS_GSUTIL_BIN_DIR CHROMIUM_BUILDTOOLS_PATH GCLIENT_FILE \
+  VPYTHON_BYPASS VPYTHON_DEFAULT_SPEC LUCI_CONTEXT \
+  BOTO_CONFIG BOTO_PATH NO_AUTH_BOTO_CONFIG \
   ANDROID_HOME ANDROID_SDK_ROOT ANDROID_NDK ANDROID_NDK_HOME \
   ANDROID_NDK_ROOT ANDROID_NDK_LATEST_HOME JAVA_HOME GRADLE_HOME ANT_HOME \
   JAVA_TOOL_OPTIONS _JAVA_OPTIONS JDK_JAVA_OPTIONS CLASSPATH \
   PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONUSERBASE VIRTUAL_ENV \
   CONDA_PREFIX PIP_CONFIG_FILE PIP_CACHE_DIR NPM_CONFIG_CACHE \
   CARGO_HOME RUSTUP_HOME \
-  CC CXX CFLAGS CXXFLAGS CPPFLAGS LDFLAGS \
+  CC CXX CFLAGS CXXFLAGS CPPFLAGS LDFLAGS NINJA_STATUS \
   GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_CONFIG_NOSYSTEM \
   GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT \
-  GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
-  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES TAR_OPTIONS
+  GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES \
+  GIT_SSH GIT_SSH_COMMAND GIT_ASKPASS SSH_ASKPASS GIT_EXEC_PATH \
+  GIT_TEMPLATE_DIR GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE \
+  GIT_NAMESPACE GIT_EXTERNAL_DIFF \
+  GLOBIGNORE TAR_OPTIONS ZSTD_CLEVEL ZSTD_NBTHREADS
 mkdir -p "$CR_LOGS" "$TMPDIR"
 trap 'echo "::error::Interrupted (signal INT), aborting" >&2; exit 130' INT
 trap 'echo "::error::Terminated (signal TERM), aborting" >&2; exit 143' TERM
 fail() { echo "::error::$*" >&2; exit 1; }
 # GNU find's -exec ... \; reports failure as a false predicate, not a failing
 # find exit code. Stop on that predicate explicitly, before traversing the dir.
+# Prefix a non-empty marker so a newline-only name survives command substitution.
 make_dirs_removable() {
-  local failed_dir
-  failed_dir=$(find "$1" -type d ! -perm -u+rwx ! -exec chmod u+rwx -- {} \; -print -quit) \
+  local root=$1 failed_dir
+  [[ -n "$root" ]] || fail 'make_dirs_removable requires a directory path'
+  [[ "$root" == /* || "$root" == . || "$root" == ./* || "$root" == .. || "$root" == ../* ]] \
+    || root="./$root"
+  failed_dir=$(find -P "$root" -type d ! -perm -u+rwx ! -exec chmod u+rwx -- {} \; -printf 'failed:%p' -quit) \
     || fail "Could not traverse removable directories under $1"
-  [[ -z "$failed_dir" ]] || fail "Could not grant owner access to $failed_dir"
+  [[ -z "$failed_dir" ]] || fail "Could not grant owner access to ${failed_dir#failed:}"
 }
 # Re-run an idempotent network step against the SAME official source and
 # revision; never falls back to another mirror, branch, or version.
@@ -82,10 +94,12 @@ retry() {
       eval "${prev_term:-trap - TERM}"
       fail "Failed after 3 attempts: $* (exit $rc)"
     fi
-    echo "::warning::Attempt $attempt failed (exit $rc), retrying: $*" >&2
+    if (( interrupted == 0 )); then
+      echo "::warning::Attempt $attempt failed (exit $rc), retrying: $*" >&2
+    fi
     wait_s=$(( attempt * 10#$delay ))
     rc=0
-    if (( wait_s > 0 )); then
+    if (( wait_s > 0 && interrupted == 0 )); then
       sleep "$wait_s" &
       sleep_pid=$!
       if (( interrupted != 0 )); then

@@ -160,7 +160,10 @@ def copy_button(win, text, label="复制"):
     btn.set_child(Adw.ButtonContent(icon_name="edit-copy-symbolic", label=label))
 
     def on_click(_b):
-        Gdk.Display.get_default().get_clipboard().set(text)
+        disp = Gdk.Display.get_default()
+        if disp is None:
+            return
+        disp.get_clipboard().set(text)
         win.toast("已复制到剪贴板")
 
     btn.connect("clicked", on_click)
@@ -340,6 +343,14 @@ def build_dashboard(report, win, navigate):
     if report.hsi.ok:
         for it in report.hsi.fixable[:6]:
             _add_todo(esc(it.name), esc(data.HSI_KIND_ZH.get(it.info.get("kind"), "")), "warn", "hsi")
+        if len(report.hsi.fixable) > 6:
+            _add_todo(f"另有 {len(report.hsi.fixable) - 6} 项可修复的 HSI 项目", "前往 HSI 页面查看完整列表", "warn", "hsi")
+        oem_failed = len(report.hsi.failed) - len(report.hsi.fixable)
+        if oem_failed > 0:
+            _add_todo(f"有 {oem_failed} 项 HSI 检测未通过（取决于硬件或固件）",
+                      "查看具体风险说明与固件更新建议", "bad", "hsi")
+    else:
+        _add_todo("未能获取 HSI 固件安全结果", esc(report.hsi.error or "请确认已安装并启动 fwupd"), "unknown", "hsi")
     if report.cmdline.missing:
         _add_todo(f"添加 {len(report.cmdline.missing)} 个内核启动参数",
                   esc(" ".join(i.token for i in report.cmdline.missing[:8]) + (" …" if len(report.cmdline.missing) > 8 else "")),
@@ -363,7 +374,10 @@ def build_dashboard(report, win, navigate):
         _add_todo(f"有 {len(report.hsi.undetermined)} 项 HSI 检测因为缺少数据而无法判定",
                   "这不是未通过，也无法通过改配置解决；展开 HSI 页面可查看具体项目", "unknown", "hsi")
     if n == 0:
-        todo.add(praise_row("没有待办事项，您的安全配置非常出色，请继续保持！"))
+        if overall is None:
+            todo.add(text_row("暂无待办事项", "当前没有可评估的检测结果。"))
+        else:
+            todo.add(praise_row("没有待办事项，您的安全配置非常出色，请继续保持！"))
 
     extras = []
     hd = report.hostdata
@@ -504,7 +518,9 @@ def build_hsi(report, win):
             unfix.add(_hsi_item_row(it))
 
     level_groups = []
-    for lvl, title in ((1, "HSI:1 基础安全"), (2, "HSI:2 增强安全"), (3, "HSI:3 理论防护"), (4, "HSI:4 系统防护"), (0, "运行时检查")):
+    known_levels = ((1, "HSI:1 基础安全"), (2, "HSI:2 增强安全"), (3, "HSI:3 理论防护"), (4, "HSI:4 系统防护"))
+    extra_levels = tuple((lv, f"HSI:{lv}") for lv in sorted({i.level for i in h.active} - {0, 1, 2, 3, 4}))
+    for lvl, title in known_levels + extra_levels + ((0, "运行时检查"),):
         items = [i for i in h.active if i.level == lvl]
         if not items:
             continue
@@ -590,7 +606,9 @@ def _kernel_support_block(report, win=None):
         old.add_suffix(_kernel_check_button(win))
         g.add(old)
     elif st.checked_at:
-        g.add(text_row("核对时间", st.age_text()))
+        age = st.age_text()
+        if age:
+            g.add(text_row("核对时间", age))
 
     if st.supported:
         return [g]
@@ -606,6 +624,8 @@ def build_kernel(report, win):
     # 沙箱里能读到的条目（kernel.*、vm.*、fs.* 等）本来就是宿主机视图。
     g_src = None
     n = len(s.unknown)
+    n_perm = sum(1 for i in s.unknown if i.source != "读取失败")
+    n_io = n - n_perm
     m = len(s.unverified)
     m_net = sum(1 for i in s.unverified if i.source == "沙箱网络隔离")
     if s.user_supplied or n or m:
@@ -614,8 +634,10 @@ def build_kernel(report, win):
             title = "数据来源：您提供的 sysctl -a"
             age = report.hostdata.step_age_text("sysctl") if report.hostdata else ""
             parts.append(f"已使用您提供的 sysctl 输出（{age}采集）。" if age else "已使用您提供的 sysctl 输出。")
-            if n:
-                parts.append(f"仍有 {n} 项无法判定，可能是您执行命令时没有加 sudo。")
+            if n_perm:
+                parts.append(f"仍有 {n_perm} 项无法判定，可能是您执行命令时没有加 sudo。")
+            if n_io:
+                parts.append(f"另有 {n_io} 项因内核接口读取失败而无法判定，未计入评分。")
             if m:
                 parts.append(f"另有 {m} 项不在您提供的输出中（可能被 2>/dev/null 过滤，或该内核没有这一项）；"
                              "沙箱内的读数不可信，已忽略，未计入评分。")
@@ -625,9 +647,12 @@ def build_kernel(report, win):
                 parts.append(f"当前有 {m_net} 项 net.* 参数只能在宿主机上读取：Flatpak 沙箱没有共享宿主网络，"
                              "沙箱内的 net.* 属于独立的网络命名空间，数值与宿主机的加固状态无关，"
                              "已忽略且未计入评分。")
-            if n:
-                parts.append(f"当前有 {n} 项 sysctl 因为文件仅 root 可读而无法判定（例如 vm.mmap_rnd_bits），未计入评分。")
-            parts.append("点击右侧按钮，按向导在终端执行一条只读命令并复制结果，即可得到完整准确的评估。")
+            if n_perm:
+                parts.append(f"当前有 {n_perm} 项 sysctl 因为文件仅 root 可读而无法判定（例如 vm.mmap_rnd_bits），未计入评分。")
+            if n_io:
+                parts.append(f"当前有 {n_io} 项 sysctl 因内核接口返回读取错误而无法判定，未计入评分。")
+            if n_perm or m:
+                parts.append("点击右侧按钮，按向导在终端执行一条只读命令并复制结果，即可得到完整准确的评估。")
         g_src = group(title, "".join(parts))
         g_src.set_header_suffix(_collect_button(win, "重新采集" if s.user_supplied else "采集系统数据"))
 
@@ -695,6 +720,8 @@ def build_kernel(report, win):
                 sub += f"  （当前：{it.actual_text}）"
             elif it.status == "na":
                 sub += "  （内核不支持或模块未加载）"
+            elif it.status == "unknown" and it.source == "读取失败":
+                sub += "  （内核接口读取失败，未参与评分）"
             elif it.status == "unknown":
                 sub += "  （该文件仅 root 可读，未参与评分；请用主菜单的「重新采集系统数据」提供 sudo sysctl -a 的结果）"
             elif it.status == "unverified" and it.source == "沙箱网络隔离":
@@ -809,10 +836,12 @@ def build_habits(report, win):
     all_good = bool(hb.checks) and all(c.status == "good" for c in hb.checks)
     suspects = [c for c in hb.checks if c.status == "suspect"]
     problems = [c for c in hb.checks if c.status in ("bad", "warn")]
+    unknowns = [c for c in hb.checks if c.status == "unknown"]
     if all_good:
-        top = banner("四项使用习惯检查全部通过！您的安全习惯非常好，请继续保持。", "success")
+        top = banner(f"{len(hb.checks)} 项使用习惯检查全部通过！您的安全习惯非常好，请继续保持。", "success")
     elif suspects and not problems:
-        top = banner(f"未发现明确风险，但有 {len(suspects)} 项需要您自行确认（不影响评分）。",
+        extra = f"；另有 {len(unknowns)} 项未能检测" if unknowns else ""
+        top = banner(f"已检测项未发现明确风险，有 {len(suspects)} 项需要您自行确认（不影响评分{extra}）。",
                      "warning", icon="dialog-warning-symbolic")
     else:
         top = None
