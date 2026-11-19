@@ -10,7 +10,7 @@
 <style>
 :root{--bg:#fff;--bg2:#f6f8f7;--bg3:#eef1f0;--fg:#202329;--fg2:#626971;--fg3:#9aa1a8;--border:#e6e8eb;--border2:#d5d9dd;--accent:#20a464;--accent2:#15834a;--accent-bg:#ecf8f1;--danger:#d13415;--shadow:0 6px 28px rgba(0,0,0,.08);--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 --ins-block:rgba(0,180,144,.13);--ins-hl:rgba(0,180,144,.36);--ins-fg:#0d5c4c;--del-block:rgba(255,46,0,.09);--del-hl:rgba(255,46,0,.32);--del-fg:#6b1a0a;--chg-block:rgba(255,190,0,.16);--mov-block:rgba(120,90,255,.12)}
-[data-theme="dark"]{--bg:#17191c;--bg2:#1f2226;--bg3:#262a2f;--fg:#ebedef;--fg2:#aeb6be;--fg3:#7d858d;--border:#353a3f;--border2:#454a50;--accent:#5bd494;--accent2:#5bd494;--accent-bg:#1c2b23;--danger:#ff9680;--shadow:0 6px 28px rgba(0,0,0,.4);--ins-fg:#c8f5e6;--del-fg:#ffd7cc;--chg-block:rgba(255,190,0,.14)}
+@media not print{[data-theme="dark"]{--bg:#17191c;--bg2:#1f2226;--bg3:#262a2f;--fg:#ebedef;--fg2:#aeb6be;--fg3:#7d858d;--border:#353a3f;--border2:#454a50;--accent:#5bd494;--accent2:#5bd494;--accent-bg:#1c2b23;--danger:#ff9680;--shadow:0 6px 28px rgba(0,0,0,.4);--ins-fg:#c8f5e6;--del-fg:#ffd7cc;--chg-block:rgba(255,190,0,.14)}}
 *{box-sizing:border-box}html,body{margin:0;height:100%}
 body{background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;min-height:100vh}
 html[lang="zh"] body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif}
@@ -59,7 +59,7 @@ table.grid th{position:sticky;top:0;background:var(--bg2);font-weight:600;z-inde
 table.grid th.num,table.grid td.num{width:var(--nw,46px);min-width:var(--nw,46px);text-align:right;color:var(--fg3);background:var(--bg2);position:sticky;z-index:1;user-select:none;font-size:11px}
 table.grid th.num{z-index:3}
 td.num.a,th.num.a{left:0}td.num.b,th.num.b{left:var(--nw,46px);border-right:2px solid var(--border2)}
-th.col-ins{background:var(--ins-block);color:var(--ins-fg)}th.col-del{background:var(--del-block);color:var(--del-fg);text-decoration:line-through}th.col-mov{background:var(--mov-block)}
+table.grid th.col-ins{background:var(--ins-block);color:var(--ins-fg)}table.grid th.col-del{background:var(--del-block);color:var(--del-fg);text-decoration:line-through}table.grid th.col-mov{background:var(--mov-block)}table.grid th.col-chg{background:var(--chg-block)}
 tr.del td{background:var(--del-block)}tr.ins td{background:var(--ins-block)}tr.del td.num{color:var(--del-fg)}tr.ins td.num{color:var(--ins-fg)}
 td.chg{background:var(--chg-block)}td.cdel{background:var(--del-block)}td.cins{background:var(--ins-block)}
 td.colx{background:repeating-linear-gradient(135deg,rgba(100,110,120,.08) 0 6px,transparent 6px 12px)}
@@ -67,12 +67,12 @@ mark.d{background:var(--del-hl);color:var(--del-fg);border-radius:2px;text-decor
 .old{opacity:.8}.arrow{color:var(--fg3);padding:0 4px}
 tr.collapsed:focus-visible td{color:var(--accent2);box-shadow:inset 0 0 0 2px #159b58}
 tr.collapsed td{background:var(--bg2);color:var(--fg2);text-align:center;font-family:system-ui,sans-serif;font-size:12px;cursor:pointer;padding:4px}
-tr.focus td{box-shadow:inset 0 -2px 0 var(--accent)}
+tr.focus td,th.focus{box-shadow:inset 0 -2px 0 var(--accent)}
 .identical{display:flex;flex-direction:column;align-items:center;gap:6px;padding:54px 20px;text-align:center}
 .identical .ic{width:44px;height:44px;border-radius:50%;background:var(--accent-bg);color:var(--accent2);display:grid;place-items:center;font-size:22px}
 .identical h3{margin:6px 0 0;font-size:18px}.identical p{margin:0;color:var(--fg2)}
-.panel{position:fixed;top:0;right:0;height:100%;width:320px;background:var(--bg);border-left:1px solid var(--border);box-shadow:var(--shadow);transform:translateX(100%);visibility:hidden;transition:transform .2s,visibility .2s;z-index:50;display:flex;flex-direction:column}
-.panel.open{transform:none;visibility:visible}
+.panel{position:fixed;top:0;right:0;height:100%;width:min(320px,100vw);background:var(--bg);border-left:1px solid var(--border);box-shadow:var(--shadow);transform:translateX(100%);visibility:hidden;transition:transform .2s,visibility 0s linear .2s;z-index:50;display:flex;flex-direction:column}
+.panel.open{transform:none;visibility:visible;transition-delay:0s}
 .panel-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);font-weight:600}
 .panel-body{overflow:auto;padding:8px 16px 24px}.panel h4{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--fg3);margin:18px 0 8px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;font-size:13px}
@@ -94,7 +94,7 @@ tr.focus td{box-shadow:inset 0 -2px 0 var(--accent)}
 footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px;border-top:1px solid var(--border)}
 .hidden{display:none!important}
 @media (max-width:900px){.inputs{grid-template-columns:1fr}.offline-navigation{gap:14px;padding:0 14px;flex-wrap:wrap}.offline-tools{gap:16px}.offline-brand>span{display:none}.offline-badge{display:none}main{padding:14px}}
-@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar .btn,.toolbar .seg,.panel,footer,.modal-bg,.offline-notice,.hero,.no-print{display:none!important}main{padding:0;max-width:none}.toolbar{position:static;border:0;padding:0 0 8px}.grid-wrap{max-height:none;overflow:visible;border:0}table.grid{font-size:10px;width:100%}table.grid th,table.grid td{position:static!important;min-width:0;max-width:none;padding:1px 4px}table.grid tr{break-inside:avoid}table.grid thead{display:table-header-group}body{font-size:11px}}
+@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar .btn,.toolbar .seg,.panel,footer,.modal-bg,.offline-notice,.hero,.no-print{display:none!important}main{padding:0;max-width:none}.toolbar{position:static;border:0;padding:0 0 8px}.grid-wrap{max-height:none;overflow:visible;border:0}table.grid{font-size:10px;width:100%}table.grid th,table.grid td{position:static!important;min-width:0;max-width:none;padding:1px 4px}table.grid tr{break-inside:avoid}table.grid thead{display:table-header-group}body{font-size:11px;display:block;height:auto}}
 </style>
 </head>
 <body>
@@ -108,22 +108,22 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px;border-top
   <section class="inputs">
     <div class="card" id="cardA"><div class="card-head"><span class="title" data-i18n="original">Original spreadsheet</span><span id="nameA" style="color:var(--fg2)"></span><button class="btn sm" data-open="A" data-i18n="openFile">Open file</button><button class="btn sm ghost" data-clear="A" data-i18n="clear">Clear</button></div>
       <div class="drop" id="dropA" tabindex="0" role="button"><div class="big" data-i18n="dropHere">Drop Excel here</div><div class="hint" data-i18n="browse">or click to browse files (.xlsx, .xlsm, .csv, .tsv)</div></div>
-      <div class="details hidden" id="detA"></div><div class="preview hidden" id="prevA"></div><div class="err" id="errA"></div></div>
+      <div class="details hidden" id="detA"></div><div class="preview hidden" id="prevA"></div><div class="err" role="status" id="errA"></div></div>
     <div class="card" id="cardB"><div class="card-head"><span class="title" data-i18n="changed">Changed spreadsheet</span><span id="nameB" style="color:var(--fg2)"></span><button class="btn sm" data-open="B" data-i18n="openFile">Open file</button><button class="btn sm ghost" data-clear="B" data-i18n="clear">Clear</button></div>
       <div class="drop" id="dropB" tabindex="0" role="button"><div class="big" data-i18n="dropHere">Drop Excel here</div><div class="hint" data-i18n="browse">or click to browse files (.xlsx, .xlsm, .csv, .tsv)</div></div>
-      <div class="details hidden" id="detB"></div><div class="preview hidden" id="prevB"></div><div class="err" id="errB"></div></div>
+      <div class="details hidden" id="detB"></div><div class="preview hidden" id="prevB"></div><div class="err" role="status" id="errB"></div></div>
   </section>
   <input type="file" id="fileInput" class="hidden" accept=".xls,.xlsx,.xlsm,.xltx,.xltm,.csv,.tsv,.txt,.diffchecker,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" />
   <div class="actions">
     <button class="btn primary" id="findBtn" data-i18n="find">Find difference</button>
     <button class="btn" id="exampleBtn" data-i18n="tryExample">Try example</button>
     <button class="btn" id="swapBtn" data-i18n="swap">Swap</button>
-    <button class="btn" id="toolsBtn">⚙ <span data-i18n="tools">Tools</span></button>
+    <button class="btn" id="toolsBtn" aria-controls="panel" aria-expanded="false">⚙ <span data-i18n="tools">Tools</span></button>
+    <div class="seg" id="modeSeg"><button data-mode="table" aria-pressed="true" data-i18n-title="tipTable" title="Match up rows and columns using the header row, best for structured tables" data-i18n="table">Table</button><button data-mode="rows" aria-pressed="false" data-i18n-title="tipRows" title="Compare row by row in order, works with any layout" data-i18n="rows">Rows</button></div>
+    <div class="seg" id="valSeg"><button data-val="standard" aria-pressed="true" data-i18n="standard">Standard</button><button data-val="formulas" aria-pressed="false" data-i18n="formulas">Formulas</button></div>
   </div>
   <section id="result" class="hidden">
     <div class="toolbar">
-      <div class="seg" id="modeSeg"><button data-mode="table" aria-pressed="true" data-i18n-title="tipTable" title="Match up rows and columns using the header row, best for structured tables" data-i18n="table">Table</button><button data-mode="rows" aria-pressed="false" data-i18n-title="tipRows" title="Compare row by row in order, works with any layout" data-i18n="rows">Rows</button></div>
-      <div class="seg" id="valSeg"><button data-val="standard" aria-pressed="true" data-i18n="standard">Standard</button><button data-val="formulas" aria-pressed="false" data-i18n="formulas">Formulas</button></div>
       <button class="btn sm" id="prevBtn">↑ <span data-i18n="prev">Previous</span></button><button class="btn sm" id="nextBtn">↓ <span data-i18n="next">Next</span></button>
       <button class="btn sm" id="exportBtn" data-i18n="export">Export</button>
       <div class="stats" id="stats"></div>
@@ -133,7 +133,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px;border-top
 </main>
 <footer>Diffchecker · <span data-i18n="footer">rewritten as a dependency-free single page — all processing happens locally in your browser</span></footer>
 
-<aside class="panel" id="panel"><div class="panel-head"><span data-i18n="tools">Tools</span><button class="btn sm ghost" id="panelClose">✕</button></div>
+<aside class="panel" id="panel" inert><div class="panel-head"><span data-i18n="tools">Tools</span><button class="btn sm ghost" id="panelClose">✕</button></div>
   <div class="panel-body">
     <h4 data-i18n="compOptions">Comparison options</h4>
     <div class="row"><span data-i18n="matchHeaders">Match columns by headers</span><button class="switch" data-opt="matchHeaders" role="switch"></button></div>
@@ -163,17 +163,21 @@ Object.assign(I18N.en,{rowsRemoved1:'row removed',rowsAdded1:'row added',rowsCha
 Object.assign(I18N.zh,{rowsRemoved1:'行删除',rowsAdded1:'行新增',rowsChanged1:'行修改',cellsChanged1:'个单元格修改',colsAdded1:'列新增',colsRemoved1:'列删除',colsMoved1:'列移动',hiddenSheet:'已隐藏',tipTable:'按表头对齐行和列，适合结构化的表格',tipRows:'按顺序逐行比较，适用于任意布局',wrongFile:'此 .diffchecker 文件不是由 Excel 对比工具生成的',legacyXls:'不支持旧版 .xls 文件，请先另存为 .xlsx 或 .csv。',badZip:'不是有效的 .xlsx 文件',xlSheet:'对比结果',exportFailed:'导出失败，请重试。',colsMoved:'列移动',encrypted:'此工作簿已加密或设有打开密码，请先在 Excel 中取消密码后重试。'});
 I18N.en.binaryTable='This is not a text spreadsheet (it contains NUL characters).';
 I18N.zh.binaryTable='文件含有 NUL 字符，无法按文本表格读取。';
+I18N.en.importTooLarge='The sheet has too many cells or columns to load in the browser.';
+I18N.zh.importTooLarge='表格的单元格或列数过多，无法在浏览器中读取。';
 I18N.en.compareTooLarge='This comparison is too large for the browser. Compare smaller ranges or sheets.';
 I18N.zh.compareTooLarge='比较范围过大，请缩小数据范围或分工作表比较。';
 I18N.en.compareFailed='Could not compare these sheets.';
 I18N.zh.compareFailed='无法完成表格比较。';
+I18N.en.headerChanged='Changed column header';
+I18N.zh.headerChanged='表头已修改';
 I18N.en.zipPartTooLarge='A workbook part exceeds the 64 MiB uncompressed limit.';
 I18N.zh.zipPartTooLarge='工作簿的单个部件解压后超过 64 MiB 上限。';
-I18N.en.badCsvQuotes='A quoted field was not closed.';
-I18N.zh.badCsvQuotes='表格中有未闭合的带引号字段。';
+I18N.en.badCsvQuotes='A quoted field is not closed or has unexpected text after the closing quote.';
+I18N.zh.badCsvQuotes='表格中有未闭合的引用字段，或闭合引号后存在多余文本。';
 I18N.en.exportXlsxLimit='Excel cannot store this many rows or columns, or a cell has more than 32,767 characters. Use another export format.';
 I18N.zh.exportXlsxLimit='结果超出 Excel 规格的行数、列数或单元格 32767 字符上限。请改用其他格式。';
-let lang=lsGet('offline-lang'),theme=lsGet('offline-theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');if(!I18N[lang])lang=/^zh/i.test(navigator.language||'')?'zh':'en';
+let lang=lsGet('offline-lang'),theme=lsGet('offline-theme');if(theme!=='dark'&&theme!=='light')theme=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';if(lang!=='en'&&lang!=='zh')lang=/^zh/i.test(navigator.language||'')?'zh':'en';
 const t=(k,v)=>{let s=(I18N[lang][k]??I18N.en[k]??k);if(v)for(const x in v)s=s.split('{'+x+'}').join(v[x]);return s};
 const $=id=>document.getElementById(id);
 function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.dataset.i18n));$('langBtn').textContent=lang==='en'?'中文':'English';$('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.querySelectorAll('[data-i18n-title]').forEach(e=>e.title=t(e.dataset.i18nTitle));document.title=t('hero.title')+' — Diffchecker';document.querySelectorAll('.switch').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});{const p=document.getElementById('panel'),c=document.getElementById('panelClose');if(p)p.setAttribute('aria-label',t('tools'));if(c)c.setAttribute('aria-label',t('cancel'))}for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)render()}
@@ -230,12 +234,24 @@ function readZip(buf){const u8=new Uint8Array(buf),dv=new DataView(buf),bad=()=>
     const data=u8.subarray(start,start+f.csize);
     const out=f.method===0?data:f.method===8?inflate(data,f.usize):(()=>{throw new Error('unsupported compression '+f.method)})();
     if(out.length!==f.usize||crc32(out)!==f.crc)bad();return out},
-    text(name){const d=this.get(name);return d?dec.decode(d):null},names:Object.keys(files)}}
+    text(name){const d=this.get(name);if(!d)return null;
+      // OPC 的 XML 部件也允许 UTF-16；部件内容编码与 ZIP 条目名称编码无关。
+      const le=d[0]===0xFF&&d[1]===0xFE,be=d[0]===0xFE&&d[1]===0xFF;
+      try{return new TextDecoder(le?'utf-16le':be?'utf-16be':'utf-8',{fatal:true}).decode(d)}catch(e){bad()}
+    },names:Object.keys(files)}}
 
 /* ===================== XLSX parsing ===================== */
 const DATE_IDS=new Set([14,15,16,17,18,19,20,21,22,27,28,29,30,31,32,33,34,35,36,45,46,47,50,51,52,53,54,55,56,57,58]);
 // XML 损坏时 DOMParser 不会抛错而是返回 <parsererror> 文档，这里显式报错，避免把损坏的工作表静默读成空表
-const xml=s=>{const d=new DOMParser().parseFromString(s,'application/xml');if(d.getElementsByTagName('parsererror').length)throw new Error(t('badZip'));return d};
+// OPC XML 不允许 DTD；在 DOMParser 有机会展开实体之前检查 XML 序言。
+function hasXmlDoctype(s){let i=0;
+  for(;;){while(i<s.length&&/[\t\r\n ]/.test(s[i]))i++;
+    const end=s.startsWith('<?',i)?'?>':s.startsWith('<!--',i)?'-->':'';
+    if(!end)return s.startsWith('<!DOCTYPE',i);
+    const j=s.indexOf(end,i+(end==='?>'?2:4));if(j<0)return false;i=j+end.length;
+  }
+}
+const xml=s=>{if(hasXmlDoctype(s))throw new Error(t('badZip'));const d=new DOMParser().parseFromString(s,'application/xml');if(d.doctype||d.getElementsByTagName('parsererror').length)throw new Error(t('badZip'));return d};
 function colIndex(ref){let n=0;for(let i=0;i<ref.length;i++){const c=ref.charCodeAt(i);if(c<65||c>90)break;n=n*26+(c-64)}return n-1}
 function colName(i){let s='';i++;while(i>0){const m=(i-1)%26;s=String.fromCharCode(65+m)+s;i=(i-m-1)/26}return s}
 function cellAddress(ref){const m=/^([a-z]{1,3})([1-9]\d{0,6})$/i.exec(ref||'');if(!m)return null;
@@ -247,7 +263,9 @@ const xstr=s=>s.indexOf('_x')<0?s:s.replace(/_x([0-9A-Fa-f]{4})_/g,(m,h)=>String
 function shiftFormula(f,dr,dc){if(!dr&&!dc)return f;
   // 跳过字符串、工作表限定符与结构化引用。后者的列名可以恰好形如 A1，也可以嵌套括号。
   const tokens=/("(?:[^"]|"")*"|'(?:[^']|'')*'|[\p{L}\p{N}_.]+(?::[\p{L}\p{N}_.]+)?!)|(\[)|(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![\p{L}\p{N}_.(!])|(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![\p{L}\p{N}_.(!])|(\$?)(\d+):(\$?)(\d+)(?![\p{L}\p{N}_.(!])|[\p{L}\p{N}_.]+/gu;
-  const moveCol=(name,delta)=>{const i=colIndex(name.toUpperCase())+delta;return i>=0&&i<=16383?(delta?(name===name.toLowerCase()?colName(i).toLowerCase():colName(i)):name):null};
+  // XFE1、A1048577 等超出网格的词可以是 Excel 名称，而不是待平移的引用。
+  const moveCol=(name,delta)=>{const base=colIndex(name.toUpperCase()),i=base+delta;return base<16384&&i>=0&&i<16384?(delta?(name===name.toLowerCase()?colName(i).toLowerCase():colName(i)):name):null};
+  const validRow=n=>n>=1&&n<=1048576;
   let m,pos=0,out='';
   while((m=tokens.exec(f))){
     const [raw,locked,br,ca,col,ra,row,xa,xc,xb,xd,ya,yr,yb,yd]=m;
@@ -257,16 +275,20 @@ function shiftFormula(f,dr,dc){if(!dr&&!dc)return f;
     if(locked||(m.index>0&&/[\p{L}\p{N}_.]/u.test(f[m.index-1])))continue;
     let next=raw;
     if(xc!=null){const a=moveCol(xc,xa?0:dc),b=moveCol(xd,xb?0:dc);if(a&&b)next=xa+a+':'+xb+b}
-    else if(yr!=null){const a=+yr+(ya?0:dr),b=+yd+(yb?0:dr);if(a>=1&&a<=1048576&&b>=1&&b<=1048576)next=ya+a+':'+yb+b}
-    else if(col!=null){const c=moveCol(col,ca?0:dc),r=+row+(ra?0:dr);if(c&&r>=1&&r<=1048576)next=ca+c+ra+r}
+    else if(yr!=null){const a=+yr+(ya?0:dr),b=+yd+(yb?0:dr);if(validRow(+yr)&&validRow(+yd)&&validRow(a)&&validRow(b))next=ya+a+':'+yb+b}
+    else if(col!=null){const c=moveCol(col,ca?0:dc),r=+row+(ra?0:dr);if(c&&validRow(+row)&&validRow(r))next=ca+c+ra+r}
     if(next!==raw){out+=f.slice(pos,m.index)+next;pos=tokens.lastIndex}
   }
   return out+f.slice(pos);
 }
-function serialToDate(v,d1904,timeOnly=v>=0&&v<1&&!d1904,compat=true){
-  const seconds=Math.round(v*86400);if(!Number.isSafeInteger(seconds))return String(v);
-  const day=Math.floor(seconds/86400),sec=seconds-day*86400,p=n=>String(n).padStart(2,'0');
-  const time=`${p(Math.floor(sec/3600))}:${p(Math.floor(sec%3600/60))}:${p(sec%60)}`;
+function secondFraction(digits){const f=(digits||'').replace(/0+$/,'');return f?'.'+f:''}
+function clockText(ticks,precision){const unit=10**precision,seconds=Math.floor(ticks/unit),pad=n=>String(n).padStart(2,'0');
+  const frac=ticks%unit?secondFraction(String(ticks%unit).padStart(precision,'0')):'';
+  return `${pad(Math.floor(seconds/3600))}:${pad(Math.floor(seconds%3600/60))}:${pad(seconds%60)}${frac}`;
+}
+function serialToDate(v,d1904,timeOnly=v>=0&&v<1&&!d1904,compat=true,precision=0){
+  const dayTicks=86400*10**precision,ticks=Math.round(v*dayTicks);if(!Number.isSafeInteger(ticks))return String(v);
+  const day=Math.floor(ticks/dayTicks),sec=ticks-day*dayTicks,time=clockText(sec,precision),p=n=>String(n).padStart(2,'0');
   if(timeOnly)return time;
   // 兼容旧 Excel 的 1900 闰年错误：序列 60 不能和序列 59 显示成同一天。
   let date;
@@ -277,7 +299,7 @@ function serialToDate(v,d1904,timeOnly=v>=0&&v<1&&!d1904,compat=true){
   }
   return sec?date+' '+time:date;
 }
-function serialToElapsed(v){const neg=v<0,s=Math.round(Math.abs(v)*86400),p=n=>String(n).padStart(2,'0');return Number.isSafeInteger(s)?(neg?'-':'')+p(Math.floor(s/3600))+':'+p(Math.floor(s%3600/60))+':'+p(s%60):String(v)}
+function serialToElapsed(v,precision=0){const ticks=Math.round(Math.abs(v)*86400*10**precision);return Number.isSafeInteger(ticks)?(v<0?'-':'')+clockText(ticks,precision):String(v)}
 function customDateKind(format){
   const bare=format.replace(/"[^"]*"|[\\_*]./g,'');
   if(/\[(?:h+|m+|s+)\]/i.test(bare))return 'elapsed';
@@ -285,12 +307,37 @@ function customDateKind(format){
   if(!/[ymdhs]/i.test(code)||/[#0?]/.test(code.replace(/\.0+/g,'')))return '';
   return /[yd]/i.test(code)||!/[hs]/i.test(code)?'date':'time';
 }
+function dateNumberStyle(format){
+  const kind=customDateKind(format),m=/s+\]?\.(0+)/i.exec(format.replace(/"[^"]*"|[\\_*]./g,''));
+  return {kind,precision:kind?Math.min(3,m?.[1].length||0):0};
+}
+function customNumberStyle(format){
+  // 条件和日期标记只对各自所在的数值段生效；引号、转义或括号里的分号不分段。
+  const parts=[];let start=0,quoted=false,bracket=false;
+  for(let i=0;i<format.length;i++){
+    const c=format[i];if(c==='"'&&!bracket){quoted=!quoted;continue}if(quoted)continue;
+    if(c==='\\'||c==='_'||c==='*'){i++;continue}
+    if(c==='[')bracket=true;else if(c===']')bracket=false;else if(c===';'&&!bracket){parts.push(format.slice(start,i));start=i+1}
+  }
+  parts.push(format.slice(start));
+  const sections=parts.slice(0,3).map(part=>{
+    const style=dateNumberStyle(part),prefix=/^(?:\[[^\]]*\]\s*)*/.exec(part)[0];
+    const m=/\[(<=|>=|<>|<|>|=)([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)\]/i.exec(prefix);
+    if(!m)return {style};
+    const rhs=+m[2],op=m[1];return {style,test:n=>op==='<'?n<rhs:op==='>'?n>rhs:op==='<='?n<=rhs:op==='>='?n>=rhs:op==='='?n===rhs:n!==rhs};
+  });
+  if(!sections.some(s=>s.style.kind))return {kind:'',precision:0};
+  if(sections.some(s=>s.test))return n=>sections.find(s=>s.test?.(n))?.style??sections.find(s=>!s.test)?.style;
+  if(sections.length===1)return sections[0].style;
+  return n=>sections[n<0?1:n===0&&sections.length===3?2:0].style;
+}
 // t="d" 单元格（ISO 8601 文本，如 2024-03-05T00:00:00 / 10:30:00）：统一成与日期序列号一致的显示，否则同一日期在两种存储方式下会被误报为修改
-function isoDateCell(raw){const m=/^\s*(?:(\d{4})-(\d{2})-(\d{2}))?(?:(?:^|T|\s)(\d{2}):(\d{2})(?::(\d{2})(?:[.,]\d+)?)?)?(?:Z|[+-](?:[01]\d|2[0-3])(?::?[0-5]\d)?)?\s*$/.exec(raw||'');if(!m||(!m[1]&&!m[4]))return raw??'';
-  /* t="d" 也可能是伪造的非法日期 / 时间。不能在验证前丢掉时刻或时区，否则非法的完整文本会与另一个单元格里的截断文本伪相等。 */
+function isoDateCell(raw){
+  // SpreadsheetML 的日期/时间是本地时刻，最多三位小数秒；带时区的非标准值保留原文。
+  const m=/^\s*(?:(\d{4})-(\d{2})-(\d{2}))?(?:(?:^|T|\s)(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?\s*$/.exec(raw||'');if(!m||(!m[1]&&!m[4]))return raw??'';
   const y=+(m[1]||0),mo=+(m[2]||0),dy=+(m[3]||0),h=+(m[4]||0),mi=+(m[5]||0),se=+(m[6]||0),dim=mo===2?28+(y%4===0&&(y%100!==0||y%400===0)?1:0):[4,6,9,11].includes(mo)?30:31;
-  if(h>23||mi>59||se>59||(m[1]&&(mo<1||mo>12||dy<1||dy>dim)))return raw??'';
-  const tm=m[4]?`${m[4]}:${m[5]}:${m[6]||'00'}`:'';if(!m[1])return tm;const d=`${m[1]}-${m[2]}-${m[3]}`;return tm&&tm!=='00:00:00'?d+' '+tm:d}
+  if(h>23||mi>59||se>59||(m[1]&&(y<1||mo<1||mo>12||dy<1||dy>dim)))return raw??'';
+  const tm=m[4]?`${m[4]}:${m[5]}:${m[6]||'00'}${secondFraction(m[7])}`:'';if(!m[1])return tm;const d=`${m[1]}-${m[2]}-${m[3]}`;return tm&&tm!=='00:00:00'?d+' '+tm:d}
 // 只认完整的 ZIP 签名（PK\x03\x04 / 空包 PK\x05\x06 / 分卷 PK\x07\x08）；仅凭 "PK" 两个字节会把以 PK 开头的 CSV 误判成 xlsx
 const isZipSig=u=>u[0]===0x50&&u[1]===0x4B&&((u[2]===3&&u[3]===4)||(u[2]===5&&u[3]===6)||(u[2]===7&&u[3]===8));
 // OOXML 部件可能使用带前缀的命名空间（<x:sheet>、<x:row>…），getElementsByTagName 只按限定名匹配，会把这类文件读成空工作簿；统一按本地名匹配
@@ -303,6 +350,11 @@ function resolvePart(dir,target){
   }
   return out.join('/');
 }
+// 只缓存最近使用的两个工作表；浏览许多表时不保留所有已展开的网格。
+function cachedSheetLoader(read){const cache=new Map();return sheet=>{
+  const grid=cache.get(sheet)??read(sheet);cache.delete(sheet);cache.set(sheet,grid);
+  if(cache.size>2)cache.delete(cache.keys().next().value);return grid;
+}}
 function parseXlsx(buf){const z=readZip(buf),bad=()=>{throw new Error(t('badZip'))};
   const relsOf=path=>{const i=path.lastIndexOf('/')+1,dir=path.slice(0,i),x=z.text(dir+'_rels/'+path.slice(i)+'.rels'),m=[];
     if(x!=null)for(const r of els(xml(x),'Relationship'))if(r.getAttribute('TargetMode')!=='External')m.push({id:r.getAttribute('Id'),type:r.getAttribute('Type')||'',target:resolvePart(dir,r.getAttribute('Target'))});return m};
@@ -316,9 +368,9 @@ function parseXlsx(buf){const z=readZip(buf),bad=()=>{throw new Error(t('badZip'
   const dateStyles=new Map(),stx=relatedText('styles','styles.xml');
   if(stx){const st=xml(stx),custom=new Map(),nfs=els(st,'numFmts')[0];
     // 只读 numFmts，忽略条件格式 dxf 里可能同号的 numFmt。
-    for(const nf of nfs?els(nfs,'numFmt'):[])custom.set(+nf.getAttribute('numFmtId'),customDateKind(nf.getAttribute('formatCode')||''));
+    for(const nf of nfs?els(nfs,'numFmt'):[])custom.set(+nf.getAttribute('numFmtId'),customNumberStyle(nf.getAttribute('formatCode')||''));
     const timeIds=new Set([18,19,20,21,32,33,45,47]),xfs=els(st,'cellXfs')[0];
-    if(xfs)[...xfs.children].forEach((xf,i)=>{const id=+xf.getAttribute('numFmtId'),kind=custom.get(id)??(id===46?'elapsed':timeIds.has(id)?'time':DATE_IDS.has(id)?'date':'');if(kind)dateStyles.set(i,kind)});
+    if(xfs)[...xfs.children].forEach((xf,i)=>{const id=+xf.getAttribute('numFmtId'),style=custom.get(id)??{kind:id===46?'elapsed':timeIds.has(id)?'time':DATE_IDS.has(id)?'date':'',precision:id===47?1:0};if(typeof style==='function'||style.kind)dateStyles.set(i,style)});
   }
   const sheets=[];for(const sh of els(wb,'sheet')){
     // Transitional 与 Strict 的 r:id 命名空间不同；非 worksheet 部件（如 chartsheet）不参与比较。
@@ -327,47 +379,70 @@ function parseXlsx(buf){const z=readZip(buf),bad=()=>{throw new Error(t('badZip'
     sheets.push({name:xstr(sh.getAttribute('name')||''),target:rel?.target||'',hidden:/hidden/i.test(sh.getAttribute('state')||'')});
   }
   if(!sheets.length)bad();
-  const load=sheet=>{if(sheet.grid)return sheet.grid;const sxml=z.text(sheet.target);if(!sheet.target||!sxml)bad();
+  const load=cachedSheetLoader(sheet=>{const sxml=z.text(sheet.target);if(!sheet.target||!sxml)bad();
     const doc=xml(sxml),root=doc.documentElement,body=[...root.children].find(c=>c.localName==='sheetData');
     if(root.localName!=='worksheet'||!body)bad();
-    const rows=[],sharedF=new Map(),pending=[];let cols=0;
-    // 不把损坏的坐标钳到别的单元格；无显式行号时优先使用该行第一个带坐标的单元格。
-    let lastRi=-1;for(const r of body.children){if(r.localName!=='row')continue;
-      const rn=r.getAttribute('r'),first=[...r.children].find(c=>c.localName==='c'&&c.hasAttribute('r')),start=first&&cellAddress(first.getAttribute('r'));
-      const ri=rn==null?(start?.row??lastRi+1):+rn-1;if(!Number.isInteger(ri)||ri<0||ri>=1048576||rows[ri])bad();
-      lastRi=ri;const cells=[];let ci=-1;
-      for(const c of r.children){if(c.localName!=='c')continue;const ref=c.getAttribute('r'),addr=ref==null?null:cellAddress(ref);
-        if(ref!=null&&(!addr||addr.row!==ri))bad();ci=addr?.col??ci+1;if(ci>=16384||cells[ci])bad();
-        const tt=c.getAttribute('t'),s=+(c.getAttribute('s')||0);let v=null,f=null,raw=null,shared=null;
-        for(const ch of c.children){if(ch.localName==='v')raw=ch.textContent;else if(ch.localName==='f'){const si=ch.getAttribute('si'),sh=ch.getAttribute('t')==='shared'&&si!=null;if(ch.textContent){f='='+ch.textContent;if(sh)sharedF.set(si,{f:ch.textContent,r:ri,c:ci})}else if(sh)shared=si}else if(ch.localName==='is')raw=richText(ch)/* 与 sharedStrings 一致：跳过 rPh 里的拼音 / 注音 */}
-        if(raw==null&&!f&&shared==null)continue;if(tt==='s')v=sst[+raw]??'';else if(tt==='b')v=raw==='1'||/^true$/i.test(raw)?'TRUE':'FALSE';else if(tt==='str')v=xstr(raw??'');else if(tt==='inlineStr'||tt==='e')v=raw??'';else if(tt==='d')v=isoDateCell(raw);else if(raw!=null&&raw.trim()!==''){const n=Number(raw);v=isFinite(n)?(dateStyles.has(s)?(dateStyles.get(s)==='elapsed'?serialToElapsed(n):serialToDate(n,d1904,dateStyles.get(s)==='time',compat)):String(+n.toPrecision(15))):raw}else v='';
-        cells[ci]={v,f,d:dateStyles.has(s)||tt==='d'};if(shared!=null)pending.push({shared,cell:cells[ci],ri,ci});if(ci+1>cols)cols=ci+1}
-      if(cells.length){rows[ri]=cells}}
-    for(const {shared,cell,ri,ci} of pending){const master=sharedF.get(shared);if(!master)bad();cell.f='='+shiftFormula(master.f,ri-master.r,ci-master.c)}
-    for(let i=0;i<rows.length;i++)if(!rows[i])rows[i]=[];sheet.grid={rows,cols};return sheet.grid};
+    return parseSheetRows(body,sst,dateStyles,d1904,compat,richText)});
   return {sheets,load,type:'xlsx'}}
+const MAX_IMPORTED_CELLS=1000000;
+function parseSheetRows(body,sst,dateStyles,d1904,compat,richText,limit=MAX_IMPORTED_CELLS){
+  const bad=()=>{throw new Error(t('badZip'))};
+  const rows=[],seenRows=new Set(),sharedF=new Map(),pending=[];let cols=0,declared=0;
+  // 不把损坏的坐标钳到别的单元格；无显式行号时优先使用该行第一个带坐标的单元格。
+  let lastRi=-1;for(const r of body.children){if(r.localName!=='row')continue;
+    const rn=r.getAttribute('r'),first=[...r.children].find(c=>c.localName==='c'&&c.hasAttribute('r')),start=first&&cellAddress(first.getAttribute('r'));
+    const ri=rn==null?(start?.row??lastRi+1):/^\d+$/.test(rn)?+rn-1:NaN;
+    if(!Number.isInteger(ri)||ri<0||ri>=1048576||seenRows.has(ri))bad();
+    seenRows.add(ri);lastRi=ri;const cells=[],seenCols=new Set();let ci=-1;
+    for(const c of r.children){if(c.localName!=='c')continue;if(++declared>limit)throw new Error(t('importTooLarge'));const ref=c.getAttribute('r'),addr=ref==null?null:cellAddress(ref);
+      if(ref!=null&&(!addr||addr.row!==ri))bad();ci=addr?.col??ci+1;if(ci>=16384||seenCols.has(ci))bad();seenCols.add(ci);
+      const tt=c.getAttribute('t'),s=+(c.getAttribute('s')||0);let v=null,f=null,raw=null,shared=null,d=tt==='d';
+      for(const ch of c.children){
+        if(ch.localName==='v')raw=ch.textContent;
+        else if(ch.localName==='f'){
+          let si=null;if(ch.getAttribute('t')==='shared'){
+            const id=ch.getAttribute('si');if(!/^\d+$/.test(id??'')||+id>0xFFFFFFFF)bad();si=+id;
+          }
+          if(ch.textContent){f='='+ch.textContent;if(si!=null){if(sharedF.has(si))bad();sharedF.set(si,{f:ch.textContent,r:ri,c:ci})}}
+          else if(si!=null)shared=si;
+        }else if(ch.localName==='is')raw=richText(ch); // 与 sharedStrings 一致：跳过 rPh 里的拼音 / 注音
+      }
+      if(raw==null&&!f&&shared==null)continue;
+      // 公式可能没有缓存值；null 不能被数值转换成共享字符串下标 0，也不能当成 FALSE。
+      if(raw==null)v='';
+      else if(tt==='s'){const idx=+raw;if(!/^\d+$/.test(raw.trim())||idx>=sst.length)bad();v=sst[idx]}
+      else if(tt==='b'){const b=raw.trim().toLowerCase();if(!/^(0|1|false|true)$/.test(b))bad();v=b==='1'||b==='true'?'TRUE':'FALSE'}
+      else if(tt==='str')v=xstr(raw);else if(tt==='inlineStr'||tt==='e')v=raw;else if(tt==='d')v=isoDateCell(raw);
+      else if(raw.trim()!==''){const n=Number(raw),format=dateStyles.get(s),style=typeof format==='function'?format(n):format;
+        d=!!style?.kind&&isFinite(n);v=isFinite(n)?(d?(style.kind==='elapsed'?serialToElapsed(n,style.precision):serialToDate(n,d1904,style.kind==='time',compat,style.precision)):String(+n.toPrecision(15))):raw}else v='';
+      cells[ci]={v,f,d};if(shared!=null)pending.push({shared,cell:cells[ci],ri,ci});if(ci+1>cols)cols=ci+1}
+    if(cells.length){rows[ri]=cells}}
+  for(const {shared,cell,ri,ci} of pending){const master=sharedF.get(shared);if(!master)bad();cell.f='='+shiftFormula(master.f,ri-master.r,ci-master.c)}
+  const empty=Object.freeze([]);for(let i=0;i<rows.length;i++)if(!rows[i])rows[i]=empty;return {rows,cols};
+}
 // 检测和实际解析共用同一个引号状态机；是否处于字段开头取决于当前候选分隔符。
-function scanCsv(text,delim,collect,maxRows=Infinity){
-  const rows=[],freq=new Map();let row=[],cell='',fields=1,n=0,hit=0,top=0,errors=0,state=0;
-  const pushCell=()=>{if(collect){row.push(cell);cell=''}state=0};
-  const endRow=()=>{pushCell();if(collect){rows.push(row);row=[]}if(fields>1){hit++;const count=(freq.get(fields)||0)+1;freq.set(fields,count);top=Math.max(top,count)}fields=1;n++};
+function scanCsv(text,delim,collect,maxRows=Infinity,limit=MAX_IMPORTED_CELLS){
+  const rows=[],freq=new Map();let row=[],cell='',fields=1,n=0,hit=0,top=0,errors=0,state=0,stored=0,quoted=false,quoteEvidence=false;
+  const pushCell=()=>{if(state===3)quoted=true;if(collect){if(++stored>limit||row.length>=16384)throw new Error(t('importTooLarge'));row.push(cell);cell=''}state=0};
+  const endRow=()=>{pushCell();if(collect){rows.push(row);row=[]}if(fields>1){quoteEvidence||=quoted;hit++;const count=(freq.get(fields)||0)+1;freq.set(fields,count);top=Math.max(top,count)}fields=1;quoted=false;n++};
   for(let i=0;i<text.length&&n<maxRows;i++){
     const ch=text[i];
     if(state===2){if(ch==='"'&&text[i+1]==='"'){if(collect)cell+='"';i++}else if(ch==='"')state=3;else if(collect)cell+=ch;continue}
     if(ch===delim){pushCell();fields++;continue}
     if(ch==='\r'||ch==='\n'){endRow();if(ch==='\r'&&text[i+1]==='\n')i++;continue}
     if(state===0&&ch==='"'){state=2;continue}
-    if(state===3)errors++;
+    if(state===3){if(collect)throw new Error(t('badCsvQuotes'));errors++}
     state=1;if(collect)cell+=ch;
   }
   if(state===2){if(collect)throw new Error(t('badCsvQuotes'));errors++}
   if(n<maxRows&&(fields>1||state!==0))endRow();
-  return {rows,hit,top,errors};
+  return {rows,hit,top,errors,quoteEvidence};
 }
 function parseCsv(text,delim){
   if(!delim){let best;for(const d of [',','\t',';','|']){
     const s=scanCsv(text,d,false,10);
-    if(!best||s.hit>best.hit||(s.hit===best.hit&&(s.top>best.top||s.top===best.top&&s.errors<best.errors))){best=s;delim=d}
+    // 合法的带引号记录比行数更有辨识力：错误分隔符可能把同一个多行字段拆成很多看似规则的行。
+    if(!best||(Number(s.quoteEvidence)-Number(best.quoteEvidence)||s.hit-best.hit||s.top-best.top||best.errors-s.errors)>0){best=s;delim=d}
   }}
   let cols=0;const grid=scanCsv(text,delim,true).rows.map(r=>{cols=Math.max(cols,r.length);return r.map(v=>({v,f:null,d:false}))});
   const sheet={name:'Sheet1',target:'',grid:{rows:grid,cols}};return {sheets:[sheet],load:s=>s.grid,type:'csv'}
@@ -420,14 +495,14 @@ const opts={mode:'table',val:'standard',matchHeaders:true,ignoreWs:false,ignoreC
 function mergeOpts(src){if(!src||typeof src!=='object')return;for(const k of Object.keys(opts)){if(!Object.prototype.hasOwnProperty.call(src,k))continue;const v=src[k];if(k==='mode'){if(v==='table'||v==='rows')opts.mode=v}else if(k==='val'){if(v==='standard'||v==='formulas')opts.val=v}else if(typeof v==='boolean')opts[k]=v}}
 try{mergeOpts(JSON.parse(lsGet('excel-opts')||'{}'))}catch(e){}
 const saveOpts=()=>lsSet('excel-opts',JSON.stringify(opts));
-const DATE_RX=/^\s*(?:(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}))(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?\s*$/;
+const DATE_RX=/^\s*(?:(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})|(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}))(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?\s*$/;
 function cellText(c){if(!c)return '';if(opts.val==='formulas'&&c.f)return c.f;return c.v??''}
-const TIME_RX=/^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/;
+const TIME_RX=/^\s*(\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?\s*$/;
 const DAYS_IN_MONTH=[31,28,31,30,31,30,31,31,30,31,30,31];
-function normalize(s){if(opts.normDates){const m=DATE_RX.exec(s);const p=n=>String(n).padStart(2,'0');if(!m){const tm=TIME_RX.exec(s);if(tm&&+tm[1]<=23&&+tm[2]<=59&&+(tm[3]||0)<=59)s=p(tm[1])+':'+tm[2]+':'+(tm[3]||'00')}// 纯时间统一成 HH:MM:SS，与 .xlsx 里的时间单元格一致
+function normalize(s){if(opts.normDates){const m=DATE_RX.exec(s);const p=n=>String(n).padStart(2,'0');if(!m){const tm=TIME_RX.exec(s);if(tm&&+tm[1]<=23&&+tm[2]<=59&&+(tm[3]||0)<=59)s=p(tm[1])+':'+tm[2]+':'+(tm[3]||'00')+secondFraction(tm[4])}// 纯时间统一成 HH:MM:SS，与 .xlsx 里的时间单元格一致
     if(m){const yr=m[1]||m[6],[mo,dy]=m[1]?[+m[2],+m[3]]:(+m[4]<=12&&+m[5]>12?[+m[4],+m[5]]:[+m[5],+m[4]]);/* 第二位 >12 时只可能是 月/日/年；否则按 日/月/年 */
       const y=+yr,leap=mo===2&&y%4===0&&(y%100!==0||y%400===0);/* 非法月末（含非闰年的 2 月 29 日）不能规范化，否则不同的无效日期文本会误判相同 */
-      if(mo>=1&&mo<=12&&dy>=1&&dy<=DAYS_IN_MONTH[mo-1]+(leap?1:0)&&(!m[7]||(+m[7]<=23&&+m[8]<=59&&+(m[9]||0)<=59))){s=`${yr}-${p(mo)}-${p(dy)}`+(m[7]?` ${p(m[7])}:${m[8]}:${m[9]||'00'}`:'');if(s.endsWith(' 00:00:00'))s=s.slice(0,-9)/* 午夜时刻等同于纯日期：.xlsx 的日期单元格午夜时只显示日期 */}}}
+      if(y>=1&&mo>=1&&mo<=12&&dy>=1&&dy<=DAYS_IN_MONTH[mo-1]+(leap?1:0)&&(!m[7]||(+m[7]<=23&&+m[8]<=59&&+(m[9]||0)<=59))){s=`${yr}-${p(mo)}-${p(dy)}`+(m[7]?` ${p(m[7])}:${m[8]}:${m[9]||'00'}${secondFraction(m[10])}`:'');if(s.endsWith(' 00:00:00'))s=s.slice(0,-9)/* 午夜时刻等同于纯日期：.xlsx 的日期单元格午夜时只显示日期 */}}}
   if(opts.ignoreWs)s=s.replace(/\s+/g,' ').trim();if(opts.ignoreCase)s=s.toLowerCase();return s}
 function detectHeader(rows){let best=0,bestN=0;const lim=Math.min(rows.length,20);const counts=[];for(let i=0;i<lim;i++){const n=(rows[i]||[]).filter(c=>c&&(String(c.v).trim()!==''||c.f)).length;counts.push(n);if(n>bestN)bestN=n}
   for(let i=0;i<lim;i++)if(counts[i]>=2&&counts[i]>=.6*bestN){best=i;break}return best}
@@ -463,7 +538,7 @@ function compare(gA,gB,hA,hB){
       (byPred.get(-1)||[]).forEach(j=>columns.push({name:String(cellText(headB[j])||colName(j)),ia:-1,ib:j,st:'ins'}));
       for(let i=0;i<nA;i++){const j=mapAB.has(i)?mapAB.get(i):-1;columns.push({name:String(cellText(headA[i])||colName(i)),ia:i,ib:j,st:j<0?'del':movedA.has(i)&&!opts.sortCols?'mov':'eq'/* 对列排序后列的先后不再有意义，不标记“已移动” */});if(j>=0)(byPred.get(j)||[]).forEach(jj=>columns.push({name:String(cellText(headB[jj])||colName(jj)),ia:-1,ib:jj,st:'ins'}))}
     }else{/* 按位置匹配时，“对列排序”要先把两侧的列各自按表头排好再逐个对应：否则只是把已经按原位置配好的列换个显示顺序，仅列顺序不同的两张表仍会被逐列报成修改 */const ord=(h,m)=>{const o=Array.from({length:m},(_,i)=>i);if(opts.sortCols){const key=o.map(i=>normalize(String(cellText(h[i])||'')));o.sort((x,y)=>key[x].localeCompare(key[y])||x-y)}return o},oA=ord(headA,nA),oB=ord(headB,nB);
-      const n=Math.max(nA,nB);for(let i=0;i<n;i++){const ia=i<nA?oA[i]:-1,ib=i<nB?oB[i]:-1,ha=ia>=0?String(cellText(headA[ia])||''):'',hb=ib>=0?String(cellText(headB[ib])||''):'',hc=ia>=0&&ib>=0&&normalize(ha)!==normalize(hb);columns.push({name:(hc&&ha&&hb?`${ha} → ${hb}`:(hb||ha))||colName(ia>=0?ia:ib),ia,ib,st:ia<0?'ins':ib<0?'del':'eq',hdrChg:hc})}}
+      const n=Math.max(nA,nB);for(let i=0;i<n;i++){const ia=i<nA?oA[i]:-1,ib=i<nB?oB[i]:-1,ha=ia>=0?String(cellText(headA[ia])||''):'',hb=ib>=0?String(cellText(headB[ib])||''):'',hc=ia>=0&&ib>=0&&normalize(ha)!==normalize(hb);columns.push({name:hc?(ha&&hb?`${ha} → ${hb}`:`${JSON.stringify(ha)} → ${JSON.stringify(hb)}`):(hb||ha||colName(ia>=0?ia:ib)),ia,ib,st:ia<0?'ins':ib<0?'del':'eq',hdrChg:hc})}}
     if(opts.sortCols)columns.sort((x,y)=>x.name.localeCompare(y.name));
     dataA=rowsA.slice(hA+1);dataB=rowsB.slice(hB+1);startA=hA+2;startB=hB+2;
   }else{const cA=usedCols(rowsA),cB=usedCols(rowsB),n=Math.max(cA,cB);for(let i=0;i<n;i++)columns.push({name:colName(i),ia:i<cA?i:-1,ib:i<cB?i:-1,st:i>=cA?'ins':i>=cB?'del':'eq'});dataA=rowsA;dataB=rowsB;startA=1;startB=1}
@@ -575,8 +650,12 @@ function render(){const R=RES,wrap=$('gridWrap');const s=R.stats,L=(n,k)=>t(n===
   if(R.identical){wrap.dataset.changes=0;wrap.innerHTML=`<div class="identical"><div class="ic">✓</div><h3>${esc(t('identicalTitle'))}</h3><p>${esc(t('identicalMsg'))}</p></div>`;return}
   const allCols=R.columns.map((c,k)=>({...c,k})),fltCols=allCols.filter(c=>!opts.hideCols||c.st!=='eq'||R.colChanged.has(c.k)),cols=fltCols.length?fltCols:allCols;
   /* 行号列默认 46px，只放得下 4 位数：行号上万时按位数加宽（#B 列的吸附位置随之右移），否则行号会折成两行，把每一行都撑高 */const nd=String(R.rows.reduce((m,r)=>Math.max(m,r.na||0,r.nb||0),0)).length;
-  let h=`<table class="grid"${nd>4?` style="--nw:calc(${nd}ch + 19px)"`:''}><thead><tr><th class="num a">#A</th><th class="num b">#B</th>${cols.map(c=>`<th class="col-${c.st}" title="${c.st==='eq'?'':t(c.st==='ins'?'inserted':c.st==='del'?'deleted':'moved')}">${esc(c.name)}${c.st==='mov'?' ⇄':''}</th>`).join('')}</tr></thead><tbody>`;
-  let changeNo=0,i=0;const rows=R.rows,CTX=2;
+  let changeNo=0;
+  const th=c=>{const st=c.hdrChg?'chg':c.st,key={ins:'inserted',del:'deleted',mov:'moved',chg:'headerChanged'}[st];
+    return `<th scope="col" class="col-${st}"${key?` id="focus-${changeNo++}" title="${esc(t(key))}"`:''}>${esc(c.name)}${c.st==='mov'?' ⇄':''}</th>`;
+  };
+  let h=`<table class="grid"${nd>4?` style="--nw:calc(${nd}ch + 19px)"`:''}><thead><tr><th class="num a" scope="col">#A</th><th class="num b" scope="col">#B</th>${cols.map(th).join('')}</tr></thead><tbody>`;
+  let i=0;const rows=R.rows,CTX=2;
   while(i<rows.length){const r=rows[i];
     if(r.type==='eq'&&!r.hasColData&&opts.hideRows){let j=i;while(j<rows.length&&rows[j].type==='eq'&&!rows[j].hasColData)j++;const run=j-i;const head=i===0?0:CTX,tail=j===rows.length?0:CTX;if(run-head-tail>1&&!expanded.has(i)){for(let k=i;k<i+head;k++)h+=rowHtml(rows[k],cols);h+=`<tr class="collapsed" data-i="${i}" tabindex="0" role="button"><td colspan="${cols.length+2}">⋯ ${esc(t('unchangedRows',{n:run-head-tail}))}<span class="no-print">${esc(t('clickExpand'))}</span></td></tr>`;for(let k=j-tail;k<j;k++)h+=rowHtml(rows[k],cols);i=j;continue}for(let k=i;k<j;k++)h+=rowHtml(rows[k],cols);i=j;continue}
     const id=r.type!=='eq'||r.hasColData?`focus-${changeNo++}`:'';h+=rowHtml(r,cols,id);i++}
@@ -585,11 +664,12 @@ function render(){const R=RES,wrap=$('gridWrap');const s=R.stats,L=(n,k)=>t(n===
    有很多折叠块时每展开一个都得重新 Tab 过来。重绘后折叠条原来的位置正好是展开出来的第一行，把焦点放到这一行，Tab 就从这里继续 */
 function focusRow(wrap,i){const row=wrap.querySelector('table')?.rows[i];if(!row)return;row.tabIndex=-1;try{row.focus({preventScroll:true})}catch(e){row.focus()}}
 function rowHtml(r,cols,id){return `<tr class="${r.type}" ${id?`id="${id}"`:''}><td class="num a">${r.na??''}</td><td class="num b">${r.nb??''}</td>${cols.map(c=>{const cell=r.cells[c.k];const cls=r.type==='eq'||r.type==='chg'?(cell.st==='chg'?'chg':cell.st==='cdel'?'cdel':cell.st==='cins'?'cins':(c.st==='ins'||c.st==='del')&&!cell.a&&!cell.b?'colx':''):'';return `<td class="${cls}">${renderCell(cell)}</td>`}).join('')}</tr>`}
-function goChange(dir){const n=+$('gridWrap').dataset.changes||0;if(!n)return;focusIdx=focusIdx<0&&dir<0?n-1:((focusIdx+dir)%n+n)%n;document.querySelectorAll('tr.focus').forEach(e=>e.classList.remove('focus'));const el=$('focus-'+focusIdx);if(el){el.classList.add('focus');el.scrollIntoView({behavior:'smooth',block:'center'})}}
+function goChange(dir){const n=+$('gridWrap').dataset.changes||0;if(!n)return;focusIdx=focusIdx<0&&dir<0?n-1:((focusIdx+dir)%n+n)%n;$('gridWrap').querySelectorAll('.focus').forEach(e=>e.classList.remove('focus'));const el=$('focus-'+focusIdx);if(el){el.classList.add('focus');el.scrollIntoView({behavior:'smooth',block:'center'})}}
 $('prevBtn').onclick=()=>goChange(-1);$('nextBtn').onclick=()=>goChange(1);
 $('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.mode=b.dataset.mode;saveOpts();for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)run()};
 $('valSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.val=b.dataset.val;saveOpts();for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)run()};
-$('toolsBtn').onclick=()=>$('panel').classList.toggle('open');$('panelClose').onclick=()=>$('panel').classList.remove('open');
+function setPanel(open){const panel=$('panel');panel.inert=!open;panel.classList.toggle('open',open);$('toolsBtn').setAttribute('aria-expanded',String(open));$(open?'panelClose':'toolsBtn').focus()}
+$('toolsBtn').onclick=()=>setPanel(!$('panel').classList.contains('open'));$('panelClose').onclick=()=>setPanel(false);
 document.querySelectorAll('.switch[data-opt]').forEach(sw=>sw.onclick=()=>{const k=sw.dataset.opt;opts[k]=!opts[k];saveOpts();syncUI();if(!RES)return;if(k==='hideRows'){expanded=new Set();render()}else if(k==='hideCols'||k==='showOld')render();else run()});
 function syncUI(){document.querySelectorAll('.switch[data-opt]').forEach(sw=>sw.setAttribute('aria-checked',String(!!opts[sw.dataset.opt])));$('modeSeg').querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.mode===opts.mode)));$('valSeg').querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.val===opts.val)))}
 
@@ -599,10 +679,7 @@ $('fmtChoices').onclick=e=>{const b=e.target.closest('.choice');if(!b)return;exp
 function download(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1500)}
 const stem=(n,d)=>{n=n||d;return n.replace(/\.[^.]+$/,'')||n};
 const baseName=()=>(stem(NAMES.A,'original')+'-vs-'+stem(NAMES.B,'changed')).replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100).replace(/[. ]+$/,'')||'diffchecker';
-/* 以浅色主题打印；部分浏览器（如 Safari、移动端）的 window.print() 不阻塞，必须等 afterprint 之后再恢复主题，否则打印出来的仍是深色 */
-function printLight(){const root=document.documentElement;let ended=false;const fin=()=>{if(ended)return;ended=true;window.removeEventListener('afterprint',fin);root.dataset.theme=theme};
-  root.dataset.theme='light';window.addEventListener('afterprint',fin);try{window.print()}catch(e){fin();throw e}}
-$('exportGo').onclick=()=>{$('exportModal').close();if(!RES)return;/* 与文本页一致：导出出错（如表格过大、字符串超出长度上限）时给出提示，而不是弹窗关掉后毫无反应 */try{if(exportFmt==='pdf')printLight();else if(exportFmt==='csv')exportCsv();else if(exportFmt==='xlsx')exportXlsx();else exportDiffFile()}catch(e){console.error(e);notice(t(e?.message==='exportXlsxLimit'?'exportXlsxLimit':'exportFailed'))}};
+$('exportGo').onclick=()=>{$('exportModal').close();if(!RES)return;/* 与文本页一致：导出出错（如表格过大、字符串超出长度上限）时给出提示，而不是弹窗关掉后毫无反应 */try{if(exportFmt==='pdf')window.print();else if(exportFmt==='csv')exportCsv();else if(exportFmt==='xlsx')exportXlsx();else exportDiffFile()}catch(e){console.error(e);notice(t(e?.message==='exportXlsxLimit'?'exportXlsxLimit':'exportFailed'))}};
 function tableRows(){const R=RES;const head=[t('origRow'),t('chgRow'),...R.columns.map(c=>c.name+(c.st==='ins'?' (+)':c.st==='del'?' (−)':c.st==='mov'?' (⇄)':''))];const body=R.rows.map(r=>[r.na??'',r.nb??'',...r.cells.map(c=>c.st==='chg'?(opts.showOld?`${c.a} → ${c.b}`:c.b):c.st==='cdel'||c.st==='rdel'?c.a:(c.b||c.a))]);return {head,body}}
 function csvField(value){
   let v=String(value),first=v.replace(/^[\s\u200b\u2060]+/u,'');
@@ -648,7 +725,7 @@ function exampleWb(v){const H=['Order ID','Site','Severity','Assigned within (h)
 $('exampleBtn').onclick=()=>{cancelLoads();setWorkbook('A',exampleWb(0),'work-orders-v1.xlsx');setWorkbook('B',exampleWb(1),'work-orders-v2.xlsx');run();$('result').scrollIntoView({behavior:'smooth',block:'start'})};
 ['dragover','drop'].forEach(n=>window.addEventListener(n,e=>{if(hasFiles(e))e.preventDefault()}));
 /* Esc 关闭侧栏与弹窗 */
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('exportModal').open)$('panel').classList.remove('open')});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('exportModal').open&&$('panel').classList.contains('open')){e.preventDefault();setPanel(false)}});
 /* 点击导出弹窗的遮罩（而不是弹窗本身）即可关闭，与 Esc 一致 */
 $('exportModal').addEventListener('mousedown',e=>{if(e.target===e.currentTarget)e.currentTarget.close()});
 applyTheme();syncUI();applyLang();

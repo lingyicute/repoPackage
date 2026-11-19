@@ -332,7 +332,7 @@ def _safe_read_limited(resp, limit: int) -> bytes:
     """Read from HTTPResponse with hard limit to avoid OOM / zip-bomb."""
     cl = resp.headers.get("Content-Length")
     if cl and cl.isdigit() and int(cl) > limit:
-        raise SystemExit(T(f"blob Content-Length {cl} > {human(limit)} limit - aborting",
+        raise RegistryError(T(f"blob Content-Length {cl} > {human(limit)} limit - aborting",
                            f"blob Content-Length {cl} 超过 {human(limit)} 限制——中止"))
     chunks = []
     total = 0
@@ -342,7 +342,7 @@ def _safe_read_limited(resp, limit: int) -> bytes:
             break
         total += len(chunk)
         if total > limit:
-            raise SystemExit(T(f"blob exceeds {human(limit)} limit during download - possible bomb",
+            raise RegistryError(T(f"blob exceeds {human(limit)} limit during download - possible bomb",
                                f"下载过程中 blob 超过 {human(limit)} 限制——疑似 zip 炸弹"))
         chunks.append(chunk)
     return b"".join(chunks)
@@ -367,25 +367,25 @@ def check_digest(actual_hex: str, digest: str, what: str, *,
     raw = str(digest or "").strip()
     if not raw:
         if required:
-            raise SystemExit(T(
+            raise RegistryError(T(
                 f"missing digest for {what} - refusing to trust unverified content",
                 f"{what} 缺少 digest——拒绝信任未校验的内容"))
         return
     if ":" not in raw:
         if required:
-            raise SystemExit(T(
+            raise RegistryError(T(
                 f"invalid digest {raw!r} for {what} - expected sha256:<64 hex>",
                 f"{what} 的 digest {raw!r} 无效——应为 sha256:<64位十六进制>"))
         return
     algo, _, want = raw.partition(":")
     algo, want = algo.lower(), want.lower()
     if algo != "sha256" or not re.fullmatch(r"[0-9a-f]{64}", want):
-        raise SystemExit(T(
+        raise RegistryError(T(
             f"unsupported or malformed digest {raw!r} for {what} - expected sha256:<64 hex>",
             f"{what} 的 digest {raw!r} 不受支持或格式错误——应为 sha256:<64位十六进制>"))
     if actual_hex == want:
         return
-    raise SystemExit(T(
+    raise RegistryError(T(
         f"digest mismatch for {what}: expected sha256:{want}, the content hashes to "
         f"sha256:{actual_hex} - refusing to analyse data the registry altered",
         f"{what} 的 digest 不匹配：应为 sha256:{want}，实际内容为 "
@@ -617,7 +617,8 @@ def rpmvercmp(a: str, b: str) -> int:
         always newer than an alphabetic one (xyz.4 < 8);
       * numeric segments compare by digit count after leading zeros are
         stripped, so 10.0001 == 10.1 and 1.0 < 1.0.0.
-    Verified against all 103 vectors in rpm's own tests/rpmvercmp.at
+    Verified against all 103 vectors in rpm's own tests/rpmvercmp.at: the 91 it
+    runs and the 12 it keeps commented out as documented oddities
     (see tests/test_sbwatch.py).
     """
     a = a or ""
@@ -935,7 +936,7 @@ class Registry:
         """
         try:
             return _safe_read_limited(resp, MAX_JSON_BYTES)
-        except SystemExit:
+        except RegistryError:
             raise
         except Exception as e:
             # A RegistryError, like every other registry failure: the callers
@@ -967,7 +968,7 @@ class Registry:
         """manifest + config for one architecture, plus a normalized chunk list."""
         try:
             return self._resolve(ref, light)
-        except (ValueError, KeyError, TypeError, AttributeError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError, OverflowError, RecursionError) as e:
             # A 200 whose body is no manifest (a proxy's error page, a layer
             # without `size`) used to end `diff` and `check` with a traceback.
             what = ref or self.default_ref
@@ -1270,8 +1271,8 @@ def pick_tar_member(tf, match: str, label: str = ""):
 
     "Largest", not "first": the live rpmdb chunk carries TWO entries whose name
     contains `rpmdb.sqlite` - the real ~92 MiB database under
-    `usr/lib/sysimage/rpm-ostree-base-db/` and a 0-byte placeholder at
-    `usr/share/rpm/rpmdb.sqlite`. Tar member order is a property of whatever
+    `usr/lib/sysimage/rpm-ostree-base-db/` and a hard link to it at
+    `usr/share/rpm/rpmdb.sqlite` (0 bytes in the tar). Tar member order is a property of whatever
     tool wrote the layer, not a contract; picking by size makes the choice
     order-independent instead of silently extracting an empty database the day
     the order flips.
@@ -1543,12 +1544,18 @@ def package_list(reg: Registry, resolved: dict) -> dict:
 # --------------------------------------------------------------------------- #
 # Fedora Bodhi: errata for a build (type=security, severity, CVE list)
 # --------------------------------------------------------------------------- #
+class BodhiTimeLimit(Exception):
+    """No new HTTP attempt may start after the run's Bodhi time budget."""
+
+
 class Bodhi:
     BASE = "https://bodhi.fedoraproject.org"
 
-    def __init__(self, cache_dir=None, sleep=0.3, max_calls=80, ttl=BODHI_TTL):
+    def __init__(self, cache_dir=None, sleep=0.3, max_calls=80, ttl=BODHI_TTL, max_seconds=0):
         self.cache_dir, self.sleep, self.max_calls, self.ttl = cache_dir, sleep, max_calls, ttl
         self.calls, self._mem = 0, {}
+        self.deadline = time.monotonic() + max_seconds if max_seconds else None
+        self.time_limited = False
         self.failed = 0          # queries that errored => verdict must not claim "clean"
         self.skipped = 0         # queries we never made because of --max-bodhi
         self.truncated_src = set()   # srcs where we could not read every erratum
@@ -1563,6 +1570,22 @@ class Bodhi:
                       f"continuing without a cache",
                       f"  ！无法使用 Bodhi 缓存目录 {cache_dir}：{e}——不使用缓存继续"))
                 self.cache_dir = None
+
+    def _remaining(self):
+        if self.deadline is None:
+            return math.inf
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            self.time_limited = True
+        return max(0, left)
+
+    def _budget_reached(self):
+        return self.calls >= self.max_calls or not self._remaining()
+
+    def _memo_budget_miss(self, key):
+        self.skipped += 1
+        self._mem[key] = {"total": None, "truncated": False, "updates": [], "unqueried": "skipped"}
+        return []
 
     def _cf(self, key):
         """Cache file of one `<src>-<release>` key, never shared with another key.
@@ -1634,9 +1657,12 @@ class Bodhi:
         """
         retried = False
         while True:
+            remaining = self._remaining()
+            if not remaining:
+                raise BodhiTimeLimit
             self.calls += 1
             try:
-                with urllib.request.urlopen(url, timeout=40) as r:
+                with urllib.request.urlopen(url, timeout=min(40, remaining)) as r:
                     cl = r.headers.get("Content-Length") if getattr(r, "headers", None) else None
                     if cl and str(cl).isdigit() and int(cl) > MAX_JSON_BYTES:
                         raise ValueError(f"Bodhi response exceeds {human(MAX_JSON_BYTES)}")
@@ -1674,12 +1700,12 @@ class Bodhi:
                             raise ValueError(f"invalid Bodhi update field: {k}")
                 return data, page_ups
             except Exception as ex:
-                if retried or self._streak or self.calls >= self.max_calls:
+                if retried or self._streak or self._budget_reached():
                     raise
                 retried = True
                 log(T(f"  ! bodhi lookup failed for {src} ({ex}) - trying once more",
                       f"  ！查询 Bodhi 失败：{src}（{ex}）——再试一次"))
-                time.sleep(self.sleep)
+                time.sleep(min(self.sleep, self._remaining()))
 
     def updates_for_src(self, src: str, release: str) -> list:
         """Every Fedora erratum for one source package in one release.
@@ -1717,13 +1743,9 @@ class Bodhi:
             self.failed += 1
             self._mem[key] = {"total": None, "truncated": False, "updates": [], "unqueried": "failed"}
             return []
-        if self.calls >= self.max_calls:
-            self.skipped += 1
-            # Classification asks once per binary and the backlog asks again.
-            # Count this unqueried source/release once, without re-reading a stale
-            # disk cache each time. Never persist a budget miss as a clean answer.
-            self._mem[key] = {"total": None, "truncated": False, "updates": [], "unqueried": "skipped"}
-            return []
+        if self._budget_reached():
+            # Cache hits still count even when no further requests may be made.
+            return self._memo_budget_miss(key)
 
         res: list = []
         total = None
@@ -1735,14 +1757,14 @@ class Bodhi:
         inconsistent = False
         ok = False
         for page in range(1, MAX_BODHI_PAGES + 1):
-            if page > 1 and self.calls >= self.max_calls:
+            if page > 1 and self._budget_reached():
                 # --max-bodhi caps API calls, and every page is one call: the
                 # guard above only ran before page 1, so a 127-erratum package
                 # walked past the budget. Stop here and say the audit is partial.
                 truncated = budget_cut = True
-                log(T(f"  ! bodhi: --max-bodhi reached after {len(res)} of {total} errata "
+                log(T(f"  ! bodhi: query budget reached after {len(res)} of {total} errata "
                       f"for {src} - this package's audit is INCOMPLETE",
-                      f"  ！Bodhi：{src} 只取到 {total} 条勘误中的 {len(res)} 条时 --max-bodhi "
+                      f"  ！Bodhi：{src} 只取到 {total} 条勘误中的 {len(res)} 条时查询预算"
                       f"已用尽——该包的审计不完整"))
                 break
             url = f"{self.BASE}/updates/?" + urllib.parse.urlencode(
@@ -1750,6 +1772,11 @@ class Bodhi:
                  "rows_per_page": str(BODHI_PAGE_SIZE), "page": str(page)})
             try:
                 data, page_ups = self._fetch_page(url, src, page)
+            except BodhiTimeLimit:
+                if page == 1:
+                    return self._memo_budget_miss(key)
+                truncated = budget_cut = True
+                break
             except Exception as ex:
                 self.failed += 1
                 log(T(f"  ! bodhi lookup failed for {src} (page {page}): {ex}",
@@ -1836,7 +1863,7 @@ class Bodhi:
                       f"  ！Bodhi：{src} 只取到 {total} 条勘误中的 {len(res)} 条"
                       f"（MAX_BODHI_PAGES={MAX_BODHI_PAGES}）——该包的审计不完整"))
                 break
-            time.sleep(self.sleep)
+            time.sleep(min(self.sleep, self._remaining()))
         if inconsistent and not truncated:
             truncated = True
             log(T(f"  ! Bodhi pagination shifted while reading {src}; audit is incomplete",
@@ -1902,31 +1929,19 @@ def nvr_candidates_split(pkg: dict) -> tuple:
       `%define buildid .secureblue.N`) - but rpm-ostree never attaches the
       advisory to this package, so it must not feed the notification prediction.
 
-    Name spellings: Bodhi lists errata builds by their *source* build NVR, while
-    the image only exposes *binary* NEVRAs. 246 of the live image's 1107 source
-    packages have no same-named binary (shim -> shim-x64/shim-ia32, webkitgtk ->
-    webkit2gtk4.1, krb5 -> krb5-libs, grub2, bind, git, dnf, python3.14, ...), and
-    every binary in a koji build shares the source build's EVR, so
-    `{src}-{version}-{release}` is a valid additional spelling. secureblue's own
-    packages (trivalent, brew-proxy, no_rlimit_as, run0edit, homebrew, crane, ...)
-    carry no dist tag and have no Fedora counterpart at all - correctly, no
-    spelling of theirs ever matches.
+    Bodhi lists Koji source builds, not binary NEVRAs. A binary can have a
+    different EVR from its source (e.g. nspr from nss), and a multi-build
+    advisory can contain an unrelated source with the binary's name. Prefer
+    the installed SRPM identity, not an extra candidate made from the binary.
+    Even an exact source match is only a candidate for the desktop rule:
+    rpm-ostree needs a matching binary NEVRA in local rpm-md.
     """
-    bin_evr = f"{pkg['version']}-{pkg['release']}"
-    exact = [f"{pkg['name']}-{bin_evr}"]
-    normalised = []
-    stripped = re.sub(r"\.secureblue\.\d+", "", pkg["release"])
-    if stripped != pkg["release"]:
-        normalised.append(f"{pkg['name']}-{pkg['version']}-{stripped}")
-    src = pkg.get("src")
-    if src:
-        bevr = _build_evr(pkg)
-        src_evr = bevr if (bevr and bevr != "?") else bin_evr
-        exact.append(f"{src}-{src_evr}")
-        bstripped = re.sub(r"\.secureblue\.\d+", "", src_evr)
-        if bstripped != src_evr:
-            normalised.append(f"{src}-{bstripped}")
-    return list(dict.fromkeys(exact)), list(dict.fromkeys(normalised))
+    src = pkg.get("src") or pkg["name"]
+    src_evr = _build_evr(pkg)
+    if not src_evr or src_evr == "?":
+        src_evr = f"{pkg['version']}-{pkg['release']}"
+    stripped = re.sub(r"\.secureblue\.\d+", "", src_evr)
+    return [f"{src}-{src_evr}"], ([f"{src}-{stripped}"] if stripped != src_evr else [])
 
 
 def nvr_candidates(pkg: dict) -> list:
@@ -1990,8 +2005,8 @@ def _passed_build(old: dict, new: dict, nvrs, epochs=None) -> str | None:
     `bluez-5.87-1.fc44` compared as behind `bluez-5.87-1.fc45` - its twin on the
     other branch, whose fix it already has.
     """
-    old_dist = _dist_tag(old.get("release"))
-    new_dist = _dist_tag(new.get("release"))
+    old_dist = _dist_tag(_build_evr(old).rpartition("-")[2])
+    new_dist = _dist_tag(_build_evr(new).rpartition("-")[2])
     # Numeric ordering is meaningful only within the same source lineage.
     if old.get("src") != new.get("src") or old_dist != new_dist:
         return None
@@ -2000,16 +2015,14 @@ def _passed_build(old: dict, new: dict, nvrs, epochs=None) -> str | None:
         if len(parts) != 3:
             continue
         bn, bv, br = parts
-        # Bodhi names the source build; accept it for this binary or its source
-        if bn != new["name"] and bn != new.get("src"):
+        if bn != (new.get("src") or new["name"]):
             continue
         # Packages like shim and fedora-release carry no .fcNN tag on any side.
         if _dist_tag(br) != old_dist:
             continue
-        by_src = bn != new["name"]
         epoch = (epochs or {}).get(b)
-        if (_is_behind(old, bv, br, use_build_evr=by_src, candidate_epoch=epoch)
-                and not _is_behind(new, bv, br, use_build_evr=by_src, candidate_epoch=epoch)):
+        if (_is_behind(old, bv, br, use_build_evr=True, candidate_epoch=epoch)
+                and not _is_behind(new, bv, br, use_build_evr=True, candidate_epoch=epoch)):
             return b
     return None
 
@@ -2248,14 +2261,23 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
                         f"(matched Fedora's {sorted(hit_corresponding)[0]} only after "
                         f"stripping the local release marker from {new['release']} - "
                         f"rpm-ostree does not attach it to this build)")
+            elif SEV_RANK.get(sev_word, 0) >= 3 or any(_advisory_cve_scope(u)):
+                # A released erratum of another type that ranks high or lists CVE
+                # ids marks the package security-relevant below, so name it: the
+                # evidence cell of shadow-utils (bugfix, severity=high) was empty.
+                info["why"].append(
+                    f"erratum/勘误 {u['alias']}: type={u.get('type')} "
+                    f"severity={u.get('severity')} status={status}")
     # A CVE carried by the new build's pushed erratum is not a dropped fix even if
     # the RPM changelog entry that used to mention it was trimmed or reworded.
     info["cves_dropped"] -= info["cves"]
     if info["cves"] or info["advisory_wide_cves"]:
         info["security"] = True
     if info["cves_dropped"]:
-        info["why"].insert(1 if chlog_cves else 0,
-                           "no longer mentioned/不再提及: "
+        # After the evidence: this is a hint, and at the front it used up the
+        # report's evidence cell before the erratum was reached (openssl on the
+        # F44 -> F45 rebase: "erratum FEDORA-2026-06… (+51 chars not shown)").
+        info["why"].append("no longer mentioned/不再提及: "
                            + clip_list(sorted(info["cves_dropped"]), 8, lang="both"))
     info["cves"] = sorted(info["cves"])
     info["advisory_wide_cves"] = sorted(info["advisory_wide_cves"])
@@ -2342,8 +2364,11 @@ def pkg_diff(pa: dict, pb: dict) -> dict:
 
 def crosscheck_chunks(ldiff: dict, diff: dict, src_of: dict | None = None,
                       versions_known: bool = True) -> dict:
-    """Chunks moved but the NEVRA did not change => silent rebuild (kernel hardening
-    bumps, rpm macros, file ordering...). Explains '700 MB and nothing changed'.
+    """Chunks moved but the NEVRA did not change: `silent_rebuilds`, a name older than
+    what was measured. The glibc chunks of two live builds differed in etc/ld.so.cache
+    alone - a file the package owns and the image build regenerates. Fedora never
+    rebuilds one NEVRA, so only secureblue's own packages can really be rebuilt here.
+    Explains '700 MB and nothing changed'.
 
     versions_known=False means manifest-only mode: the rpmdb was never fetched, so
     there is no basis for claiming any package kept its version. In that case
@@ -2726,6 +2751,8 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
          "important_pkgs": sorted({p["name"] for g in imp for p in g["pkgs"]}),
          "cves": cves, "advisory_wide_cves": sorted(shared_cves),
           "cves_dropped": sorted({c for g in lost for c in g["dropped"]}),
+         "cves_reverted": sorted({c for g in lost for c in g.get("reverted") or ()}),
+         "errata_reverted": [],
          "downgrades": [g["src"] for g in down], "severity_rank": sev,
          "kernel_changed": kernel_moved, "kernel_in_diff": kernel_in_diff,
          "kernel_annotation_changed": kernel_annot_moved,
@@ -2841,8 +2868,8 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
             bits_zh.append("安全敏感软件包版本升级："
                            + clip_list(imp_names, 5, lang="zh", joiner="，"))
         if silent_key:
-            bits.append("rebuilt (identical version): " + clip_list(silent_key, 5))
-            bits_zh.append("重建（版本相同）："
+            bits.append("chunk changed at an identical version: " + clip_list(silent_key, 5))
+            bits_zh.append("版本相同但 chunk 变化："
                            + clip_list(silent_key, 5, lang="zh", joiner="，"))
         v["headline"] = ("no CVE/erratum found for this delta, but " + "; ".join(bits)
                          + ". Reasonable to skip if the download matters to you")
@@ -2858,15 +2885,25 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         up_groups = [g for g in groups if not g["downgrade"]]
         up_bin = sum(len(g["pkgs"]) for g in up_groups)
         v["level"] = "skip"
-        v["headline"] = (f"routine churn: {plural(len(up_groups), 'source package')} "
+        # A rollback is not "routine churn": that lead headed the report of a tag
+        # that had moved back three builds (eight source packages downgraded).
+        lead = lead_zh = ""
+        if down:
+            down_bin = sum(len(g["pkgs"]) for g in down)
+            lead = f"{plural(len(down), 'source package')} ({down_bin} binary) downgraded, "
+            lead_zh = f"{len(down)} 个源码包（{down_bin} 个二进制包）被降级，"
+        v["headline"] = ((lead or "routine churn: ")
+                         + f"{plural(len(up_groups), 'source package')} "
                          f"({up_bin} binary) bumped, {len(diff['added'])} added / "
                          f"{len(diff['removed'])} removed, no CVE and no security erratum"
-                         + (f", {len(silent)} chunk(s) rebuilt with identical versions" if silent else "")
+                         + (" among the upgrades" if down else "")
+                         + (f", {len(silent)} chunk(s) changed at identical versions" if silent else "")
                          + tail)
-        v["headline_zh"] = (f"常规更新：{len(up_groups)} 个源码包（{up_bin} 个二进制包）升级，"
+        v["headline_zh"] = ((lead_zh or "常规更新：")
+                            + f"{len(up_groups)} 个源码包（{up_bin} 个二进制包）升级，"
                             f"新增 {len(diff['added'])} 个 / 移除 {len(diff['removed'])} 个，"
-                            "无 CVE、无安全勘误"
-                            + (f"，{len(silent)} 个 chunk 以相同版本重建" if silent else "")
+                            + ("升级部分无 CVE、无安全勘误" if down else "无 CVE、无安全勘误")
+                            + (f"，{len(silent)} 个 chunk 在版本不变的情况下发生变化" if silent else "")
                             + tail_zh)
     # --- what secureblue's desktop will actually do ------------------------- #
     # This is orthogonal to the levels above: `update-now`/`consider`/`skip` is
@@ -2937,6 +2974,19 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         dl_txt_zh = clip_list(down, 3, render=_dl, lang="zh", joiner="，")
         v["headline"] += (" | WARNING: this update downgrades " + dl_txt)
         v["headline_zh"] += (" ｜ 警告：此次更新会降级 " + dl_txt_zh)
+        # The security errata of the builds being left, by the report's own rule
+        # for its downgrade section: a push or a CI summary shows the headline
+        # alone, and it never said what the rollback takes away.
+        errata = list(dict.fromkeys(
+            x["alias"] for g in down for x in g.get("already_had") or []
+            if x.get("alias") and x.get("type") == "security"
+            and (x.get("status") or "").lower() in PUSHED_STATUSES))
+        v["errata_reverted"] = errata
+        if errata:
+            v["headline"] += (" - this reverts published security errata: "
+                              + clip_list(errata, 3))
+            v["headline_zh"] += ("——这会回退已发布的安全勘误："
+                                 + clip_list(errata, 3, lang="zh", joiner="，"))
         # A version that went backwards is evidence (the rpmdb says so). The
         # changelog-based `cves_dropped` below is not, which is why only this one
         # is allowed to raise the level.
@@ -2964,8 +3014,12 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                 why.append(f"{bad} Bodhi query(ies) failed")
                 why_zh.append(f"{bad} 次 Bodhi 查询失败")
             if miss:
-                why.append(f"{miss} package(s) were not queried (--max-bodhi)")
-                why_zh.append(f"{miss} 个软件包未被查询 (--max-bodhi)")
+                budget = "--bodhi-seconds / --max-bodhi" if bodhi_state.get("time_limited") else "--max-bodhi"
+                why.append(f"{miss} package(s) were not queried ({budget})")
+                why_zh.append(f"{miss} 个软件包未被查询（{budget}）")
+            if bodhi_state.get("time_limited") and not miss:
+                why.append("Bodhi time budget exhausted (--bodhi-seconds)")
+                why_zh.append("Bodhi 时间预算用尽（--bodhi-seconds）")
             if trunc:
                 why.append(f"errata list truncated for {trunc} package(s)")
                 why_zh.append(f"{trunc} 个软件包的勘误列表被截断")
@@ -2975,9 +3029,21 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                                 + "，因此“无安全修复”并未被证实"
             if v["level"] == "skip":
                 v["level"] = "consider"
-    if v["cves_dropped"]:
-        drop_txt = clip_list(v["cves_dropped"], 6)
-        drop_txt_zh = clip_list(v["cves_dropped"], 6, lang="zh", joiner="，")
+    # An id that left the changelog of a package this update *downgrades* is the
+    # real revert the note below tells the reader to look for, not a changelog
+    # edit (a rollback of dnf5 5.4.8.0-2 -> 5.4.7.0-1 loses CVE-2026-123177).
+    reverted = v["cves_reverted"]
+    edited = [c for c in v["cves_dropped"] if c not in reverted]
+    if reverted:
+        v["headline"] += (" | WARNING: the downgraded packages no longer carry the "
+                          "changelog entries for " + clip_list(reverted, 6)
+                          + " - the downgrade most likely reverts these fixes")
+        v["headline_zh"] += (" ｜ 警告：被降级的软件包不再带有以下 CVE 的更新日志条目："
+                             + clip_list(reverted, 6, lang="zh", joiner="，")
+                             + "——降级很可能回退了这些修复")
+    if edited:
+        drop_txt = clip_list(edited, 6)
+        drop_txt_zh = clip_list(edited, 6, lang="zh", joiner="，")
         # CVE ids that were in the old changelog and are not in the new one usually
         # mean the maintainer (or Fedora's changelog trimming) removed the entry -
         # the version still moved forward. Reporting it is useful; treating it as
@@ -3028,7 +3094,7 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
             if imp:
                 bits.append(f"{len(imp)} security-sensitive package(s) were bumped")
             if v["silent_important"]:
-                bits.append("security-relevant packages were rebuilt at the same version")
+                bits.append("the chunks of security-relevant packages changed at the same version")
             if v["downgrades"]:
                 bits.append(f"{len(v['downgrades'])} package(s) were downgraded")
             if coverage_gap:
@@ -3108,7 +3174,8 @@ def group_by_src(changed: list) -> list:
             # literal (two sets, five lists) was allocated again for every binary
             # subpackage, only to be thrown away.
             g = groups[key] = {"src": key, "pkgs": [], "security": False,
-                               "cves": set(), "dropped": set(), "aliases": [],
+                               "cves": set(), "dropped": set(), "reverted": set(),
+                               "aliases": [],
                                "advisory_wide_cves": set(),
                                "why": [], "sev_rank": 0, "sec_sev_rank": 0, "important": False,
                                "downgrade": False, "has_erratum": False,
@@ -3123,6 +3190,9 @@ def group_by_src(changed: list) -> list:
         is_down = c.get("dir") == "downgrade"
         g["important"] = g["important"] or bool(cls.get("important_src"))
         g["dropped"].update(cls.get("cves_dropped") or [])
+        if is_down:
+            # these entries are gone because the build itself went backwards
+            g["reverted"].update(cls.get("cves_dropped") or [])
         if not is_down:
             g["security"] = g["security"] or bool(cls.get("security"))
             g["cves"].update(cls.get("cves") or [])
@@ -3175,6 +3245,7 @@ def group_by_src(changed: list) -> list:
         g["cves"] = sorted(g["cves"])
         g["advisory_wide_cves"] = sorted(g["advisory_wide_cves"])
         g["dropped"] = sorted(g["dropped"])
+        g["reverted"] = sorted(g["reverted"])
         g["changelog_cves"] = sorted(g["changelog_cves"])
         rep = min(g["pkgs"], key=lambda p: (p["name"] != g["src"], p["name"]))
         o, n = rep["old"], rep["new"]
@@ -3498,8 +3569,11 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
               "列出仅供核对。")
             W("")
             for g in g_lost:
+                lost_rev = (f"——该包被降级，很可能回退了："
+                            f"{clip_list(g['reverted'], 8, lang='zh', joiner='，')}"
+                            if g.get("reverted") else "")
                 W(f"- `{g['src']}`: 不再提及 "
-                  f"{clip_list(g['dropped'], 8, lang='zh', joiner='，')}")
+                  f"{clip_list(g['dropped'], 8, lang='zh', joiner='，')}{lost_rev}")
         else:
             W(f"## CVE ids the new changelogs no longer mention "
               f"({len(g_lost)} source package(s))")
@@ -3508,7 +3582,9 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
               "a real revert shows up as a downgrade. Listed so that you can check.")
             W("")
             for g in g_lost:
-                W(f"- `{g['src']}`: no longer mentions {clip_list(g['dropped'], 8)}")
+                lost_rev = (f" — this package is downgraded, which most likely reverts: "
+                            f"{clip_list(g['reverted'], 8)}" if g.get("reverted") else "")
+                W(f"- `{g['src']}`: no longer mentions {clip_list(g['dropped'], 8)}{lost_rev}")
         W("")
 
     if g_sec:
@@ -3726,21 +3802,26 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
 
     if silent:
         if is_zh:
-            W(f"## 版本相同但被重建（{len(silent)}）")
+            W(f"## 版本相同但 chunk 变化（{len(silent)}）")
             W("")
-            W("这些 chunk 的字节变了，但软件包版本没变。通常是一次 secureblue 重建、工具链/macro 变化"
-              "或文件重排——会消耗下载量，却没有对应的上游更新日志。")
+            W("这些 chunk 的字节变了，但软件包版本没变。Fedora 不会以同一版本重新构建软件包，"
+              "所以对 Fedora 软件包而言，变的是其名下某个在镜像构建时生成或被改动的文件"
+              "（实测 `glibc` 的 chunk 仅 `etc/ld.so.cache` 不同）；secureblue 自有的软件包"
+              "也可能是重建。两者都会消耗下载量，却没有对应的更新日志。")
             W("")
             for n, s in silent[:20]:
                 W(f"- `{n}` — {human(s)}")
             if len(silent) > 20:
                 W(f"- ……另有 {len(silent)-20} 个")
         else:
-            W(f"## Rebuilt with the *same* version ({len(silent)})")
+            W(f"## Same version, changed chunk ({len(silent)})")
             W("")
-            W("These chunks changed byte-for-byte while the package version did not. That is "
-              "usually a secureblue rebuild, a toolchain/macro change, or file re-ordering — "
-              "it costs download bytes but carries no upstream changelog entry.")
+            W("These chunks changed byte-for-byte while the package version did not. Fedora "
+              "never rebuilds a package at one version, so for a Fedora package the cause is a "
+              "file it owns that is generated or modified while the image is built (measured: "
+              "the `glibc` chunk differed in `etc/ld.so.cache` alone); one of secureblue's own "
+              "packages may also have been rebuilt. Either way it costs download bytes and "
+              "carries no changelog entry.")
             W("")
             for n, s in silent[:20]:
                 W(f"- `{n}` — {human(s)}")
@@ -3981,18 +4062,14 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
                     if len(parts) != 3:
                         continue
                     bn, bv, br = parts
-                    # Bodhi lists the *source* build NVR; accept it when it names
-                    # either this binary package or its source (exact names, not
-                    # prefixes). Source matching is what makes shim/webkitgtk/
-                    # krb5/grub2/bind/... visible at all - their binaries never
-                    # share the source name (246 of 1107 live sources).
-                    if bn != n and bn != p["src"]:
+                    # Compare builds only within their source lineage.
+                    if bn != src:
                         continue
                     cand = {"name": n, "version": bv, "release": br}
                     epoch = (u.get("build_epochs") or {}).get(b)
                     if epoch is not None:
                         cand["epoch"] = str(epoch)
-                    if _is_behind(p, bv, br, use_build_evr=(bn != n), candidate_epoch=epoch) and (
+                    if _is_behind(p, bv, br, use_build_evr=True, candidate_epoch=epoch) and (
                             best is None or evr_cmp(best, cand) < 0):
                         best = cand
                 if best is None:
@@ -4003,7 +4080,7 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
 
                 build = {
                     "name": n,
-                    "have": with_epoch(_build_evr(p) if n != src else p["evr"], have_epoch),
+                    "have": with_epoch(_build_evr(p), have_epoch),
                     "want": with_epoch(f"{best['version']}-{best['release']}", want_epoch),
                     "have_epoch": have_epoch, "want_epoch": want_epoch,
                     "alias": u["alias"], "notes": u.get("notes") or "",
@@ -4035,17 +4112,20 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
     cov["skipped_queries"] = audit_skipped if isinstance(mem, dict) else bodhi.skipped
     trunc = getattr(bodhi, "truncated_src", None) or ()
     cov["truncated"] = sorted(src for src in chosen if src in trunc)
+    if getattr(bodhi, "time_limited", False):
+        cov["time_limited"] = True
     return rows, cov
 
 
 def coverage_line(cov: dict) -> str:
     """One honest sentence about how much of the backlog audit actually ran."""
+    budget = "--bodhi-seconds / --max-bodhi" if cov.get("time_limited") else "--max-bodhi"
     en = (f"backlog audit coverage: {cov['checked']} of {cov['candidates']} candidate source "
           f"packages in the image were queried"
           + (f", {cov['skipped']} were cut off by --backlog-candidates "
              f"({clip_list(cov.get('skipped_names', []), 6)})"
              if cov.get("skipped") else "")
-          + (f", {cov['skipped_queries']} not queried (--max-bodhi)"
+          + (f", {cov['skipped_queries']} not queried ({budget})"
              if cov.get("skipped_queries") else "")
           + (f", {cov['failed']} failed" if cov.get("failed") else "")
           + (f", {len(cov['truncated'])} with truncated errata"
@@ -4056,7 +4136,7 @@ def coverage_line(cov: dict) -> str:
           + (f"，{cov['skipped']} 个因 --backlog-candidates 上限被截断"
              f"（{clip_list(cov.get('skipped_names', []), 6, lang='zh', joiner='，')}）"
              if cov.get("skipped") else "")
-          + (f"，{cov['skipped_queries']} 个因 --max-bodhi 未查询"
+          + (f"，{cov['skipped_queries']} 个因 {budget} 未查询"
              if cov.get("skipped_queries") else "")
           + (f"，{cov['failed']} 个查询失败" if cov.get("failed") else "")
           + (f"，{len(cov['truncated'])} 个勘误列表被截断"
@@ -4075,6 +4155,16 @@ def coverage_line(cov: dict) -> str:
     return T(en, zh)
 
 
+def _note_head(notes) -> tuple:
+    """(first non-blank line, how many more non-blank lines) of an erratum's notes.
+
+    Bodhi ends most notes with a blank line, and counting that as text made
+    every one-line note read "(+1 more line(s))".
+    """
+    lines = [ln.strip() for ln in str(notes or "").splitlines() if ln.strip()]
+    return (lines[0], len(lines) - 1) if lines else ("", 0)
+
+
 def cmd_backlog(args):
     reg = _registry(args)
     reg._token()
@@ -4088,7 +4178,8 @@ def cmd_backlog(args):
         raise SystemExit(T("could not determine the Fedora release from this image's package "
                            "list, so no errata can be queried",
                            "无法从此镜像的软件包列表判断 Fedora 版本，因此无法查询勘误"))
-    bodhi = Bodhi(cache_dir=cache_dir, max_calls=args.max_bodhi)
+    bodhi = Bodhi(cache_dir=cache_dir, max_calls=args.max_bodhi,
+                  max_seconds=getattr(args, "bodhi_seconds", 0))
     # --backlog-candidates caps how many source packages get audited, as it does
     # for `check --audit`; --max-bodhi only caps the API calls spent on them.
     rows, cov = security_backlog(pkgs, rel, bodhi,
@@ -4103,11 +4194,10 @@ def cmd_backlog(args):
     for r in rows:
         print(f"  {r['name']:28} {r['have']:>26}  ->  {r['want']:<26} "
               f"{(r['severity'] or '?'):9} {r['alias']}")
-        if r["notes"]:
-            _lines = r["notes"].splitlines() or [""]
-            _rest = f" (+{len(_lines)-1} more line(s) / 另有 {len(_lines)-1} 行)" \
-                if len(_lines) > 1 else ""
-            print(f"  {'':28}{'':26}     {clip_text(_lines[0], 110)}{_rest}")
+        head, more = _note_head(r["notes"])
+        if head:
+            _rest = f" (+{more} more line(s) / 另有 {more} 行)" if more else ""
+            print(f"  {'':28}{'':26}     {clip_text(head, 110)}{_rest}")
     if not rows and (cov.get("rpmdb_complete") is False or cov.get("truncated")):
         print(T("  no match in the available records; coverage is incomplete",
                 "  在可读取的记录中没有匹配项；审计覆盖不完整"))
@@ -4122,8 +4212,8 @@ def cmd_backlog(args):
                 f"  ！{cov['failed']} 次 Bodhi 查询失败——这些软件包未被检查"))
     if cov.get("skipped_queries"):
         print(T(f"  ! {cov['skipped_queries']} source package(s) were not queried because "
-                "--max-bodhi ran out - those packages were NOT checked",
-                f"  ！{cov['skipped_queries']} 个源码包因 --max-bodhi 用尽而未被查询——"
+                "the Bodhi query budget ran out - those packages were NOT checked",
+                f"  ！{cov['skipped_queries']} 个源码包因 Bodhi 查询预算用尽而未被查询——"
                 "这些软件包未被检查"))
     if cov.get("truncated"):
         tr_en = clip_list(cov["truncated"], 8)
@@ -4187,9 +4277,8 @@ def list_tags(reg: Registry, max_pages: int = TAG_LIST_MAX_PAGES) -> list:
                 # Parsed inside the retry: a non-JSON or cut-short body (a proxy
                 # error page, a truncated 200) is as transient as a 5xx, and
                 # raising past the loop aborted the whole history scan instead.
-                # So is a read that dies mid-transfer: _read_all() reports it as a
-                # RegistryError, which is retried below. Any other SystemExit (the
-                # size cap) is no Exception and still ends the run.
+                # Read failures, including oversized documents, are reported as
+                # RegistryError and never silently turn into an empty page.
                 candidate = json.loads(body)
                 if not isinstance(candidate, dict) or "tags" not in candidate:
                     raise ValueError("tag list is not a JSON object with tags")
@@ -4510,15 +4599,7 @@ def tag_exists(reg: Registry, tag: str, warn: list | None = None) -> str | None:
             # Same fallback as index_digest()/resolve(): a registry that omits
             # the header still answered 200, and reporting None here made every
             # dated tag of such a registry read as "no build that day".
-            try:
-                body = reg._read_all(r, f"manifest {tag}")
-            except RegistryError:
-                raise
-            except SystemExit as e:
-                # _read_all() reports a failed read as a bare SystemExit, which
-                # would kill the run here; the contract of this function is that
-                # anything other than a 404 is "unknown" and goes through `warn`.
-                raise RegistryError(str(e.code)) from None
+            body = reg._read_all(r, f"manifest {tag}")
             return "sha256:" + hashlib.sha256(body).hexdigest()
     except RegistryError as e:
         if e.http_code == 404:
@@ -4727,6 +4808,40 @@ def _cache_write(path: str, data, what: str) -> None:
               f"  ！无法写入{what}缓存 {os.path.basename(path)}：{e}——不使用它继续"))
 
 
+def _pkglist_from_cache(data):
+    """Accept only the shape emitted by package_list(), not merely version 6."""
+    if not isinstance(data, dict) or data.get("cache_version") != PKGLIST_CACHE_VERSION:
+        return None
+    packages, collisions = data.get("packages"), data.get("collisions")
+    counters = [data.get(k) for k in ("headers_rejected", "fields_skipped")]
+    if (not isinstance(packages, dict) or not isinstance(collisions, list)
+            or any(type(n) is not int or n < 0 for n in counters)
+            or any(not isinstance(c, dict) or any(not isinstance(c.get(k), str) for k in
+                   ("name", "kept_arch", "kept_evr", "shadowed_arch", "shadowed_evr")) for c in collisions)):
+        return None
+    for name, entry in packages.items():
+        if not isinstance(entry, dict) or entry.get("name") != name:
+            return None
+        if any(not isinstance(entry.get(k), str) or not entry[k] for k in
+               ("name", "src", "arch", "version", "release", "evr", "nvr")):
+            return None
+        if any(not isinstance(entry.get(k), str) for k in ("vendor", "srpm", "epoch")):
+            return None
+        epoch = entry.get("source_epoch", "0")
+        if not isinstance(epoch, str) or re.fullmatch(r"[0-9]+", epoch) is None:
+            return None
+        changelog = entry.get("changelog")
+        if not isinstance(changelog, list) or any(
+                not isinstance(c, dict) or type(c.get("time")) is not int
+                or not isinstance(c.get("text"), str) or not isinstance(c.get("who"), str)
+                for c in changelog):
+            return None
+    pk = PackageTable(packages)
+    pk.collisions = collisions
+    pk.headers_rejected, pk.fields_skipped = counters
+    return pk
+
+
 def load_pkglist(reg, img, ref, cache_dir, notes):
     try:
         os.makedirs(cache_dir, exist_ok=True)
@@ -4734,22 +4849,20 @@ def load_pkglist(reg, img, ref, cache_dir, notes):
         log(T(f"  ! cannot use the cache directory {cache_dir}: {e} - continuing without a cache",
               f"  ！无法使用缓存目录 {cache_dir}：{e}——不使用缓存继续"))
     cf = os.path.join(cache_dir, f"pkglist-{img['digest'].replace(':', '')}.json")
-    if os.path.exists(cf) and os.path.getsize(cf) > 10_000:
-        try:
-            with open(cf, encoding="utf-8") as fh:
-                data = json.load(fh)
-            if (isinstance(data, dict) and isinstance(data.get("packages"), dict)
-                    and data.get("cache_version") == PKGLIST_CACHE_VERSION):
-                pk = PackageTable(data["packages"])
-                pk.collisions = list(data.get("collisions") or [])
-                pk.headers_rejected = int(data.get("headers_rejected") or 0)
-                pk.fields_skipped = int(data.get("fields_skipped") or 0)
-                notes.append(T(f"package list of `{ref}` served from `{cf}` (no download)",
-                               f"`{ref}` 的软件包列表来自缓存 `{cf}`（未下载）"))
-                return pk
-        except Exception:
-            log(T(f"  ! cache {cf} corrupted, refetching",
-                  f"  ！缓存 {cf} 已损坏，重新获取"))
+    try:
+        with open(cf, encoding="utf-8") as fh:
+            pk = _pkglist_from_cache(json.load(fh))
+        if pk is not None:
+            notes.append(T(f"package list of `{ref}` served from `{cf}` (no download)",
+                           f"`{ref}` 的软件包列表来自缓存 `{cf}`（未下载）"))
+            return pk
+        log(T(f"  ! cache {cf} outdated or invalid, refetching",
+              f"  ！缓存 {cf} 版本过旧或数据无效，重新获取"))
+    except FileNotFoundError:
+        pass  # no cache, or pruned before open
+    except (OSError, ValueError, RecursionError):
+        log(T(f"  ! cache {cf} unreadable, refetching",
+              f"  ！缓存 {cf} 无法读取，重新获取"))
     log(T(f"  fetching rpmdb chunk of {ref} ({img['digest'][:19]}…)",
           f"  正在获取 {ref} 的 rpmdb chunk（{img['digest'][:19]}…）"))
     pk = package_list(reg, img)
@@ -4923,7 +5036,8 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
                        "list, so no Bodhi errata were consulted",
                        "警告：无法从软件包列表判断 Fedora 版本，因此未查询任何 Bodhi 勘误"))
     bodhi = None if (args.no_bodhi or not rel) else Bodhi(cache_dir=cache_dir,
-                                                         max_calls=args.max_bodhi)
+                                                         max_calls=args.max_bodhi,
+                                                         max_seconds=getattr(args, "bodhi_seconds", 0))
     for c in classify_order(diff["changed"]):       # report order stays by name
         if c["dir"] == "arch-change":
             # An equal-EVR arch replacement is not a new version or .upgraded.
@@ -5003,7 +5117,8 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
                                               limit=getattr(args, "backlog_candidates", None))
     if bodhi is not None:
         bstate = {"failed": bodhi.failed, "skipped": bodhi.skipped,
-                  "truncated": sorted(bodhi.truncated_src)}
+                  "truncated": sorted(bodhi.truncated_src),
+                  "time_limited": getattr(bodhi, "time_limited", False)}
     elif args.no_bodhi:
         bstate = {"disabled": 1}
     else:
@@ -5033,7 +5148,7 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
             f"package, fewer if --max-bodhi ran out), so 'no security fix' for them is NOT "
             f"established",
             f"警告：以下软件包的勘误未能全部读取：{tr_zh}——它们的结论仅基于已读取的勘误"
-            f"（每包最多 {MAX_BODHI_PAGES * BODHI_PAGE_SIZE} 条；若 --max-bodhi 用尽则更少），"
+            f"（每包最多 {MAX_BODHI_PAGES * BODHI_PAGE_SIZE} 条；若查询预算用尽则更少），"
             f"因此对它们而言「没有安全修复」并未被证实"))
     return {"a": a, "b": b, "diff": diff, "layers": ld, "xc": xc, "verdict": v,
             "notes": notes, "release": rel, "backlog": backlog, "backlog_coverage": coverage,
@@ -5266,18 +5381,23 @@ def cmd_check(args):
     prev = None
     state_lost = False
     state_base_dig = None
+    state_base_index = None
     state_base_lbl = None
-    if (not ref_a and state.get("prev_digest") and state["prev_digest"] != cur["digest"]
-            and (state.get("digest") == cur["digest"] or state.get("last_verdict") == "unknown")):
-        # A force re-run or an incomplete check has not established a new
-        # comparison baseline. Keep the last usable one even if the tag has
-        # advanced again, so changes in the inconclusive interval are not lost.
-        state_base_dig = state["prev_digest"]
-        state_base_lbl = clip_text(state.get("prev_label") or state["prev_digest"],
-                                   BASELINE_LABEL_CAP, lang="both")
-    elif not ref_a and state.get("digest") and state["digest"] != cur["digest"]:
-        state_base_dig = state["digest"]
-        state_base_lbl = _state_label(state)
+    if not ref_a:
+        pending = state.get("last_verdict") == "unknown"
+        previous = state.get("prev_digest")
+        if pending or (state.get("digest") == cur["digest"] and previous != cur["digest"]):
+            # An inconclusive target is not a checkpoint. If the tag returned to
+            # the last usable baseline, compare it to itself, not to the failure.
+            state_base_dig = previous
+            state_base_index = state.get("prev_index_digest")
+            if previous:
+                state_base_lbl = clip_text(state.get("prev_label") or previous,
+                                            BASELINE_LABEL_CAP, lang="both")
+        elif state.get("digest") and state["digest"] != cur["digest"]:
+            state_base_dig = state["digest"]
+            state_base_index = state.get("index_digest")
+            state_base_lbl = _state_label(state)
     if state_base_dig:
         # Resolved here, before the baseline is settled: the image analysed last
         # time can be gone by now (registries prune old builds, and a schedule
@@ -5285,7 +5405,20 @@ def cmd_check(args):
         # to end the run before the state was rewritten, so every later run died
         # on the same digest until someone deleted the cache by hand.
         try:
-            prev = resolve(reg, state_base_dig)
+            state_base_index = _clean_sha256_header(state_base_index)
+            if state_base_dig == cur["digest"]:
+                prev = cur
+            elif state_base_index and state_base_index != state_base_dig:
+                try:
+                    saved_index = resolve(reg, state_base_index)
+                except RegistryError as e:
+                    if e.http_code != 404:
+                        raise
+                else:
+                    if saved_index["digest"] == state_base_dig:
+                        prev = saved_index
+            if prev is None:  # older checkpoints, or only the platform still exists
+                prev = resolve(reg, state_base_dig)
         except RegistryError as e:
             if e.http_code != 404:
                 raise
@@ -5328,10 +5461,11 @@ def cmd_check(args):
             pd = row.get("platform_digest") or row["digest"]
             if pd == cur["digest"]:
                 continue
-            candidate = read_candidate(pd)
-            if not candidate or not is_earlier_candidate(candidate):
+            candidate = read_candidate(row["digest"])
+            if (not candidate or candidate["digest"] != pd
+                    or not is_earlier_candidate(candidate)):
                 continue
-            ref_a, label_a, prev = pd, _state_label(dict(row, digest=pd)), candidate
+            ref_a, label_a, prev = row["digest"], _state_label(dict(row, digest=pd)), candidate
             break
     if not ref_a and cur_time:
         try:
@@ -5519,7 +5653,8 @@ def cmd_check(args):
                 "security_packages_count": len(v["security_pkgs"]),
                 "changed_count": v["changed_pkg_count"], "fail_reason": fail_reason})
     # A failed CI output is not a delivered analysis. Retry it on the next run.
-    save_state({"prev_digest": prev["digest"], "prev_label": label_a,
+    save_state({"prev_digest": prev["digest"], "prev_index_digest": prev.get("index_digest"),
+                "prev_label": label_a,
                 "last_verdict": v["level"]})
     if args.fail_on == "security" and v["level"] == "update-now":
         return 10
@@ -5561,6 +5696,9 @@ def add_common(p):
                         "不查询 Fedora Bodhi（仅按更新日志匹配 CVE）")
     p.add_argument("--max-bodhi", type=int, default=100,
                    help="cap on Bodhi API calls / Bodhi API 调用上限")
+    p.add_argument("--bodhi-seconds", type=int, default=0,
+                   help="elapsed time budget for new Bodhi requests (0 = unlimited) / "
+                        "启动 Bodhi 请求的时间预算（0 = 不限制）")
     p.add_argument("--backlog-candidates", type=int, default=None,
                    help="with --audit: how many candidate source packages the "
                         "'still behind' check may look at (default: all candidates; shares the --max-bodhi "
@@ -5582,6 +5720,34 @@ def add_common(p):
     p.add_argument("--require-cosign", action="store_true",
                    help="fail if cosign verification fails or cosign binary missing / "
                         "cosign 校验失败或缺少 cosign 时直接失败退出")
+
+
+def _check_output_paths(parser, args):
+    """Fail before any network work if two outputs can overwrite each other."""
+    paths = {}
+    if args.cmd == "check":
+        report = args.report or "report.md"
+        paths = {"--report": report, "report JSON": report + ".json",
+                 "--state": args.state or os.path.expanduser("~/.cache/sbwatch/state.json"),
+                 "GITHUB_OUTPUT": os.environ.get("GITHUB_OUTPUT")}
+    elif args.cmd == "diff":
+        paths = {"--markdown": args.markdown, "--json-out": args.json_out}
+    seen = {}
+    for option, path in paths.items():
+        if not path:
+            continue
+        canonical = os.path.realpath(path)
+        try:
+            st = os.stat(path)
+            keys = (canonical, (st.st_dev, st.st_ino))
+        except OSError:
+            keys = (canonical,)
+        for key in keys:
+            if key in seen:
+                other = seen[key]
+                parser.error(T(f"{option} and {other} must use different output paths",
+                               f"{option} 与 {other} 必须使用不同的输出路径"))
+            seen[key] = option
 
 
 def main(argv=None):
@@ -5680,6 +5846,8 @@ def main(argv=None):
     if args.cmd == "history" and args.at_digest is not None:
         if not _clean_sha256_header(args.at_digest) or args.at_digest != args.at_digest.strip():
             ap.error(T("--at-digest requires sha256:<64 hex>", "--at-digest 需要 sha256:<64 位十六进制>"))
+    if args.bodhi_seconds < 0:
+        ap.error(T("--bodhi-seconds cannot be negative", "--bodhi-seconds 不能为负数"))
     if args.backlog_candidates is not None and args.backlog_candidates < 1:
         ap.error(T("--backlog-candidates must be positive", "--backlog-candidates 必须为正数"))
     if args.cmd == "backlog" and args.no_bodhi:
@@ -5688,6 +5856,7 @@ def main(argv=None):
     if args.require_cosign and not args.cosign_pub:
         ap.error(T("--require-cosign requires --cosign-pub",
                    "--require-cosign 必须同时提供 --cosign-pub"))
+    _check_output_paths(ap, args)
     return args.func(args)
 
 

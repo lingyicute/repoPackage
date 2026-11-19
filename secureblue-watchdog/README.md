@@ -216,7 +216,7 @@ python3 sbwatch.py backlog latest --max-bodhi 80
 | level | 含义 | 建议 |
 |-------|------|------|
 | `update-now` | 含 CVE / security erratum，或 critical/high severity，**或 secureblue 会弹重大通知** | 立刻 `rpm-ostree upgrade && systemctl reboot` |
-| `consider` | kernel 变了 / 安全敏感包 bump / silent rebuild 含重要包 | 看下载量决定 |
+| `consider` | kernel 变了 / 安全敏感包 bump / 安全敏感包版本未变但 chunk 变了 | 看下载量决定 |
 | `skip` | 常规 churn，无 CVE，无 security erratum | 可跳过 |
 | `no-change` | **包集合与版本未变**（已读取版本或确认 rpmdb 摘要相同），不保证包文件内容相同；安全敏感包的同版本 chunk 变化仍判为 `consider`。不属于任何软件包的文件（`chunkah/unclaimed`，secureblue 自己的配置就在其中）不在检查范围，变了会在 headline 里注明 | 就软件包而言可跳过 |
 | `no-update` | registry digest 未变 | 无新构建 |
@@ -242,10 +242,12 @@ Bodhi 的多源码包勘误（例如依赖库更新与批量重建）中的 CVE 
   紧随其后的小节会列出**全部**编号；`--json-out` 与 GITHUB_OUTPUT 始终是完整数据（另附计数）
 - 下载量：`download_bytes / total_size_b / download_pct`
 - `secureblue_notification`：桌面会弹哪个通知 + 触发原因（见上文）
-- `silent_rebuilds`：版本没变但 chunk 变了（工具链/macro/文件重排）
+- `silent_rebuilds`：版本没变但 chunk 变了。Fedora 不会以同一版本重建软件包，所以多半是包名下
+  在镜像构建时生成的文件变了（实测 `glibc` 的 chunk 仅 `etc/ld.so.cache` 不同）；secureblue 自有的包也可能是重建
 - `downgrades`：这次更新把某个包**降级**了（真证据，会抬高级别；报告点名「回退」的是**被离开的
   那个构建**的已发布安全勘误，而不是降级目标自己的勘误）；`cves_dropped`：
-  新版更新日志不再提到的 CVE 编号（通常是日志被编辑，只作提示、不再抬高级别）
+  新版更新日志不再提到的 CVE 编号（通常是日志被编辑，只作提示、不再抬高级别）；`cves_reverted`：
+  其中出自**被降级的包**的编号，报告改用警告指出降级很可能回退了这些修复
 - `backlog`：候选池内，镜像源码构建与已发布 stable 安全勘误之间的差距；版本保留已知 epoch，
   JSON 的 `advisories` 列出各条证据。汇总严重度取最高值，展示的勘误编号与说明来自最新匹配构建。
 - `passed_over`：被这次更新**越过**的中间构建所带的 stable 安全勘误（旧 < 该构建 ≤ 新，同一 Fedora 版本内）。
@@ -376,8 +378,11 @@ python3 tests/run_offline.py
 
 - `test_redirect_schemes.py` / `test_bodhi_size_cap.py` / `test_rpmdb_basename_match.py` / `test_null_bodhi_alias.py` / `test_downgrade_target_erratum.py` / `test_mixed_direction_group.py` / `test_silent_rebuild_moved_src.py` / `test_fedora_release_selection.py` / `test_stream_major_history.py` / `test_negative_days.py` / `test_markdown_table_escape.py`：拒绝 `file:`/`ftp:` 重定向与含路径穿越或查询符的引用、统一小写 registry 主机名、兼容大小写/多方案 Bearer 头并剥离 realm 片段、校验 manifest 层大小/摘要/有限浮点数、限制 Bodhi 响应体积并忽略非 RPM 勘误与标记分页中途失败、精确匹配 `rpmdb.sqlite` 基名与多级/多条 tar 链接、拒绝标量头部标签返回数组、补齐 `CVE_RE` 前导边界、修正独立版本子包的 SRPM 候选与 Copr `.secureblue.N` 内核越过勘误、在 backlog 中跳过第三方 Copr 分支包（如 `bubblewrap`）、兼容空勘误编号、防止回滚因旧构建勘误抬升为 `update-now` 并保留同源码组升级子包的 CVE、锁定主版本分支标签（如 `44`）的历史与基线、兼容 Python 3.10 纳秒时间戳、强制 JSON UTF-8 与禁 `NaN`、转义 Markdown 表格管道符。
 
+- `test_backlog_note_lines.py` / `test_evidence_before_hint.py` / `test_non_security_erratum_evidence.py` / `test_downgrade_reverted_cves.py` / `test_rollback_headline.py` / `test_rollback_reverted_errata.py` / `test_same_version_chunk_wording.py`：backlog 备注末尾的空行不计作「另有 N 行」；安全表依据列先列勘误、「不再提及」提示放最后；因高严重度或含 CVE 而判为安全相关的非 security 类勘误在依据列写明；被降级包丢失的 CVE 编号列入 `cves_reverted` 并按回退警告呈现；回滚不再以「常规更新」开头，headline 点名被回退的安全勘误（`errata_reverted`）；版本不变而 chunk 变化不再称作「重建」。
+
 其中 A6 的向量取自 rpm 上游 `tests/rpmvercmp.at`，已抓取为
-`tests/rpmvercmp_vectors.json`，因此**离线也能验证**与 rpm 本体的一致性。
+`tests/rpmvercmp_vectors.json`，因此**离线也能验证**与 rpm 本体的一致性
+（共 103 条：上游实际运行的 91 条，以及它以注释形式保留、用来记录既有怪异行为的 12 条）。
 
 CI 中由 `test` 作业运行；`watch` 作业**不**依赖 `test`（两者并行）——测试失败
 不会阻塞每小时的监控，但会在 Tests 作业中红牌示警。
@@ -387,7 +392,7 @@ CI 中由 `test` 作业运行；`watch` 作业**不**依赖 `test`（两者并�
 仓库自带 `.github/workflows/sbwatch.yml`。其内置计划是每小时 UTC 第 20 分钟（`20 * * * *`）；外部调度器也可通过 `workflow_dispatch` 额外触发，实际频率取决于外部配置：
 
 - cache `~/.cache/sbwatch` (pkglist + Bodhi + state.json)，按 image+arch 分命名空间，
-  并有一个 prune 步骤只保留最近 7 份（否则 `state.json` 会被 LRU 挤掉，`check` 就失去基线）；
+  其他 `--image` 拼写彼此隔离；prune 仅清理当前 Git 引用下本命名空间的缓存并保留最新创建的 7 份（防止 `state.json` 被 LRU 挤掉）；
   结论为 `no-update` 的运行不再重复保存缓存（该路径不往缓存目录写任何东西）
 - `check` 分析完成后会删除超过 14 天的 pkglist 缓存文件（刚对比的两个镜像除外；
   `--prune-days N` 调整，`0` 关闭）：每个分析过的构建会留下约 11 MB 的 pkglist，
@@ -397,6 +402,8 @@ CI 中由 `test` 作业运行；`watch` 作业**不**依赖 `test`（两者并�
 - `sbwatch.py check` → `report.md` + `report.md.json` → summary + artifact
   （workflow 不传 `--exact` / `--no-fast`，所以走默认值：`--exact 1` + `--fast` 开启，
   见上文「`check --fast` 与 manifest-only」）
+- CI 使用 `--bodhi-seconds 600`，给报表和投递留出时间。此预算限制启动新的 Bodhi 请求，
+  与 `--max-bodhi` 同时生效；仍读取可用缓存，未查完整的来源会披露。CLI 默认不设时间预算。
 - 若 verdict 是 `update-now`/`consider`（`skip` 仅在 `POST_SKIP_VERDICT=true` 时），会评论到
   标题恰为 `secureblue update watch` 的 sticky issue（GitHub 评论上限 65536 字符，
   超长报告会被截断并注明，完整报告见 run summary / artifact）
@@ -446,7 +453,9 @@ chronological reordering. `watched_digest` and `watched_version` identify the
 watched tag independently. The state tracks that tag, and the Actions output
 has separate `digest` (comparison target) and `watched_digest` keys.
 `from_index_digest`, `index_digest` and `watched_index_digest` record the top-level
-references resolved by the run (a platform digest if the input named it directly).
+references resolved by the run. Automatic baselines retain the index when it is
+still available and maps to the saved platform; otherwise the resolved platform
+manifest is the top-level reference.
 Both `diff` and `check` exports include added and removed packages, old/new
 architectures, available advisory evidence, and any RPM inventory issues.
 

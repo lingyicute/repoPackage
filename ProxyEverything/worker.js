@@ -98,9 +98,20 @@ function stripHopByHop(headers) {
  * 原样保留又会跳出代理，因此按目标地址改写后写回。
  */
 function stripResponseHeaders(headers, request, baseUrl) {
-	const refresh = request && baseUrl ? headers.get('refresh') : null;
+	const refresh = headers.get('refresh');
 	for (const h of STRIP_RESPONSE_HEADERS) headers.delete(h);
-	if (refresh) headers.set('Refresh', rewriteRefreshContent(refresh, baseUrl, new URL(request.url).origin));
+	if (!request || !baseUrl) return;
+	const origin = new URL(request.url).origin;
+	if (refresh) headers.set('Refresh', rewriteRefreshContent(refresh, baseUrl, origin));
+	// Location 也用于 201 等非重定向响应；调用方应看到代理资源地址。
+	const location = headers.get('Location');
+	if (location) {
+		try {
+			const target = new URL(location, baseUrl);
+			if (!['http:', 'https:'].includes(target.protocol)) throw new Error();
+			headers.set('Location', rewriteUrl(target.href, baseUrl, origin));
+		} catch { headers.delete('Location'); }
+	}
 }
 
 function stripTransformedHeaders(headers) {
@@ -572,12 +583,25 @@ function cookieNamespace(targetUrl) {
 	return COOKIE_PREFIX + key.length.toString(36) + '_' + key + '_';
 }
 
+// 浏览器依据名字开头执行前缀规则，命名空间必须放在保留前缀之后。
+function reservedCookiePrefix(name) {
+	return /^__(?:Host-Http|Host|Http|Secure)-/i.exec(name)?.[0] || '';
+}
+
+function originalCookieName(stored, ns) {
+	const prefix = reservedCookiePrefix(stored);
+	if (!stored.startsWith(ns, prefix.length)) return null;
+	const name = prefix + stored.slice(prefix.length + ns.length);
+	// 不接受旧版隐藏了保留前缀的名字，浏览器写入它们时没有验证相应约束。
+	return reservedCookiePrefix(name) === prefix ? name : null;
+}
+
 /**
  * 改写上游 Set-Cookie：加命名空间前缀、强制 Path=/、去掉 Domain，
  * 确保 Secure / SameSite=None / Partitioned 不会被降级。
  * 返回 null 表示这条 cookie 无效、应丢弃。
  */
-function scopeSetCookie(c, ns, workerIsHttps) {
+function scopeSetCookie(c, ns, workerIsHttps, fromScript = false) {
 	const parts = String(c).split(';');
 	const head = parts[0];
 	const eq = head.indexOf('=');
@@ -586,7 +610,9 @@ function scopeSetCookie(c, ns, workerIsHttps) {
 	if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/i.test(name)) return null;
 	const value = head.slice(eq + 1).trim();
 
-	const out = [`${ns}${name}=${value}`];
+	const prefix = reservedCookiePrefix(name);
+	const out = [`${prefix}${ns}${name.slice(prefix.length)}=${value}`];
+	let path = null, hasDomain = false, hasHttpOnly = false;
 	let sameSiteNone = false;
 	let hasSecure = false;
 	let hasPartitioned = false;
@@ -594,9 +620,14 @@ function scopeSetCookie(c, ns, workerIsHttps) {
 	for (const raw of parts.slice(1)) {
 		const part = raw.trim();
 		if (!part) continue;
-		const attr = part.slice(0, part.indexOf('=') === -1 ? undefined : part.indexOf('=')).trim().toLowerCase();
-		// Domain / Path 一律由我们接管
-		if (attr === 'domain' || attr === 'path') continue;
+		const split = part.indexOf('=');
+		const attr = part.slice(0, split < 0 ? undefined : split).trim().toLowerCase();
+		if (attr === 'domain') { hasDomain = true; continue; }
+		if (attr === 'path') { path = split < 0 ? '' : part.slice(split + 1).trim(); continue; }
+		if (attr === 'httponly') {
+			if (fromScript) return null;
+			hasHttpOnly = true;
+		}
 		if (attr === 'secure') {
 			if (!workerIsHttps) return null;
 			if (!hasSecure) { out.push('Secure'); hasSecure = true; }
@@ -624,6 +655,9 @@ function scopeSetCookie(c, ns, workerIsHttps) {
 		out.push(part);
 	}
 
+	if (prefix && !hasSecure) return null;
+	if (/^__host-/i.test(prefix) && (hasDomain || path !== '/')) return null;
+	if (/http-$/i.test(prefix) && !hasHttpOnly) return null;
 	out.push('Path=/');
 	// SameSite=None / Partitioned 必须伴随 Secure，否则现代浏览器拒绝写入
 	if (sameSiteNone && workerIsHttps && !hasSecure) out.push('Secure');
@@ -647,9 +681,8 @@ function parseCookieHeader(header) {
  */
 function scopeRequestCookie(header, ns) {
 	const mine = parseCookieHeader(header)
-		.filter(([n]) => n.startsWith(ns))
-		.map(([n, v]) => [n.slice(ns.length), v])
-		.filter(([n]) => /^[!#$%&'*+.^_`|~0-9a-z-]+$/i.test(n));
+		.map(([n, v]) => [originalCookieName(n, ns), v])
+		.filter(([n]) => n && /^[!#$%&'*+.^_`|~0-9a-z-]+$/i.test(n));
 	const kept = [];
 	let len = 0;
 	for (const [n, v] of mine) {
@@ -922,11 +955,27 @@ function contentCoding(headers) {
 	return headers.get('Content-Encoding')?.trim().toLowerCase() || 'identity';
 }
 
+// Cache-Control 扩展可含带引号的逗号；引号值中的文本不是独立指令。
+function hasNoTransform(value) {
+	if (!value || !/no-transform/i.test(value)) return false;
+	let start = 0, quoted = false;
+	for (let i = 0; i <= value.length; i++) {
+		const ch = value[i];
+		if (quoted && ch === '\\') { i++; continue; }
+		if (ch === '"') quoted = !quoted;
+		else if (!quoted && (ch === ',' || i === value.length)) {
+			if (value.slice(start, i).trim().toLowerCase() === 'no-transform') return true;
+			start = i + 1;
+		}
+	}
+	return false;
+}
+
 function transformKind(headers, request) {
 	// Workerd 解码 HTTP 回源的 gzip/br；其它编码不假定能解开。
 	if (!['identity', 'gzip', 'br'].includes(contentCoding(headers))) return null;
 	if (/^\s*attachment\s*(?:;|$)/i.test(headers.get('Content-Disposition') || '') ||
-		/(?:^|,)\s*no-transform\s*(?:,|$)/i.test(headers.get('Cache-Control') || '')) return null;
+		hasNoTransform(headers.get('Cache-Control'))) return null;
 	const mime = mimeType(headers.get('Content-Type'));
 	if (mime === 'text/html' || mime === 'application/xhtml+xml') return 'html';
 	if (mime === 'text/css') return 'css';
@@ -941,15 +990,7 @@ function transformKind(headers, request) {
 function buildResponse(upstream, request, ck, baseUrl) {
 	const resp = new Response(upstream.body, upstream);
 	stripResponseHeaders(resp.headers, request, baseUrl);
-	stripHopByHop(resp.headers);
-	if (ENABLE_PROXY_NOINDEX) {
-		resp.headers.set('X-Robots-Tag', 'noindex, nofollow');
-	}
-	applyCors(resp.headers, request);
-	// Set-Cookie 添加来源命名空间，避免回源时意外混用
-	applyCachePolicy(resp, request, ck);
-	if (ck) rescopeSetCookies(resp.headers, ck.ns, ck.isHttps);
-	return resp;
+	return applyCommon(resp, request, ck);
 }
 
 function isCacheableMethod(m) { return m === 'GET' || m === 'HEAD'; }
@@ -961,15 +1002,19 @@ function isCacheableMethod(m) { return m === 'GET' || m === 'HEAD'; }
  */
 function applyCachePolicy(response, request, ck) {
 	// 不把匿名缓存条目用于后来带凭证的请求；不能只在带凭证的响应上设置 no-store。
+	if (ck?.varyOnReferer) addVary(response.headers, 'Referer');
 	addVary(response.headers, 'Cookie');
 	addVary(response.headers, 'Authorization');
-	const mime = mimeType(response.headers.get('Content-Type'));
-	if (mime !== 'application/manifest+json' && isJsonMime(mime)) addVary(response.headers, 'Sec-Fetch-Dest');
+	if (request && transformKind(response.headers, request)) addVary(response.headers, 'Cache-Control');
+	// 缓存也必须区分会被入口拒绝的 Service Worker 脚本请求。
+	addVary(response.headers, 'Service-Worker');
+	addVary(response.headers, 'Sec-Fetch-Dest');
 	const hasCookie = Boolean(request) && (ck ? ck.hasCookie : request.headers.has('cookie'));
 	if (response.status >= 500 || response.headers.has('set-cookie') ||
 		(request && (!isCacheableMethod(request.method) || hasCookie ||
 		request.headers.has('authorization')))) {
-		response.headers.set('Cache-Control', 'no-store');
+		const policy = hasNoTransform(response.headers.get('Cache-Control')) ? 'no-store, no-transform' : 'no-store';
+		response.headers.set('Cache-Control', policy);
 		response.headers.delete('cdn-cache-control');
 		response.headers.delete('cloudflare-cdn-cache-control');
 		response.headers.delete('surrogate-control');
@@ -1047,7 +1092,8 @@ function rp(v){
           return WO+pu.pathname+urlSuffix(pu);
         }
         if(pu.protocol==='ws:'||pu.protocol==='wss:')forcedWs=pu.protocol;
-        s=pu.pathname+urlSuffix(pu);
+        // 用完整来源拼接：已解析路径开头的双斜线不是新的主机名。
+        s=new URL(base()).origin+pu.pathname+urlSuffix(pu);
       }
     }
   }catch(e){}
@@ -1168,7 +1214,18 @@ if(window.WebSocket){
   window.WebSocket=WS;
 }
 /* ---- history / window.open / location.assign ---- */
-function wrapHistory(fn){return function(st,t,u){try{if(u!=null)arguments[2]=rp(u);}catch(e){}return fn.apply(this,arguments);};}
+function wrapHistory(fn){return function(st,t,u){
+  if(u!=null&&u!==''){
+    var next=rwNavigation(String(u),true);
+    var link=new URL(next,location.href);
+    if(isSelfHost(link)&&isProxiedPath(link.pathname)){
+      var dest=new URL(decodeProxyPath(link.pathname));
+      if(dest.origin!==new URL(currentTarget()).origin)throw new DOMException('History URL has a different target origin','SecurityError');
+    }
+    arguments[2]=next;
+  }
+  return fn.apply(this,arguments);
+};}
 if(history.pushState)history.pushState=wrapHistory(history.pushState);
 if(history.replaceState)history.replaceState=wrapHistory(history.replaceState);
 var oWo=window.open;
@@ -1243,6 +1300,7 @@ try{
   }
 }catch(e){}
 /* setAttribute / setAttributeNS 兜底（src/srcset/imagesrcset/action/formaction/poster/data/href/xlink:href/ping） */
+var XLINK_NS='http://www.w3.org/1999/xlink';
 var ATTRS={src:0,srcset:1,imagesrcset:1,action:0,formaction:0,poster:0,data:0,href:0,'xlink:href':0,ping:2};
 var HREF_TAGS={A:1,LINK:1,AREA:1,SCRIPT:1,IMAGE:1,USE:1,FEIMAGE:1,MPATH:1,TEXTPATH:1,PATTERN:1,FILTER:1,LINEARGRADIENT:1,RADIALGRADIENT:1};
 /* 与服务端 HANDLERS 一致：data/action/formaction 等是常见的业务属性名，只在会据此加载资源的元素上改写 */
@@ -1308,12 +1366,13 @@ if(window.Element){
   };
   var oSANS=Element.prototype.setAttributeNS;
   if(oSANS)Element.prototype.setAttributeNS=function(ns,n,v){
+    if(typeof n!=='string')return oSANS.apply(this,arguments);
+    if(ns===XLINK_NS){
+      if(n.slice(n.lastIndexOf(':')+1)!=='href')return oSANS.apply(this,arguments);
+    }else if((ns!=null&&ns!=='')||n.indexOf(':')>=0)return oSANS.apply(this,arguments);
     try{
-      if(typeof n==='string'&&v!=null){
-        var ln=n.toLowerCase();
-        var colon=ln.indexOf(':');
-        var prefix=colon>=0?ln.slice(0,colon):'';
-        var local=colon>=0?(prefix==='xlink'||ns?ln.slice(colon+1):ln):ln;
+      if(v!=null){
+        var local=ns===XLINK_NS?'xlink:href':n;
         var sv=v instanceof URL?v.href:String(v);
         var tag=normTag(this);
         if(local==='integrity'&&(tag==='SCRIPT'||tag==='LINK')){
@@ -1349,12 +1408,8 @@ if(window.Element){
   };
   if(oRANS)Element.prototype.removeAttributeNS=function(ns,n){
     try{
-      if(typeof n==='string'){
-        var ln=n.toLowerCase();
-        var local=ln.indexOf(':')>=0?ln.slice(ln.indexOf(':')+1):ln;
-        if(local==='href'&&normTag(this)==='BASE'&&oRA){
-          oRA.call(this,'data-pe-base');
-        }
+      if((ns==null||ns==='')&&n==='href'&&normTag(this)==='BASE'&&oRA){
+        oRA.call(this,'data-pe-base');
       }
     }catch(e){}
     return oRANS.apply(this,arguments);
@@ -1364,6 +1419,8 @@ if(window.Element){
    服务端下发的 cookie 名带 CK 前缀；页面脚本应当只看到原始名字。 */
 try{
 if(CK){
+  ${reservedCookiePrefix.toString()}
+  ${originalCookieName.toString()}
   var scopeCookie=${scopeSetCookie.toString()};
   var CD=Object.getOwnPropertyDescriptor(Document.prototype,'cookie')||
          Object.getOwnPropertyDescriptor(HTMLDocument.prototype,'cookie');
@@ -1376,15 +1433,14 @@ if(CK){
         var parts=raw.split(';');
         for(var i=0;i<parts.length;i++){
           var p=parts[i].replace(/^\\s+/,'');
-          if(p.indexOf(CK)===0){
-            var rest=p.substring(CK.length);
-            if(rest.indexOf('=')>0)out.push(rest);
-          }
+          var eq=p.indexOf('=');
+          var name=eq<0?null:originalCookieName(p.slice(0,eq),CK);
+          if(name)out.push(name+p.slice(eq));
         }
         return out.join('; ');
       },
       set:function(v){
-        var scoped=scopeCookie(v,CK,location.protocol==='https:'&&new URL(currentTarget()).protocol==='https:');
+        var scoped=scopeCookie(v,CK,location.protocol==='https:'&&new URL(currentTarget()).protocol==='https:',true);
         if(scoped===null)return;
         return CD.set.call(this,scoped);
       }
@@ -1393,7 +1449,6 @@ if(CK){
 }
 }catch(e){}
 /* ---- 链接点击与表单提交兜底（覆盖 innerHTML 动态插入节点与编程式 submit） ---- */
-var XLINK_NS='http://www.w3.org/1999/xlink';
 function rwLinkEv(ev){
   try{
     var t=ev.target;
@@ -2091,19 +2146,23 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 // CSS / JS / SVG / JSON / Manifest 文本重写（整体缓冲）
 // ============================================================
 
+// CSS Syntax §3.2 指定字节签名而非一般 at-rule；含终止符最多 1024 字节。
+const CSS_CHARSET_SIGNATURE = /^@charset "([\x00-\x21\x23-\x7f]{0,1012})";/;
+
 /**
  * 限制整体缓冲的原始输入字节量；不信任 Content-Length（可缺失/虚报）。
  * 超过 2 MiB 上限时把已读分片与剩余流无缝拼接，原样透传正文及其表示元数据。
  */
 function sniffTextCharset(bytes, kind, declaredCharset = null) {
-	const head = bytes.subarray(0, 256);
+	const head = bytes.subarray(0, kind === 'css' ? 1024 : 256);
 	if (head[0] === 0xff && head[1] === 0xfe) return 'utf-16le';
 	if (head[0] === 0xfe && head[1] === 0xff) return 'utf-16be';
 	if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) return 'utf-8';
 	if (declaredCharset) return declaredCharset;
 	if (kind === 'css') {
-		const m = /^@charset\s+(?:"([^"]{1,64})"|'([^']{1,64})')\s*;/i.exec(new TextDecoder().decode(head));
-		if (m) return normalizeCharsetLabel(m[1] || m[2], true) || 'utf-8';
+		const m = CSS_CHARSET_SIGNATURE.exec(new TextDecoder().decode(head));
+		const label = m && normalizeCharsetLabel(m[1]);
+		if (label && !/^utf-16(?:le|be)$/.test(label)) return label;
 	}
 	if (kind === 'svg') {
 		return utf16XmlSignature(head) || xmlDeclaredCharset(new TextDecoder().decode(head)) || 'utf-8';
@@ -2183,7 +2242,7 @@ async function transformText(response, baseUrl, workerOrigin, kind, request, dec
 		let text = rawText;
 		try {
 			if (kind === 'css') {
-				text = rewriteCss(text, baseUrl, workerOrigin).replace(/^@charset\s+(?:"[^"]*"|'[^']*')\s*;/i, '@charset "UTF-8";');
+				text = rewriteCss(text, baseUrl, workerOrigin).replace(CSS_CHARSET_SIGNATURE, '@charset "UTF-8";');
 			} else if (kind === 'js') {
 				text = rewriteJsModuleSpecifiers(text, baseUrl, workerOrigin);
 			} else if (kind === 'svg') {
@@ -2205,10 +2264,6 @@ async function transformText(response, baseUrl, workerOrigin, kind, request, dec
 		// 已读取的是解压后的流；重新压缩不保证得到同样的上游字节。
 		for (const name of REPRESENTATION_HEADERS) resp.headers.delete(name);
 	}
-	if (ENABLE_PROXY_NOINDEX) {
-		resp.headers.set('X-Robots-Tag', 'noindex, nofollow');
-	}
-	applyCors(resp.headers, request);
 	return resp;
 }
 
@@ -2232,6 +2287,21 @@ return parse;
 })();
 // END VENDORED ES MODULE LEXER
 
+/** HTML 的 URL-like module specifier：只有 /、./、../ 开头才带基址解析。 */
+function rewriteModuleSpecifier(specifier, baseUrl, workerOrigin) {
+	// 为保持幂等，已是代理路径的说明符不能按目标站点路径再次包装。
+	if (isProxiedPath(specifier)) return rewriteUrl(specifier, baseUrl, workerOrigin);
+	try {
+		const resolved = /^(?:\/|\.\.?\/)/.test(specifier)
+			? new URL(specifier, baseUrl) : new URL(specifier);
+		if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return specifier;
+		return rewriteUrl(resolved.href, baseUrl, workerOrigin);
+	} catch {
+		// 裸说明符和无法解析的 URL 交给浏览器及 import map 原样处理。
+		return specifier;
+	}
+}
+
 /**
  * 只改写真正的模块说明符，保留注释、字符串、正则及 import attributes。
  * lexer 的 n 已解码 JS 转义；重新序列化整段字符串，不能直接拼回原引号。
@@ -2247,9 +2317,8 @@ function rewriteJsModuleSpecifiers(js, baseUrl, workerOrigin) {
 	let cursor = 0;
 	for (const item of imports) {
 		const spec = item.n;
-		if (typeof spec !== 'string' ||
-			!(/^(?:\.\.?\/|\/|https?:\/\/)/i.test(spec))) continue;
-		const rewritten = rewriteUrl(spec, baseUrl, workerOrigin);
+		if (typeof spec !== 'string') continue;
+		const rewritten = rewriteModuleSpecifier(spec, baseUrl, workerOrigin);
 		if (rewritten === spec) continue;
 		// 静态说明符 s/e 不含引号；动态说明符 s/e 包含整个字面量。
 		const start = item.d === -1 ? item.s - 1 : item.s;
@@ -2272,18 +2341,13 @@ function rewriteImportMap(text, baseUrl, workerOrigin) {
 	let map;
 	try { map = JSON.parse(text); } catch { return text; }
 	if (!map || typeof map !== 'object' || Array.isArray(map)) return text;
-	const isUrlLike = s => /^(?:\.\.?\/|\/|[a-z][a-z0-9+.-]*:)/i.test(s);
 	const rewriteSpecMap = (specMap) => {
 		if (!specMap || typeof specMap !== 'object' || Array.isArray(specMap)) return specMap;
 		// 模块名是任意 JSON 键，__proto__ 也必须作为普通属性保留。
 		const next = Object.create(null);
 		for (const [k, v] of Object.entries(specMap)) {
-			const rwKey = /^(?:\.\.?\/|\/|https?:\/\/)/i.test(k)
-				? rewriteUrl(k, baseUrl, workerOrigin)
-				: k;
-			next[rwKey] = typeof v === 'string' && isUrlLike(v)
-				? rewriteUrl(v, baseUrl, workerOrigin)
-				: v;
+			const rwKey = rewriteModuleSpecifier(k, baseUrl, workerOrigin);
+			next[rwKey] = typeof v === 'string' ? rewriteModuleSpecifier(v, baseUrl, workerOrigin) : v;
 		}
 		return next;
 	};
@@ -2412,10 +2476,17 @@ function rewriteXmlText(body, transform) {
 	};
 	let out = '';
 	let last = 0;
-	for (const cm of body.matchAll(/<!\[CDATA\[([\s\S]*?)\]\]>|<!--[\s\S]*?-->/g)) {
-		out += rewritePart(body.slice(last, cm.index));
-		out += cm[1] === undefined ? cm[0] : `<![CDATA[${transform(cm[1]).replace(/]]>/g, ']]]]><![CDATA[>')}]]>`;
-		last = cm.index + cm[0].length;
+	const opener = /<!\[CDATA\[|<!--/g;
+	let match;
+	while ((match = opener.exec(body))) {
+		const cdata = match[0] === '<![CDATA[';
+		const end = body.indexOf(cdata ? ']]>' : '-->', opener.lastIndex);
+		if (end < 0) return body;
+		out += rewritePart(body.slice(last, match.index));
+		out += cdata
+			? `<![CDATA[${transform(body.slice(opener.lastIndex, end)).replace(/]]>/g, ']]]]><![CDATA[>')}]]>`
+			: body.slice(match.index, end + 3);
+		last = opener.lastIndex = end + 3;
 	}
 	return out + rewritePart(body.slice(last));
 }
@@ -2576,7 +2647,10 @@ function targetPolicyError(targetUrl, env) {
 	try {
 		if (typeof configured !== 'string' || !configured.trim()) throw new Error();
 		const origins = configured.split(',').map(value => {
-			const u = new URL(value.trim());
+			const entry = value.trim();
+			// 先验证来源语法：URL 解析会消除点路径、反斜线、空查询串等输入错误。
+			if (!/^https?:\/\/[^\s\\/@?#*\x00-\x1f\x7f]+\/?$/i.test(entry)) throw new Error();
+			const u = new URL(entry);
 			if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password ||
 				u.pathname !== '/' || u.search || u.hash) throw new Error();
 			u.hostname = normalizeHostname(u.hostname);
@@ -2685,7 +2759,7 @@ async function handleWebSocket(request, targetUrl, ck, workerOrigin, env) {
 	headers.set('Upgrade', 'websocket');
 
 	// 自动跟随重定向可能把手工转发的 Cookie 带到另一个站点。
-	const resp = await fetch(upstreamUrl.href, { headers, redirect: 'manual' });
+	const resp = await fetch(upstreamUrl.href, { headers, redirect: 'manual', signal: request.signal });
 	const upstream = resp.webSocket;
 	if (!upstream) {
 		if (resp.body) resp.body.cancel().catch(() => {});
@@ -2762,7 +2836,8 @@ Disallow: /
 
 		// ---- 漏网的站内相对请求：innerHTML、location.href = '/x'、Worker 内请求、默认 /favicon.ico 等未经改写的地址
 		//      会直接落到代理域。路径不带协议而 Referer 是代理页面时，按来源页的目标站点还原并重定向 ----
-		if (!isProxiedPath(url.pathname) && !/^(?:https?|wss?):\/\//i.test(decodeProxyPath(url.pathname).trim().replace(/^\/+/, ''))) {
+		const usesRefererRoute = !isProxiedPath(url.pathname) && !/^(?:https?|wss?):\/\//i.test(decodeProxyPath(url.pathname).trim().replace(/^\/+/, ''));
+		if (usesRefererRoute) {
 			const refTarget = refererTarget(request, workerOrigin, env);
 			if (refTarget) {
 				const leaked = new URL(refTarget.origin + url.pathname + urlSuffix(url).split('#', 1)[0]);
@@ -2775,7 +2850,7 @@ Disallow: /
 
 		// ---- favicon 等杂项，避免被当成目标域名 ----
 		if (/^\/(favicon\.ico|sitemap\.xml|apple-touch-icon.*\.png|\.well-known\/.*)$/i.test(url.pathname)) {
-			return new Response(null, { status: 404 });
+			return new Response(null, { status: 404, headers: { 'Cache-Control': 'no-store' } });
 		}
 
 		// ---- 解析目标 URL ----
@@ -2796,11 +2871,15 @@ Disallow: /
 		// 本请求的 cookie 来源作用域（WebSocket 与其对应 HTTP 来源共享）
 		const ck = {
 			ns: cookieNamespace(targetUrl),
+			varyOnReferer: usesRefererRoute,
 			isHttps: url.protocol === 'https:' && ['https:', 'wss:'].includes(targetUrl.protocol),
 		};
 
 		// WebSocket 请求走独立通道
 		if ((request.headers.get('Upgrade') || '').toLowerCase() === 'websocket') {
+			if (request.method !== 'GET') return new Response('WebSocket 握手需要 GET', {
+				status: 405, headers: { Allow: 'GET', 'Cache-Control': 'no-store' },
+			});
 			try {
 				return await handleWebSocket(request, targetUrl, ck, workerOrigin, env);
 			} catch (e) {
@@ -2826,6 +2905,7 @@ Disallow: /
 		try {
 			upstream = await fetch(fetchUrl, {
 				method: request.method,
+				signal: request.signal,
 				headers: fwdHeaders,
 				body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
 				redirect: 'manual',
@@ -2837,29 +2917,20 @@ Disallow: /
 		}
 
 		// ---- 重定向 ----
-		if (REDIRECT_STATUS.has(upstream.status)) {
+		if (REDIRECT_STATUS.has(upstream.status) && upstream.headers.get('Location')) {
 			const resp = buildResponse(upstream, request, ck, fetchUrl);
-			const loc = upstream.headers.get('location');
-			if (loc) {
-				try {
-					const abs = new URL(loc, fetchUrl);
-					if (!['http:', 'https:'].includes(abs.protocol)) throw new Error('无效重定向协议');
-					if (isWorkerHost(abs, workerOrigin)) {
-						if (isProxiedPath(abs.pathname)) {
-							resp.headers.set('Location', `${workerOrigin}${abs.pathname}${urlSuffix(abs)}`);
-						} else {
-							const rebound = new URL(targetUrl.origin + abs.pathname + urlSuffix(abs));
-							resp.headers.set('Location', toProxyUrl(rebound.href, workerOrigin));
-						}
-					} else {
-						resp.headers.set('Location', toProxyUrl(abs.href, workerOrigin));
-					}
-				} catch {
-					resp.headers.delete('Location');
-				}
-			}
 			// 丢弃重定向正文时显式取消上游流，且原正文长度/编码/摘要不再有效。
 			if (resp.body) resp.body.cancel().catch(() => {});
+			// 浏览器只看到同一个代理源，不会像真正的跨源重定向那样删除 Authorization。
+			const nextLocation = resp.headers.get('Location');
+			if (nextLocation && fwdHeaders.has('Authorization')) {
+				const next = parseTarget(new URL(nextLocation, workerOrigin));
+				if (!next || next.origin !== targetUrl.origin) {
+					return new Response('不能跨目标来源重定向带 Authorization 的请求', {
+						status: 502, headers: { 'Cache-Control': 'no-store' },
+					});
+				}
+			}
 			stripTransformedHeaders(resp.headers);
 			return new Response(null, resp);
 		}
@@ -2868,7 +2939,13 @@ Disallow: /
 		if ([204, 205, 304].includes(upstream.status) || request.method === 'HEAD') {
 			const resp = buildResponse(upstream, request, ck, fetchUrl);
 			if (resp.body) resp.body.cancel().catch(() => {});
-			// HEAD/304 可以合法携带所选表示的长度与验证器，不按正文变换清洗。
+			// 这些字段描述的是原始字节；没有正文时无法判断是否触发大小限制，
+			// 因而不能冒充下游 GET 的长度、编码、摘要或验证器。
+			if (![204, 205, 206].includes(upstream.status) && transformKind(upstream.headers, request) &&
+				!hasNoTransform(request.headers.get('Cache-Control'))) {
+				stripTransformedHeaders(resp.headers);
+				resp.headers.delete('Content-Type'); // 最终 charset 依赖正文嗅探与透传判定
+			}
 			return new Response(null, resp);
 		}
 
@@ -2878,7 +2955,9 @@ Disallow: /
 		try {
 			// 非目标媒体、附件或禁止变换的表示不会被读取或转码。
 			const kind = transformKind(upstream.headers, request);
-			if (!kind) return buildResponse(upstream, request, ck, fetchUrl);
+			if (!kind || hasNoTransform(request.headers.get('Cache-Control'))) {
+				return buildResponse(upstream, request, ck, fetchUrl);
+			}
 			const contentType = upstream.headers.get('Content-Type');
 			const baseUrl = documentBase(targetUrl);
 			const charset = getCharset(contentType);
@@ -2910,12 +2989,13 @@ Disallow: /
 	},
 };
 
-/** transformText 的产物再补一遍统一头处理 */
+/** 所有回源 HTTP 响应（含流式 HTML）共用相同的下游策略。 */
 function applyCommon(resp, request, ck) {
 	stripHopByHop(resp.headers);
 	if (ENABLE_PROXY_NOINDEX) {
 		resp.headers.set('X-Robots-Tag', 'noindex, nofollow');
 	}
+	applyCors(resp.headers, request);
 	applyCachePolicy(resp, request, ck);
 	if (ck) rescopeSetCookies(resp.headers, ck.ns, ck.isHttps);
 	return resp;

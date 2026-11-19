@@ -3,6 +3,7 @@
  * production parameters/answers are checked separately by verify_compat.mjs.
  */
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { argon2id } from '@noble/hashes/argon2.js';
 import { loadCore, cryptoProbe } from './helpers/load-core.mjs';
 
@@ -28,6 +29,21 @@ function fixture(extra = {}) {
         argon2id:fakeKdf, argon2idAsync:async (...values) => fakeKdf(...values),
         console:{warn:message=>warnings.push(message)}, ...extra });
     return { ...probe, ...loaded, warnings, tags, calls:()=>calls };
+}
+
+// Independently verify the frame, including UTF-8 byte lengths above 255.
+{
+    const f = fixture(), nonce = new Uint8Array(32).fill(17);
+    const master = Buffer.from('星愿'.repeat(55)), code = Buffer.from('é'.repeat(145));
+    const reference = createHmac('sha256', nonce).update('StarryPass-v2:session-cache-tag:v1\x00');
+    for (const value of [master, code]) {
+        const length = Buffer.alloc(4);
+        length.writeUInt32LE(value.byteLength);
+        reference.update(length).update(value);
+    }
+    const tag = await f.computeSessionTag(master, code, 2, nonce);
+    check(Buffer.from(tag).equals(reference.update(Uint8Array.of(2)).digest()), 'cache tag retains the LE32 wire frame');
+    check(f.state.messages.length === 1 && f.state.messages.every(zero), 'the single cache-tag frame is cleared');
 }
 
 // A primitive can return the right byte count but still be wrong. Check each
@@ -117,8 +133,8 @@ for (const fault of ['sign','digest','HKDF-import','deriveBits']) {
 // Replacement and disposal must clear both native full HKDF output and slices.
 {
     const f=fixture();const info=new Uint8Array([1,2,3]);const stream=new f.HkdfStream(info);
-    await stream.init(new Uint8Array(32).fill(7));await stream.nextByte();const first=stream.buf;
-    for(let i=0;i<32;i++)await stream.nextByte();const second=stream.buf;
+    await stream.init(new Uint8Array(32).fill(7));await stream.uniformInt(256);const first=stream.buf;
+    for(let i=0;i<32;i++)await stream.uniformInt(256);const second=stream.buf;
     check(zero(first),'replaced HKDF block cleared immediately');
     check(f.state.rawBlocks.every(zero),'full native deriveBits outputs cleared immediately');
     stream.dispose();
@@ -572,8 +588,8 @@ for (const delta of [-8, 8]) {
     };
     const stream = new f.HkdfStream(new Uint8Array([1, 2, 3]));
     await stream.init(new Uint8Array(32).fill(7));
-    for (let i = 0; i < 32; i++) await stream.nextByte();
-    await reject(stream.nextByte(), /INVALID_HKDF_OUTPUT/);
+    for (let i = 0; i < 32; i++) await stream.uniformInt(256);
+    await reject(stream.uniformInt(256), /INVALID_HKDF_OUTPUT/);
     check(outputs.length === 1 && outputs.every(zero), 'rejected HKDF output is cleared');
     stream.dispose();
 }
@@ -587,7 +603,7 @@ for (const delta of [-8, 8]) {
         f.crypto.subtle.deriveBits = async () => bad;
         const stream = new f.HkdfStream(new Uint8Array([1, 2, 3]));
         await stream.init(new Uint8Array(32).fill(7));
-        await reject(stream.nextByte(), /INVALID_HKDF_OUTPUT/);
+        await reject(stream.uniformInt(256), /INVALID_HKDF_OUTPUT/);
         check(stream.blockIdx === 0, 'failed HKDF read does not advance blockIdx');
         stream.dispose();
     }
@@ -662,6 +678,29 @@ for (const op of ['digest', 'sign']) {
     await e.wipeSession();
 }
 
+// Throwing observers must not interrupt the provider's cleanup, publish a
+// cache entry, or be mistaken for its memory errors in either noble mode.
+for (const worker of [null, { postMessage() {} }]) {
+    let finished = 0, notifications = 0, key;
+    function noble(password, salt, opts) {
+        if (opts.m === 32) return argon2id(password, salt, opts);
+        opts.onProgress?.(0.5);
+        opts.onProgress?.(1);
+        finished++;
+        return (key = new Uint8Array(32).fill(27));
+    }
+    const f = fixture({ argon2id: noble, argon2idAsync: async (...values) => noble(...values) });
+    const e = f.spv2CoreFactory(worker, true);
+    const fault = new RangeError('observer fault, not provider OOM');
+    await reject(e.derive(args, () => { notifications++; throw fault; }), (error) => error === fault);
+    check(finished === 1 && notifications === 1, 'provider finishes after the first observer exception');
+    check(zero(key), 'wrapper erases a tag that cannot be returned');
+    check(f.state.random.every(zero) && f.state.encoded.every(zero), 'failed observer leaves no active session buffers');
+    check((await e.derive(args)).cached === false, 'the failed observer cannot leave a cached tag');
+    check((await e.derive(args)).cached === true, 'subsequent success repopulates the cache');
+    await e.wipeSession();
+}
+
 // Prefetching the minimum required HKDF blocks preserves exact stream bytes,
 // clears full native outputs and avoids redundant 32-byte round-trips for length > 32.
 {
@@ -671,7 +710,7 @@ for (const op of ['digest', 'sign']) {
     const s1 = new f.HkdfStream(info1), s2 = new f.HkdfStream(info2, 2);
     await s1.init(sk); await s2.init(sk);
     const out1 = [], out2 = [];
-    for (let i = 0; i < 96; i++) { out1.push(await s1.nextByte()); out2.push(await s2.nextByte()); }
+    for (let i = 0; i < 96; i++) { out1.push(await s1.uniformInt(256)); out2.push(await s2.uniformInt(256)); }
     check(out1.join(',') === out2.join(','), 'prefetched HkdfStream emits identical bytes across block boundaries');
     check(f.state.rawBlocks.every(zero), 'prefetched native deriveBits outputs are zeroized immediately');
     s1.dispose(); s2.dispose();
@@ -689,6 +728,27 @@ for (const op of ['digest', 'sign']) {
     await e.wipeSession();
 }
 
+// Rejecting bytes must not force a Promise when a valid sample remains in
+// memory, including after refilling across a fully rejected batch.
+{
+    const f = fixture();
+    const stream = new f.HkdfStream(Uint8Array.of(1));
+    await stream.init(new Uint8Array(32).fill(42));
+    let refills = 0;
+    f.crypto.subtle.deriveBits = async (_alg, _key, bits) => {
+        refills++;
+        const bytes = new Uint8Array(bits / 8).fill(255);
+        if (bytes.length === 64) bytes.set([251, 17, 24], 32);
+        return bytes.buffer;
+    };
+    const first = stream.uniformInt(10);
+    check(typeof first.then === 'function', 'empty-buffer sampling waits for native refill');
+    check(await first === 7, 'unbiased sampling rejects 255 and 251 across a block boundary');
+    check(stream.uniformInt(10) === 4, 'buffered sampling returns a number synchronously');
+    check(refills === 2, 'the buffered sample performs no native operation');
+    stream.dispose();
+}
+
 // Under repeated refill, Web Crypto calls grow logarithmically. Prove every
 // emitted byte against one native expansion, including the partial last batch.
 {
@@ -701,11 +761,11 @@ for (const op of ['digest', 'sign']) {
         { name: 'HKDF', hash: 'SHA-256', salt, info }, stream.ikmKey, 8 * bytes));
     f.state.rawBlocks.length = 0;
     const actual = new Uint8Array(bytes);
-    for (let i = 0; i < bytes; i++) actual[i] = await stream.nextByte();
+    for (let i = 0; i < bytes; i++) actual[i] = await stream.uniformInt(256);
     assert.deepEqual(actual, expected, 'every byte across refill boundaries matches native HKDF');
     check(f.state.rawBlocks.length === 9, '255 blocks need 9 native calls instead of 255');
     check(f.state.rawBlocks.at(-1).length === bytes, 'last refill respects the 255-block ceiling');
-    await reject(stream.nextByte(), /HKDF_EXHAUSTED/);
+    await reject(stream.uniformInt(256), /HKDF_EXHAUSTED/);
     check(f.state.rawBlocks.every(zero), 'each full native result is cleared');
     const tail = stream.buf;
     stream.dispose();

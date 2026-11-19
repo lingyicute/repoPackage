@@ -162,10 +162,21 @@ async function checkText(e, expected) {
     const offlineCore = event('fetch', req('assets/js/spv2-core.js', 'cors'));
     await checkText(offlineCore, 'NEW CORE'); await finish(offlineCore);
 
-    // A cached whole asset must not be substituted for a byte-range request.
-    const range = event('fetch', req('assets/js/spv2-core.js', 'cors', 'GET', { range: 'bytes=0-2' }));
-    check(() => assert.equal(range.response, undefined));
-    check(() => assert.equal(range.waits.length, 0));
+    // Don't substitute a complete cached response for a browser-controlled request.
+    const conditionalHeaders = { Range: 'bytes=0-2', 'If-Range': '"etag"', 'If-Match': '"etag"',
+        'If-None-Match': '"etag"', 'If-Modified-Since': 'Wed, 21 Oct 2015 07:28:00 GMT',
+        'If-Unmodified-Since': 'Wed, 21 Oct 2015 07:28:00 GMT' };
+    const corePath = 'assets/js/spv2-core.js';
+    for (const request of [
+        ...Object.entries(conditionalHeaders).map(([k, v]) => req(corePath, 'cors', 'GET', { [k]: v })),
+        ...['no-store', 'only-if-cached', 'force-cache'].map((cache) => new Request(new URL(corePath, base), { cache, mode: 'same-origin' }))
+    ]) {
+        const before = networkCalls, e = event('fetch', request);
+        check(() => assert.equal(e.response, undefined));
+        check(() => assert.equal(e.waits.length, 0));
+        await tick();
+        check(() => assert.equal(networkCalls, before));
+    }
 
     fetchImpl = async () => {
         const resp = new Response('REDIRECTED SHELL');
@@ -177,6 +188,15 @@ async function checkText(e, expected) {
     fetchImpl = offline;
     const afterRedirect = event('fetch', req());
     await checkText(afterRedirect, 'NEW SHELL'); await finish(afterRedirect);
+
+    fetchImpl = async () => new Response('TRANSIENT SHELL', {
+        headers: { 'Cache-Control': 'max-age=0, No-StOrE' }
+    });
+    const transient = event('fetch', req());
+    await checkText(transient, 'TRANSIENT SHELL'); await finish(transient);
+    fetchImpl = offline;
+    const afterTransient = event('fetch', req());
+    await checkText(afterTransient, 'NEW SHELL'); await finish(afterTransient);
 
     let serverErrorBodyCanceled = false;
     fetchImpl = async () => {

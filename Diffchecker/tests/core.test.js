@@ -18,8 +18,8 @@ const text = (() => {
 })();
 const excel = (() => {
   const s = script('excel-compare.html');
-  const code = between(s, 'function colIndex', 'function parseXlsx') + between(s, 'function scanCsv', '/* ===================== diff core') + between(s, 'const EQ=0', '/* ===================== UI: loading');
-  return run(code, 'compare,parseCsv,opts,serialToDate,serialToElapsed,isoDateCell,isZipSig,pairBlock,normalize,inlineDiff,shiftFormula,xstr');
+  const code = between(s, 'function colIndex', 'function parseXlsx') + between(s, 'const MAX_IMPORTED_CELLS=', '/* ===================== diff core') + between(s, 'const EQ=0', '/* ===================== UI: loading');
+  return run(code, 'compare,parseCsv,scanCsv,opts,serialToDate,serialToElapsed,isoDateCell,isZipSig,pairBlock,normalize,inlineDiff,shiftFormula,xstr');
 })();
 
 const inflate = (() => {
@@ -537,6 +537,20 @@ test('excel.compare: 列顺序变动、按位置匹配时表头修改、以及�
   assert.ok(disj.rows.every(r => r.type !== 'eq'));
 });
 
+test('Excel 按位置匹配：空表头改动在比较标签中写出两侧的值', () => {
+  const grid = name => ({ rows: [[{ v: name }], [{ v: 'item' }]], cols: 1 });
+  Object.assign(excel.opts, { mode: 'table', matchHeaders: false, sortRows: false, sortCols: false });
+  try {
+    for (const [a, b, label] of [['Price', '', '"Price" → ""'], ['', 'Price', '"" → "Price"']]) {
+      const r = excel.compare(grid(a), grid(b), 0, 0);
+      assert.equal(r.stats.cells, 1);
+      assert.equal(r.columns[0].name, label);
+      assert.ok(r.columns[0].hdrChg);
+      assert.equal(r.rows[0].type, 'eq');
+    }
+  } finally { excel.opts.matchHeaders = true; }
+});
+
 test('excel.normalize: 支持带时间的日月年/月日年日期，且过滤越界的伪日期与伪时间', () => {
   Object.assign(excel.opts, { normDates: true, ignoreWs: false, ignoreCase: false });
   assert.equal(excel.normalize('03/15/2024 8:05'), '2024-03-15 08:05:00');
@@ -579,7 +593,7 @@ test('excel.compare: 按行排序只以共有列为键，删除 / 新增的列�
 
 test('excel.isoDateCell: t="d" 的 ISO 日期与日期序列号的显示一致', () => {
   assert.equal(excel.isoDateCell('2024-03-05T00:00:00'), excel.serialToDate(45356));
-  assert.equal(excel.isoDateCell('2024-03-05T00:00:00Z'), '2024-03-05');
+  assert.equal(excel.isoDateCell('2024-03-05T00:00:00Z'), '2024-03-05T00:00:00Z');
   assert.equal(excel.isoDateCell('2024-03-05T08:05:09.000'), '2024-03-05 08:05:09');
   assert.equal(excel.isoDateCell('2024-03-05T08:05'), '2024-03-05 08:05:00');
   assert.equal(excel.isoDateCell('10:30:00'), excel.serialToDate(0.4375));
@@ -593,7 +607,18 @@ test('excel.isoDateCell: 非法日历日期、越界时间与时区保持原文�
     '2024-01-01T24:00:00', '2024-01-01T12:60:00', '25:00:00', '2024-01-01T00:00:00+25:00',
   ]) assert.equal(excel.isoDateCell(value), value);
   assert.equal(excel.isoDateCell('2024-02-29T00:00:00'), '2024-02-29');
-  assert.equal(excel.isoDateCell('2024-02-29T08:05:09+05:30'), '2024-02-29 08:05:09');
+  assert.equal(excel.isoDateCell('2024-02-29T08:05:09+05:30'), '2024-02-29T08:05:09+05:30');
+});
+
+test('Excel 的 ISO 日期和日期文本保留有效的小数秒，不与整秒伪相等', () => {
+  Object.assign(excel.opts, { normDates: true });
+  const date = excel.isoDateCell('2024-02-29T00:00:00.125');
+  assert.equal(date, '2024-02-29 00:00:00.125');
+  assert.equal(excel.normalize('2024/2/29 0:00:00.125'), date);
+  assert.equal(excel.isoDateCell('08:30:00.100'), '08:30:00.1');
+  assert.equal(excel.normalize('8:30:00.100'), '08:30:00.1');
+  assert.notEqual(date, excel.isoDateCell('2024-02-29T00:00:00.000'));
+  assert.equal(excel.isoDateCell('0000-02-29T00:00:00'), '0000-02-29T00:00:00');
 });
 
 test('image.invertAlign: 带翻转的对齐参数求逆后仍能把点映射回原位', () => {
@@ -793,6 +818,22 @@ test('文本页 CSS 的自动识别与着色：结果正确，且不会在超长
   assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0}ms`);
 });
 
+test('文本语法着色把未闭合的跨行注释或三引号字符串持续到文末', () => {
+  const code = between(script('text-compare.html'), 'const SYN=', 'const esc=');
+  const { synClasses } = run(code, 'synClasses');
+  for (const [lang, open, close, kind] of [
+    ['js', '/*', '*/', 'c'], ['css', '/*', '*/', 'c'], ['sql', '/*', '*/', 'c'],
+    ['xml', '<!--', '-->', 'c'], ['py', '"""', '"""', 's'],
+  ]) {
+    const prefix = '  ', closed = open + '\ncomment\n' + close, rest = ' ' + open + '\ncontinued\n';
+    const cls = synClasses(prefix + closed + rest, lang);
+    assert.equal(cls[0], '', lang);
+    assert.ok(cls.slice(prefix.length, prefix.length + closed.length).every(c => c === kind), lang);
+    assert.equal(cls[prefix.length + closed.length], '', lang);
+    assert.ok(cls.slice(prefix.length + closed.length + 1).every(c => c === kind), lang);
+  }
+});
+
 test('文本页语法自动识别：缩进的 Python / JS 仍能识别，且不会在大量连续空行上回溯成 O(n²)', () => {
   const s = script('text-compare.html');
   const { detectSyntax } = run(between(s, 'const SYN={', '/* ===================== state'), 'detectSyntax');
@@ -888,7 +929,8 @@ test('excel.compare: 新增或删除列含数据时，对应行不能被隐藏�
       vm.runInContext(`const RES=result,opts=options,focusIdx=-1,expanded=new Set(),t=k=>k,esc=String,$=id=>nodes[id];${between(script('excel-compare.html'), 'function renderCell', 'function goChange')}render()`, ctx);
       assert.match(nodes.gridWrap.innerHTML, /also new/);
       assert.doesNotMatch(nodes.gridWrap.innerHTML, /class="collapsed"/);
-      assert.equal(nodes.gridWrap.dataset.changes, 2);
+      assert.match(nodes.gridWrap.innerHTML, /<th[^>]+id="focus-0"/);
+      assert.equal(nodes.gridWrap.dataset.changes, 3); // 列标题与两行数据均可定位。
     }
   } finally { Object.assign(excel.opts, saved); }
 });
@@ -978,7 +1020,7 @@ test('表格会话：保留实际行宽与公式，拒绝结构无效的单元�
 });
 
 test('Excel 日期系统：日期格式的 0、虚拟闰日与超过一天的纯时间', () => {
-  const code = between(script('excel-compare.html'), 'function serialToDate', '// t="d"');
+  const code = between(script('excel-compare.html'), 'function secondFraction', '// t="d"');
   const { serialToDate, customDateKind, serialToElapsed } = run(code, 'serialToDate,customDateKind,serialToElapsed');
   assert.equal(serialToDate(0, true, false), '1904-01-01');
   assert.equal(serialToDate(0.5, true, false), '1904-01-01 12:00:00');
@@ -991,6 +1033,31 @@ test('Excel 日期系统：日期格式的 0、虚拟闰日与超过一天的纯
   }
 });
 
+test('Excel 数值时间：格式精度决定小数秒，跨秒及午夜正确进位', () => {
+  const code = between(script('excel-compare.html'), 'function secondFraction', '// t="d"');
+  const { serialToDate, serialToElapsed, dateNumberStyle } = run(code, 'serialToDate,serialToElapsed,dateNumberStyle');
+  assert.deepEqual({ ...dateNumberStyle('yyyy-mm-dd hh:mm:ss.000') }, { kind: 'date', precision: 3 });
+  assert.deepEqual({ ...dateNumberStyle('[s].00') }, { kind: 'elapsed', precision: 2 });
+  assert.deepEqual({ ...dateNumberStyle('hh:mm:ss ".000"') }, { kind: 'time', precision: 0 });
+  assert.equal(serialToDate(45356 + 0.125 / 86400, false, false, true, 3), '2024-03-05 00:00:00.125');
+  assert.equal(serialToDate(0.5 + 0.2 / 86400, false, true, true, 1), '12:00:00.2');
+  assert.equal(serialToDate(1 - 0.0004 / 86400, false, true, true, 3), '00:00:00');
+  assert.equal(serialToElapsed(-(90001.125 / 86400), 3), '-25:00:01.125');
+});
+
+test('Excel 自定义数值格式：只按实际生效的格式段识别日期', () => {
+  const code = between(script('excel-compare.html'), 'function secondFraction', '// t="d"');
+  const { customNumberStyle } = run(code, 'customNumberStyle');
+  const signed = customNumberStyle('yyyy-mm-dd ";";0.00;0;@');
+  assert.equal(signed(45356).kind, 'date');
+  assert.equal(signed(-1).kind, '');
+  assert.equal(signed(0).kind, '');
+  const conditional = customNumberStyle('[Blue][>=1]yyyy-mm-dd;[>=0]hh:mm:ss.000;0');
+  assert.equal(conditional(1).kind, 'date');
+  assert.deepEqual({ ...conditional(0.5) }, { kind: 'time', precision: 3 });
+  assert.equal(conditional(-2).kind, '');
+});
+
 test('XLSX 部件路径：以当前部件目录为基准解析相对路径', () => {
   const { resolvePart } = run(between(script('excel-compare.html'), 'function resolvePart', 'function parseXlsx'), 'resolvePart');
   assert.equal(resolvePart('xl/', 'xl/sheet.xml'), 'xl/xl/sheet.xml');
@@ -998,6 +1065,19 @@ test('XLSX 部件路径：以当前部件目录为基准解析相对路径', () 
   assert.equal(resolvePart('xl/', '/worksheets/data.xml'), 'worksheets/data.xml');
   assert.equal(resolvePart('xl/', '../../outside.xml'), '');
   assert.equal(resolvePart('', 'https://example.invalid/sheet.xml'), '');
+});
+
+test('XLSX 工作表缓存：最近使用的网格可复用，较早的网格释放', () => {
+  const { cachedSheetLoader } = run(between(script('excel-compare.html'), 'function cachedSheetLoader', 'function parseXlsx'), 'cachedSheetLoader');
+  let count = 0;
+  const load = cachedSheetLoader(name => { if (name === 'bad') throw new Error('malformed'); return { name, count: ++count }; });
+  const a = load('a'), b = load('b');
+  assert.equal(load('a'), a);
+  assert.throws(() => load('bad'), /malformed/);
+  load('c');
+  assert.equal(load('a'), a);
+  assert.notEqual(load('b'), b);
+  assert.equal(count, 4);
 });
 
 test('readZip: 本地条目名、长度必须与中央目录相符', async () => {
@@ -1008,11 +1088,37 @@ test('readZip: 本地条目名、长度必须与中央目录相符', async () =>
   }
 });
 
+test('XLSX XML：仅序言里的文档类型声明被拒绝，不误判注释和正文', () => {
+  const { hasXmlDoctype } = run(between(script('excel-compare.html'), 'function hasXmlDoctype', 'const xml='), 'hasXmlDoctype');
+  assert.equal(hasXmlDoctype('<?xml version="1.0"?> \n<!-- intro -->\n<!DOCTYPE workbook><workbook/>'), true);
+  assert.equal(hasXmlDoctype('<!-- <!DOCTYPE workbook> --><workbook><![CDATA[<!DOCTYPE sample>]]></workbook>'), false);
+  assert.equal(hasXmlDoctype('<?xml version="1.0"?><workbook/>'), false);
+});
+
+test('XLSX ZIP：XML 部件可以使用带 BOM 的 UTF-16LE 或 UTF-16BE', async () => {
+  const xml = '<?xml version="1.0" encoding="UTF-16"?><worksheet>中文 😀</worksheet>';
+  const le = Buffer.from('\ufeff' + xml, 'utf16le'), be = Buffer.from(le).swap16();
+  const blob = zipLib.zipStore([{ name: 'le.xml', data: le }, { name: 'be.xml', data: be }, { name: 'broken.xml', data: Uint8Array.of(255) }]);
+  const zip = zipLib.readZip(await blob.arrayBuffer());
+  assert.equal(zip.text('le.xml'), xml);
+  assert.equal(zip.text('be.xml'), xml);
+  assert.throws(() => zip.text('broken.xml'), /badZip/);
+});
+
 test('CSV: 按候选分隔符解析引号，拒绝未闭合字段', () => {
   const read = (s, d) => JSON.parse(JSON.stringify(excel.parseCsv(s, d).sheets[0].grid.rows.map(r => r.map(c => c.v))));
   assert.deepEqual(read('ID;Label\n1;"first, line\nsecond"\n2;"last, row"'), [['ID', 'Label'], ['1', 'first, line\nsecond'], ['2', 'last, row']]);
   assert.deepEqual(read('a,tag;ok\nb,"one|two"\nc,x', ','), [['a', 'tag;ok'], ['b', 'one|two'], ['c', 'x']]);
   assert.throws(() => read('ID,Label\n1,"not closed'), /badCsvQuotes/);
+});
+
+test('CSV：多行字段内部的分隔符不会抢走真实分隔符', () => {
+  const values = (s, d) => Array.from(excel.parseCsv(s, d).sheets[0].grid.rows, r => Array.from(r, c => c.v));
+  for (const [d, other] of [[',', ';'], [';', ','], ['|', ';']]) {
+    const notes = Array.from({ length: 8 }, (_, i) => `label${i}${other}detail`).join('\n');
+    assert.deepEqual(values(`ID${d}Notes\n1${d}"${notes}"\n2${d}end`), [['ID', 'Notes'], ['1', notes], ['2', 'end']]);
+  }
+  assert.throws(() => values('a,"b"junk\nc,d', ','), /badCsvQuotes/);
 });
 
 test('CSV 导出：前导空白的公式样式文本被保留为文本，数值保持原样', () => {
@@ -1085,6 +1191,15 @@ test('图片工作画布：极窄的输入仍至少保留一个像素', () => {
   assert.equal(fitsCanvas(16384, 4096, 32 * 1024 * 1024), false);
 });
 
+test('图片对比画幅包含原图和变换后的四角，不剪掉负坐标或超出的内容', () => {
+  const { comparisonFrame } = run(between(script('image-compare.html'), 'const MAXDIM=', 'let baseA'), 'comparisonFrame');
+  const a = { w: 4, h: 3 }, b = { w: 8, h: 4 }, al = { dx: 0, dy: 0, rot: 0, scale: 1 };
+  assert.deepEqual({ ...comparisonFrame(a, b, al) }, { x: 0, y: 0, w: 8, h: 4 });
+  assert.deepEqual({ ...comparisonFrame(a, b, { ...al, dx: -3, dy: 2 }) }, { x: -3, y: 0, w: 8, h: 6 });
+  assert.deepEqual({ ...comparisonFrame(a, b, { ...al, rot: 90, fh: true }) }, { x: 0, y: -2, w: 6, h: 8 });
+  assert.throws(() => comparisonFrame(a, b, { ...al, dx: 1e10 }), /alignOutOfRange/);
+});
+
 test('image.autoAlign: 同时允许旋转和缩放时，终步仍评估仅缩放候选', async () => {
   const code = between(script('image-compare.html'), 'async function autoAlign', 'function alignWithOpenCV');
   const pre = 'const window={},setTimeout=f=>f();'
@@ -1094,6 +1209,33 @@ test('image.autoAlign: 同时允许旋转和缩放时，终步仍评估仅缩放
   const r = await autoAlign(dim, dim, { rot: true, scale: true });
   assert.equal(r.rot, 0);
   assert.equal(r.scale, 1.01);
+});
+
+test('image.autoAlign: 中等分辨率通过而最终峰值不足时返回失败', async () => {
+  const code = between(script('image-compare.html'), 'async function autoAlign', 'function alignWithOpenCV');
+  const pre = 'const window={};function grayPatch(src,N){return {g:N,f:1}}'
+    + 'function phaseCorr(a,b){return {dx:0,dy:0,psr:b===512?5:30}}';
+  const { autoAlign } = run(code, 'autoAlign', pre), dims = { width: 96, height: 64 };
+  assert.equal(await autoAlign(dims, dims, { rot: false, scale: false }), null);
+});
+
+test('文本打印视图可以使用不同布局，但不改当前布局、不复制导航标识', () => {
+  const s = script('text-compare.html'), d = text.computeDiff('old line', 'new line', { rules: [] });
+  const ctx = { d, opts: { type: 'split', level: 'smart', syntax: '' }, inlineDiff: text.inlineDiff };
+  vm.createContext(ctx);
+  vm.runInContext(`const EQ=0,DEL=1,INS=2,t=k=>k,expanded=new Set();${between(s, 'const SYN=', '/* ===================== state')}${between(s, 'const CTX=', '/* 展开折叠块')}this.output=diffView(d,'unified',false);this.screen=diffView(d,opts.type);`, ctx);
+  assert.equal(ctx.opts.type, 'split');
+  assert.match(ctx.output.html, /class="sign">−/);
+  assert.doesNotMatch(ctx.output.html, /id="focus-/);
+  assert.match(ctx.screen.html, /class="split chg" id="focus-0"/);
+});
+
+test('文本 PNG 的尺寸和画布像素面积都有限', () => {
+  const { pngLineBudget } = run(between(script('text-compare.html'), 'function pngLineBudget', 'async function exportPng'), 'pngLineBudget');
+  const width = 1600, header = 72, line = 20, max = pngLineBudget(width, header, line);
+  assert.ok((header + max * line) * width <= 16 * 1024 * 1024);
+  assert.ok((header + (max + 1) * line) * width > 16 * 1024 * 1024);
+  assert.ok(header + pngLineBudget(100, header, line) * line <= 16384);
 });
 
 test('文本 PNG 排版保留长行和换行后的高亮，不切断代理对', () => {
@@ -1108,9 +1250,73 @@ test('共享公式：长标识符保持原样，非 ASCII 字母不会误认成�
   assert.equal(excel.shiftFormula(`${name}+K1+a1`, 1, 1), `${name}+K1+b2`);
 });
 
+test('共享公式：超出原工作表网格的名称不能被移进网格', () => {
+  assert.equal(excel.shiftFormula('XFE1+A1048577+XFE:XFF+1048577:1048578+B2', -1, -1),
+    'XFE1+A1048577+XFE:XFF+1048577:1048578+A1');
+});
+
 test('XLSX 单元格地址保留实际坐标并拒绝越界或非法地址', () => {
   const { cellAddress } = run(between(script('excel-compare.html'), 'function colIndex', '// OOXML 字符串'), 'cellAddress');
   assert.deepEqual({ ...cellAddress('xfd1048576') }, { row: 1048575, col: 16383 });
   assert.deepEqual({ ...cellAddress('B7') }, { row: 6, col: 1 });
   for (const ref of ['XFE1', 'A1048577', 'A0', 'A7B', '1A', '']) assert.equal(cellAddress(ref), null);
+});
+
+
+const worksheet = (() => {
+  const s = script('excel-compare.html');
+  const code = between(s, 'function colIndex', 'function parseXlsx') + between(s, 'const MAX_IMPORTED_CELLS=', '// 检测和实际解析');
+  const { parseSheetRows } = run(code, 'parseSheetRows');
+  const node = (localName, attrs = {}, children = [], textContent = '') => ({
+    localName, children, textContent, getAttribute: name => attrs[name] ?? null, hasAttribute: name => Object.hasOwn(attrs, name),
+  });
+  const row = (n, ...cells) => node('row', n == null ? {} : { r: n }, cells);
+  const cell = (ref, value, type) => node('c', { ...(ref == null ? {} : { r: ref }), t: type }, value === undefined ? [] : [node('v', {}, [], value)]);
+  const readRows = (rows, sst = [], limit) => parseSheetRows({ children: rows }, sst, new Map(), false, true, n => n.textContent, limit);
+  return { node, row, cell, readRows };
+})();
+
+test('XLSX 工作表拒绝重复的空行和空单元格坐标，保留合法的隐式坐标', () => {
+  const { row, cell, readRows } = worksheet;
+  assert.throws(() => readRows([row('2'), row('2', cell('A2', '7'))]), /badZip/);
+  assert.throws(() => readRows([row('1', cell('B1'), cell('B1', '7'))]), /badZip/);
+  assert.throws(() => readRows([row('1e2')]), /badZip/);
+  const { rows, cols } = readRows([row(null, cell('B3', '7'), cell(null, '8'))]);
+  assert.equal(rows.length, 3);
+  assert.equal(cols, 3);
+  assert.equal(rows[2][1].v, '7');
+  assert.equal(rows[2][2].v, '8');
+});
+
+
+test('XLSX 工作表：缺省公式缓存为空；非法共享字符串索引和布尔值不能伪装成正常值', () => {
+  const { node, row, cell, readRows } = worksheet;
+  const formula = (r, t) => node('c', { r, t }, [node('f', {}, [], 'B2')]);
+  const { rows } = readRows([row('1', formula('A1', 's'), formula('B1', 'b'), cell('C1', ' 0 ', 's'), cell('D1', 'false', 'b'))], ['label']);
+  assert.deepEqual(Array.from(rows[0], c => c.v), ['', '', 'label', 'FALSE']);
+  assert.equal(rows[0][0].f, '=B2');
+  for (const [value, type] of [['', 's'], ['1', 's'], ['1e0', 's'], ['other', 'b']]) {
+    assert.throws(() => readRows([row('1', cell('A1', value, type))], ['label']), /badZip/);
+  }
+});
+
+
+test('共享公式：组号按数值匹配，同一组内必须有唯一的主公式', () => {
+  const { node, row, readRows } = worksheet;
+  const f = (r, si, text) => node('c', { r }, [node('f', { t: 'shared', si }, [], text)]);
+  const { rows } = readRows([row('1', f('A1', '01', '')), row('2', f('A2', '1', 'B2'))]);
+  assert.equal(rows[0][0].f, '=B1');
+  assert.throws(() => readRows([row('1', f('A1', '01', 'B1'), f('B1', '1', 'C1'))]), /badZip/);
+  assert.throws(() => readRows([row('1', f('A1', undefined, 'B1'))]), /badZip/);
+});
+
+
+test('表格导入预算：收集 CSV 字段和 XLSX 单元格时即拒绝超限', () => {
+  assert.equal(excel.scanCsv('a,b\nc,d', ',', true, Infinity, 4).rows.length, 2);
+  assert.throws(() => excel.scanCsv('a,b\nc,d', ',', true, Infinity, 3), /importTooLarge/);
+  assert.throws(() => excel.parseCsv(','.repeat(16384), ','), /importTooLarge/);
+  const { row, cell, readRows } = worksheet;
+  const rows = [row('3', cell('A3'), cell('B3', 'data'))];
+  assert.equal(readRows(rows, [], 2).rows[2][1].v, 'data');
+  assert.throws(() => readRows(rows, [], 1), /importTooLarge/);
 });

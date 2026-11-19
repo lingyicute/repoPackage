@@ -41,6 +41,7 @@ import org.robolectric.android.controller.ActivityController;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowPorterDuffColorFilter;
 import org.robolectric.shadows.ShadowSettings;
+import org.robolectric.shadows.ShadowToast;
 import org.robolectric.util.ReflectionHelpers;
 
 import static org.junit.Assert.*;
@@ -242,6 +243,7 @@ public class MainActivityTest {
     public void legacyOverlayPermissionHonorsExplicitAppOpsDenials() {
         Context context = RuntimeEnvironment.getApplication();
         AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.SYSTEM_ALERT_WINDOW);
         int op = 24; // SYSTEM_ALERT_WINDOW before its public string name.
         shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(), AppOpsManager.MODE_ALLOWED);
         assertTrue(PermissionUtils.isDrawOverlaysPermissionGranted(context));
@@ -249,6 +251,16 @@ public class MainActivityTest {
             shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(), mode);
             assertFalse(PermissionUtils.isDrawOverlaysPermissionGranted(context));
         }
+    }
+
+    @Test
+    @Config(sdk = {21, 22})
+    public void legacyAllowedAppOpCannotReplaceTheInstallTimePermission() {
+        Context context = RuntimeEnvironment.getApplication();
+        AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+        shadowOf(appOps).setMode(24, Process.myUid(), context.getPackageName(), AppOpsManager.MODE_ALLOWED);
+        shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.SYSTEM_ALERT_WINDOW);
+        assertFalse(PermissionUtils.isDrawOverlaysPermissionGranted(context));
     }
 
     @Test
@@ -285,6 +297,31 @@ public class MainActivityTest {
         assertTrue(PermissionUtils.requestDrawOverlaysPermission(wrapper));
         assertEquals(3, started.size());
         assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, started.get(2).getAction());
+    }
+
+    public static class BlockedBrowserActivity extends MainActivity {
+        RuntimeException browserFailure;
+
+        @Override
+        public void startActivity(Intent intent) {
+            if (Intent.ACTION_VIEW.equals(intent.getAction())) throw browserFailure;
+            super.startActivity(intent);
+        }
+    }
+
+    @Test
+    public void unavailableAndRestrictedBrowsersGiveFeedbackWithoutClosingTheActivity() {
+        try (ActivityController<BlockedBrowserActivity> controller = Robolectric
+                .buildActivity(BlockedBrowserActivity.class).setup()) {
+            BlockedBrowserActivity activity = controller.get();
+            for (RuntimeException failure : new RuntimeException[]{
+                    new ActivityNotFoundException(), new SecurityException("Restricted profile")}) {
+                activity.browserFailure = failure;
+                activity.findViewById(R.id.iv_about).performClick();
+                assertEquals(activity.getString(R.string.about_link_unavailable), ShadowToast.getTextOfLatestToast());
+                assertFalse(activity.isFinishing());
+            }
+        }
     }
 
     public static class SettingsBlockedActivity extends MainActivity {

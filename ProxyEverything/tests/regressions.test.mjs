@@ -13,7 +13,7 @@ const {
 	rewriteJsModuleSpecifiers,
 	rewriteRefreshContent,
 	rewriteStyleAttr,
-	rewriteSvg,
+	rewriteSvg, rewriteXmlText,
 	rewriteUrl,
 	sniffHtmlCharset,
 	stringifyInlineJson,
@@ -22,7 +22,7 @@ const {
 export {
 	getRootHtml, getShimScript, quoteCssString, rewriteCss,
 	rewriteJsModuleSpecifiers, rewriteRefreshContent, rewriteStyleAttr,
-	rewriteSvg, rewriteUrl, sniffHtmlCharset, stringifyInlineJson
+	rewriteSvg, rewriteXmlText, rewriteUrl, sniffHtmlCharset, stringifyInlineJson
 };`).toString('base64')
 );
 
@@ -309,7 +309,9 @@ test('upstream access requires a valid explicit origin allowlist', async () => {
 	globalThis.fetch = async url => { seen.push(url); return new Response('ok'); };
 	try {
 		const request = new Request(proxy('https://example.com/page'));
-		for (const value of [undefined, '', '*', 'https://example.com/path', 'not a URL']) {
+		for (const value of [undefined, '', '*', 'https://example.com/path', 'not a URL',
+			'https:example.com', 'https://example.com/path/..', 'https://example.com?',
+			'https://example.com/#', 'https://@example.com', 'https://example.com,https://*.example.com']) {
 			const response = await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: value });
 			assert.equal(response.status, 503);
 		}
@@ -352,4 +354,25 @@ test('HTML charset prescan recognizes only complete metadata declarations', asyn
 	const sniffed = await sniffHtmlCharset(new Response(xhtml).body, null, true);
 	assert.equal(sniffed.charset, 'windows-1252');
 	await sniffed.body.cancel();
+});
+
+test('XML raw text leaves incomplete CDATA and comments intact', () => {
+	for (const input of ['body <![CDATA[unfinished', 'text <!-- open <!-- still open']) {
+		assert.equal(rewriteXmlText(input, value => value.toUpperCase()), input);
+	}
+	assert.equal(rewriteXmlText('a<!--keep--><![CDATA[b]]>c', s => s.toUpperCase()),
+		'A<!--keep--><![CDATA[B]]>C');
+});
+
+test('upstream HTTP and opening WebSocket handshakes use the request cancellation signal', async t => {
+	const pending = [];
+	t.mock.method(globalThis, 'fetch', async (_, init) => { pending.push(init.signal); return new Response('fixture'); });
+	for (const headers of [{}, { Upgrade: 'websocket' }]) {
+		const controller = new AbortController();
+		const request = new Request(proxy(base), { headers, signal: controller.signal });
+		await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+		assert.equal(pending.at(-1), request.signal);
+		controller.abort();
+		assert.equal(pending.at(-1).aborted, true);
+	}
 });
