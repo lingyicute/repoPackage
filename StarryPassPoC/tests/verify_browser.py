@@ -618,6 +618,29 @@ async def test_theme_first_paint_and_system_follow(browser, url):
     print('PASS browser: theme applied before first paint and OS changes followed until a manual choice')
 
 
+async def test_theme_without_storage(browser, url):
+    context = await browser.new_context(ignore_https_errors=True, color_scheme='dark')
+    page = await context.new_page()
+    try:
+        await page.add_init_script("""(() => {
+            Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('Denied', 'SecurityError'); } });
+            matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
+                window.__lastSystemTheme = event.matches ? 'dark' : 'light';
+            });
+        })()""")
+        await page.goto(url)
+        check(await page.get_attribute('html', 'data-theme') == 'dark', 'blocked storage still allows system theme')
+        await page.click('#theme-toggle')
+        await page.emulate_media(color_scheme='light')
+        await poll(lambda: page.evaluate("window.__lastSystemTheme === 'light'"))
+        await page.emulate_media(color_scheme='dark')
+        await poll(lambda: page.evaluate("window.__lastSystemTheme === 'dark'"))
+        check(await page.get_attribute('html', 'data-theme') == 'light', 'manual theme survives OS changes without storage')
+    finally:
+        await context.close()
+    print('PASS browser: unavailable storage does not override the current manual theme')
+
+
 async def test_required_character_classes(browser, url):
     cases = [
         ('full', ['A1!' * 5 + 'A', 'a1!' * 5 + 'a', 'aA!' * 5 + 'a', 'aA1' * 5 + 'a'], FAKE_PASSWORD),
@@ -779,11 +802,37 @@ async def test_service_worker_vary(browser, url, state):
     print('PASS browser: real Vary cache keys, offline aliases and Worker derivation')
 
 
-async def test_service_worker_read_failure(browser, url):
+async def test_service_worker_no_store_install(browser, url, state):
+    context = await browser.new_context(ignore_https_errors=True)
+    page = await context.new_page()
+    state['cacheable_assets'] = True
+    state['no_store_asset'] = '/app/assets/img/icons/512.png'
+    try:
+        await page.goto(url)
+        await poll(lambda: page.evaluate('!!navigator.serviceWorker.controller'))
+        worker = context.service_workers[-1]
+        cached_paths = await worker.evaluate("""async () => {
+            const cache = await caches.open(VERSION);
+            return (await cache.keys()).map(request => new URL(request.url).pathname);
+        }""")
+        check(state['no_store_asset'] not in cached_paths, 'precache must not persist a no-store response')
+        check('/app/index.html' in cached_paths, 'an uncached icon does not block the rest of the install')
+        await context.set_offline(True)
+        await page.goto(url + '?partial-precache=1')
+        check(await page.evaluate('typeof spv2CoreFactory') == 'function', 'cacheable assets still work offline')
+    finally:
+        state.pop('no_store_asset')
+        state['cacheable_assets'] = False
+        await context.close()
+    print('PASS browser: no-store is honored during real CacheStorage installation')
+
+
+async def test_service_worker_read_failure(browser, url, state):
     # 只替换真实 SW 的运行时缓存操作；已安装的预缓存与网络保持原样，
     # 浏览器自身的 CacheStorage 仍提供预缓存。
     context = await browser.new_context(ignore_https_errors=True)
     page = await context.new_page()
+    state['cacheable_assets'] = True
     try:
         await page.goto(url); await poll(lambda: page.evaluate('!!navigator.serviceWorker.controller'))
         await page.wait_for_load_state('networkidle')
@@ -808,6 +857,7 @@ async def test_service_worker_read_failure(browser, url):
         check(await service_worker.evaluate('__runtimeReadFaults') > 0, 'browser fault injection actually exercised runtime reads')
         check(await service_worker.evaluate('__runtimeOpenFaults') == 0, 'browser fallback never needs to create/open runtime cache')
     finally:
+        state['cacheable_assets'] = False
         await context.close()
     print('PASS browser: real CacheStorage precache fallback during runtime read failure')
 
@@ -903,6 +953,8 @@ async def main():
 
             def end_headers(self):
                 cacheable = state.get('allow_bfcache') or state.get('cacheable_assets')
+                if self.path.split('?', 1)[0] == state.get('no_store_asset'):
+                    cacheable = False
                 self.send_header('Cache-Control', 'no-cache' if cacheable else 'no-store')
                 if state.get('vary_accept'):
                     self.send_header('Vary', 'Accept')
@@ -935,11 +987,13 @@ async def main():
                     await test_counter_accessible_name(browser, url)
                     await test_counter_not_restored(browser, url, state)
                     await test_theme_first_paint_and_system_follow(browser, url)
+                    await test_theme_without_storage(browser, url)
                     await test_malformed_results(browser, url)
                     await test_required_character_classes(browser, url)
                     await test_real_crypto(browser, url)
                     await test_service_worker(browser, url, site, state)
-                    await test_service_worker_read_failure(browser, url)
+                    await test_service_worker_no_store_install(browser, url, state)
+                    await test_service_worker_read_failure(browser, url, state)
                     await test_service_worker_vary(browser, url, state)
                     await test_tap_feedback_and_keyboard_focus(browser, url)
                     await run_network_timeout_checks(browser, check)

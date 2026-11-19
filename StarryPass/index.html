@@ -427,6 +427,9 @@
             color: var(--md-sys-color-on-surface);
         }
         .password--empty {
+            /* 占位与错误提示不是口令：不要一次点击就整段选中。 */
+            user-select: text;
+            -webkit-user-select: text;
             font-family: var(--md-ref-typeface);
             font-size: 15px;
             font-weight: 400;
@@ -1181,31 +1184,32 @@
                 themeToggle.setAttribute('aria-label', theme === 'dark' ? '切换到浅色主题' : '切换到深色主题');
                 themeColorMeta.setAttribute('content', theme === 'dark' ? '#111318' : '#f9f9ff');
             }
+            var manualTheme = null;
             function initTheme() {
-                var saved = null;
-                try { saved = localStorage.getItem('sp-theme'); } catch (e) {}
+                try {
+                    var saved = localStorage.getItem('sp-theme');
+                    if (saved === 'dark' || saved === 'light') manualTheme = saved;
+                } catch (e) {}
                 var media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-                applyTheme(saved === 'dark' || saved === 'light' ? saved : (media && media.matches ? 'dark' : 'light'));
-                // 未手动选择主题时跟随系统配色变化；手动选择后以保存值为准。
+                applyTheme(manualTheme || (media && media.matches ? 'dark' : 'light'));
+                // 手动选择在当前页面始终有效，即使浏览器禁止读取或写入存储。
                 function onSchemeChange(ev) {
-                    var stored = null;
-                    try { stored = localStorage.getItem('sp-theme'); } catch (e) {}
-                    if (stored !== 'dark' && stored !== 'light') applyTheme(ev.matches ? 'dark' : 'light');
+                    if (!manualTheme) applyTheme(ev.matches ? 'dark' : 'light');
                 }
                 // Safari 14 以前的 MediaQueryList 只有 addListener。
                 if (media && typeof media.addEventListener === 'function') media.addEventListener('change', onSchemeChange);
                 else if (media && typeof media.addListener === 'function') media.addListener(onSchemeChange);
             }
             themeToggle.addEventListener('click', function () {
-                var next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-                applyTheme(next);
-                try { localStorage.setItem('sp-theme', next); } catch (e) {}
+                manualTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+                applyTheme(manualTheme);
+                try { localStorage.setItem('sp-theme', manualTheme); } catch (e) {}
             });
 
             function setMasterVisible(showing) {
                 masterInput.type = showing ? 'text' : 'password';
+                // A toggle keeps one label; aria-pressed alone announces the state.
                 visibilityBtn.setAttribute('aria-pressed', String(showing));
-                visibilityBtn.setAttribute('aria-label', showing ? '隐藏主密码' : '显示主密码');
                 visibilityBtn.querySelector('svg path').setAttribute('d', showing ? ICONS.eyeOff : ICONS.eye);
             }
             visibilityBtn.addEventListener('click', function () {
@@ -1591,7 +1595,7 @@
             codeInput.addEventListener('blur', function () { if (codeComposing) { codeComposing = false; scheduleRefresh({ isComposing: false }); } });
             codeInput.addEventListener('keydown', function (e) {
                 // 输入法选词时的回车只用于确认候选，不能触发复制。
-                if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229 && !copyBtn.disabled) copyBtn.click();
+                if (e.key === 'Enter' && !e.repeat && !e.isComposing && e.keyCode !== 229 && !copyBtn.disabled) copyBtn.click();
             });
 
             function copyText(text, isStillValid) {

@@ -150,7 +150,8 @@ MANIFEST_ACCEPT = ",".join([
 # typographic hyphen. The strict `CVE-\d{4}-\d{4,7}` read none of those, so a
 # CVE fix was reported as "no CVE mentioned". Always go through find_cves().
 # `(?!\d)`: an id longer than seven digits must not be read as its first seven.
-CVE_RE = re.compile(r"(?<![A-Za-z0-9])CVE[-_ \u2010-\u2013]?(\d{4})[-_\u2010-\u2013](\d{4,7})(?!\d)", re.I)
+# CVE Record Format: ASCII year, then 4–19 ASCII sequence digits.
+CVE_RE = re.compile(r"(?<![A-Za-z0-9])CVE[-_ \u2010-\u2013]?([0-9]{4})[-_\u2010-\u2013]([0-9]{4,19})(?!\d)", re.I)
 SEC_WORDS_RE = re.compile(
     r"(security fix|fix(es)? .{0,40}vulnerab|buffer overflow|use-after-free|"
     r"privilege escalation|out.of.bounds)", re.I)
@@ -1433,9 +1434,11 @@ def rpmdb_chunk(resolved: dict) -> dict | None:
     cands = [l for l in resolved["layers"]
              if any(c == CHUNK_MATCH or c.endswith("/" + CHUNK_MATCH)
                     for c in l["components"])]
-    if not cands:
+    # Chunk annotations do not identify a database's final filesystem path.
+    # In particular, its compressed size is not an overlay precedence rule.
+    if not cands or any(not l.get("digest") or l["digest"] != cands[0].get("digest")
+                        for l in cands[1:]):
         return None
-    cands.sort(key=lambda l: l["size"])
     return cands[0]
 
 
@@ -1467,9 +1470,9 @@ def package_list(reg: Registry, resolved: dict) -> dict:
     chunk = rpmdb_chunk(resolved)
     if chunk is None:
         raise SystemExit(T(
-            "no standalone rpmdb chunk in this image (needs chunkah 'bigfiles' layout); "
+            "no unambiguous standalone rpmdb chunk in this image (needs one distinct rpmdb layer); "
             "use `layers` or --exact 0 instead",
-            "此镜像中没有独立的 rpmdb chunk（需要 chunkah 'bigfiles' 布局）；"
+            "此镜像中找不到唯一的独立 rpmdb chunk（需要一个可明确识别的数据库层）；"
             "请改用 `layers` 或 --exact 0"))
     path = reg.extract_member(chunk, CHUNK_MATCH)
     con = None
@@ -2053,7 +2056,8 @@ def _advisory_cve_scope(update: dict) -> tuple[set, set]:
     return (set(), ids) if len(names) > 1 else (ids, set())
 
 
-def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) -> dict:
+def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None,
+                    *, baseline_release: str | None = None) -> dict:
     info = {"security": False, "cves": set(), "cves_dropped": set(),
             "advisory_wide_cves": set(), "aliases": [],
             "severities": [], "sec_severities": [], "bodhi_type": None, "why": [], "erratum": None,
@@ -2177,7 +2181,8 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
                 # the security erratum of 8.9.1) gains its fix all the same, and
                 # only a CVE id in the rpm changelog could say so before.
                 passed = (_passed_build(old, new, u["nvrs"], epochs)
-                          if (old and (not third_party or norm_new)
+                          if (old and (baseline_release is None or baseline_release == rel)
+                              and (not third_party or norm_new)
                               and (not old_third_party or old_norm)) else None)
                 if passed and u.get("type") == "security" and status in PUSHED_STATUSES:
                     info["passed_over"].append(
@@ -2197,23 +2202,23 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
             # the epoch changed) is a fix the user already has. Recording its
             # severity here is what produced a bogus "HIGH/CRITICAL - UPDATE NOW"
             # for a plain bugfix bump or local rebuild.
-            if hit_old:
-                info["already_had"].append(
-                    {"alias": u["alias"], "type": u.get("type"),
-                     "severity": u.get("severity"), "status": status,
-                     "nvr": sorted(hit_old)[0]})
-                continue
-            attached = bool(hit_attached)
-            pushed = status in PUSHED_STATUSES
-            if not pushed:
+            if status not in PUSHED_STATUSES:
                 # type=security but unpushed/testing/obsolete: report, don't escalate
                 info["not_pushed"].append(
                     {"alias": u["alias"], "type": u.get("type"),
                      "severity": u.get("severity"), "status": status})
                 info["why"].append(
                     f"erratum/勘误 {u['alias']}: type={u.get('type')} status={status} "
-                    f"(not in a Fedora repo yet / 尚未进入 Fedora 仓库 - not counted)")
+                    f"(not stable / 非 stable 状态 - not counted)")
                 continue
+            if hit_old:
+                info["already_had"].append(
+                    {"alias": u["alias"], "type": u.get("type"),
+                     "severity": u.get("severity"), "status": status,
+                     "nvr": sorted(hit_old)[0],
+                     "also_matches_target": bool(hit_attached or hit_corresponding)})
+                continue
+            attached = bool(hit_attached)
             if u.get("alias"):
                 info["aliases"].append(u["alias"])
             add_advisory_cves(u)
@@ -2306,7 +2311,9 @@ def layer_diff(a: dict, b: dict) -> dict:
     changed = sorted((l for d, l in db.items() if d not in da), key=lambda l: -l["size"])
     dl_bytes = sum(l["size"] for l in changed)
     pkgs = sorted({c[4:] for l in changed for c in l["components"] if c.startswith("rpm/")})
-    total_b = sum(l["size"] for l in b["layers"])
+    # A repeated descriptor references the same transferable blob. Use the
+    # same digest space for the denominator, download, and reuse counts.
+    total_b = sum(l["size"] for l in db.values())
     return {
         "chunks_a": len(da), "chunks_b": len(db), "chunks_changed": len(changed),
         "chunks_reused": len(db) - len(changed), "total_size_b": total_b,
@@ -2671,6 +2678,16 @@ def secureblue_notification(diff: dict, groups: list | None = None) -> dict:
             "why": why, "why_zh": why_zh}
 
 
+def _reverted_aliases(group: dict) -> list:
+    """Only a downgraded member's old-only stable advisory can be reverted."""
+    return list(dict.fromkeys(
+        a["alias"] for c in group["pkgs"] if c.get("dir") == "downgrade"
+        for a in (c.get("cls") or {}).get("already_had") or ()
+        if a.get("alias") and a.get("type") == "security"
+        and (a.get("status") or "").lower() in PUSHED_STATUSES
+        and not a.get("also_matches_target")))
+
+
 def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                backlog: list | None = None, bodhi_state: dict | None = None,
                groups: list | None = None) -> dict:
@@ -2741,6 +2758,22 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                    max_advisory_severity=None, security_advisory_count=None,
                    level_without_advisories="unknown", advisory_driven=False,
                    note="the booted image's notification backend was not read from the rpmdb")
+    # Missing Bodhi evidence cannot establish an empty local advisory list.
+    elif (not diff.get("advisory_coverage_complete", not any(
+            (bodhi_state or {}).get(k) for k in ("failed", "skipped", "truncated", "disabled", "unavailable")))
+          and not sbn.get("unconditional") and any(
+              c.get("dir") != "arch-change" and not _is_third_party(c.get("new") or {})
+              for c in diff["changed"])):
+        sbn = dict(sbn, advisory_coverage_complete=False,
+                   observed_security_advisory_count=sbn.get("security_advisory_count"),
+                   security_advisory_count=None,
+                   max_advisory_severity=("critical" if sbn.get("max_advisory_severity") == "critical" else None))
+        # A known critical advisory or trivalent upgrade already fixes the
+        # maximum. The stock-install prediction never needs advisory metadata.
+        if sbn["level"] != "major":
+            sbn.update(level="unknown", message=None, delivery=None, advisory_driven=False,
+                       why=["incomplete advisory coverage on a layered system"],
+                       why_zh=["叠加包系统的勘误覆盖不完整"])
     silent = xc.get("silent_rebuilds") or []
     # The whole list, not the first 60 entries: silent_rebuilds is sorted by chunk
     # size, and the packages that matter here (kernel, glibc, ...) are exactly the
@@ -2993,10 +3026,7 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         # The security errata of the builds being left, by the report's own rule
         # for its downgrade section: a push or a CI summary shows the headline
         # alone, and it never said what the rollback takes away.
-        errata = list(dict.fromkeys(
-            x["alias"] for g in down for x in g.get("already_had") or []
-            if x.get("alias") and x.get("type") == "security"
-            and (x.get("status") or "").lower() in PUSHED_STATUSES))
+        errata = list(dict.fromkeys(alias for g in down for alias in _reverted_aliases(g)))
         v["errata_reverted"] = errata
         if errata:
             v["headline"] += (" - this reverts published security errata: "
@@ -3100,7 +3130,7 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                 kind = "security erratum" if has_hi_sec else "non-security erratum"
                 bits.append(f"a released {kind} ranks {v['severity_rank']}/4 "
                             f"under Fedora's scale")
-            if sbn.get("level") == "major" and not sbn.get("unconditional"):
+            if sbn.get("level") == "major" and not sbn.get("unconditional") and forward_major:
                 bits.append("secureblue's own notification rule classifies this as major")
             if kernel_moved:
                 bits.append("the kernel moved")
@@ -3326,8 +3356,8 @@ def _why_for_lang(w: str, lang: str) -> str:
               .replace("no longer mentioned/不再提及:", "不再提及:")
               .replace("erratum/勘误 ", "勘误 ")
               .replace(", a build this update passes over / 本次更新越过的构建)", "，本次更新越过的构建)")
-              .replace("(not in a Fedora repo yet / 尚未进入 Fedora 仓库 - not counted)",
-                       "（尚未进入 Fedora 仓库——不计入）"))
+              .replace("(not stable / 非 stable 状态 - not counted)",
+                       "（非 stable 状态——不计入）"))
         s = re.sub(r" \(\+(\d+) more not shown / 另有 \1 个未显示\)", r"（另有 \1 个未显示）", s)
         s = re.sub(r"… \(\+(\d+) chars not shown / 另有 \1 个字符未显示\)", r"…（另有 \1 个字符未显示）", s)
         return s
@@ -3336,7 +3366,7 @@ def _why_for_lang(w: str, lang: str) -> str:
           .replace("no longer mentioned/不再提及:", "no longer mentioned:")
           .replace("erratum/勘误 ", "erratum ")
           .replace(" / 本次更新越过的构建)", ")")
-          .replace(" / 尚未进入 Fedora 仓库 - not counted)", " - not counted)"))
+          .replace(" / 非 stable 状态 - not counted)", " - not counted)"))
     s = re.sub(r" \(\+(\d+) more not shown / 另有 \1 个未显示\)", r" (+\1 more not shown)", s)
     s = re.sub(r"… \(\+(\d+) chars not shown / 另有 \1 个字符未显示\)", r"… (+\1 chars not shown)", s)
     return s
@@ -3391,6 +3421,7 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
                       "normal": "普通 (normal) (urgency=normal)",
                       "none": "无 (none)",
                       "unknown": ("未知（软件包信息不完整）" if verdict.get("package_data_complete") is False
+                                  else "未知（勘误覆盖不完整）" if _sbn.get("advisory_coverage_complete") is False
                                   else "未知（未读取软件包版本）")}.get(_lvl, _lvl)
             W("## secureblue 桌面通知预测")
             W("")
@@ -3401,7 +3432,8 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
                                "rpm-ostree 必须有针对已暂存 OCI 部署的缓存更新（仅缓存 manifest 不会产生基础包差异）")
                 W(f"- 仅预测基础镜像的触发条件：{requirement}。当天已有重大通知则不再提醒，"
                   "普通通知也不会在当天重复。本报告未读取通知记录，也未检查本机叠加包。")
-            if _sbn.get("advisory_driven") and _lvl != "unknown":
+            if (_sbn.get("advisory_driven") or (_lvl == "unknown" and
+                    _sbn.get("advisory_coverage_complete") is False and verdict.get("package_data_complete") is not False)):
                 W("- 未叠加软件包的系统（默认安装）: "
                   + ("普通 (normal)——仅因内核升级"
                      if _sbn.get("level_without_advisories") == "normal" else "无 (none)"))
@@ -3424,6 +3456,7 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
                       "normal": "normal (urgency=normal)",
                       "none": "none",
                       "unknown": ("unknown (incomplete package information)" if verdict.get("package_data_complete") is False
+                                  else "unknown (incomplete advisory coverage)" if _sbn.get("advisory_coverage_complete") is False
                                   else "unknown (package versions not read)")}.get(_lvl, _lvl)
             W("## secureblue Notification Prediction")
             if _sbn.get("delivery"):
@@ -3437,7 +3470,8 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W("")
             msg_str = (f" — \"{_sbn['message']}\"") if _sbn.get("message") else ""
             W(f"- predicted popup: {_badge}{msg_str}")
-            if _sbn.get("advisory_driven") and _lvl != "unknown":
+            if (_sbn.get("advisory_driven") or (_lvl == "unknown" and
+                    _sbn.get("advisory_coverage_complete") is False and verdict.get("package_data_complete") is not False)):
                 W("- on a system without layered packages (a stock install): "
                   + ("normal - for the kernel upgrade alone"
                      if _sbn.get("level_without_advisories") == "normal" else "none"))
@@ -3560,10 +3594,7 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             # from, i.e. one that matched the old build (`already_had`). `aliases`
             # are the errata of the older build it moves back to, and naming
             # those here blamed the revert on the wrong erratum.
-            reverted = list(dict.fromkeys(
-                x["alias"] for x in g.get("already_had") or []
-                if x.get("alias") and x.get("type") == "security"
-                and (x.get("status") or "").lower() in PUSHED_STATUSES))
+            reverted = _reverted_aliases(g)
             if reverted:
                 rev = (f" — 这会*回退*已发布的勘误: "
                        f"{clip_list(reverted, 2, lang='zh', joiner='，')}" if is_zh
@@ -3726,7 +3757,7 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
     g_un = [g for g in groups if g.get("unreleased")]
     if g_un:
         if is_zh:
-            W(f"## 已存在但尚未推送的勘误（{len(g_un)}）")
+            W(f"## 当前并非 stable 的勘误（{len(g_un)}）")
             W("")
             W("Bodhi 中有这些记录，但其 `status` 不是 `stable`，因此在此不计权重——"
               "与 `security_backlog` 只统计已推送勘误的口径一致。")
@@ -3735,7 +3766,7 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
                 W(f"- `{g['src']}`: "
                   f"{clip_list(g['unreleased'], 4, lang='zh', joiner='，', render=lambda x: str(x.get('alias') or '?') + ' (' + str(x.get('status') or '?') + ')')}")
         else:
-            W(f"## Errata that exist but are not pushed yet ({len(g_un)})")
+            W(f"## Errata not currently stable ({len(g_un)})")
             W("")
             W("Bodhi knows about these, but their `status` is not `stable`, so they carry no "
               "weight here - matching `security_backlog`, which only counts pushed errata.")
@@ -4530,11 +4561,11 @@ def cmd_history(args):
     print("cost = bytes a client on the row above would download to reach this row / "
           "cost 下载量 = 上一行镜像的客户端升级到本行需下载的字节数\n")
     print(f"  {'created (UTC)':19} {'image version':15} {'input':11} "
-          f"{'chunks':8} {'cost':>9}  {'kernel':22} refs")
+          f"{'chunks':8} {'cost':>9}  {'Fedora base kernel':22} refs")
     # A CJK character fills two terminal cells, so each width is the English one
     # minus the number of CJK characters in the label.
     print(f"  {'创建时间 (UTC)':15} {'镜像版本':11} {'输入哈希':7} "
-          f"{'chunk':8} {'下载量':>6}  {'内核':20} 引用")
+          f"{'chunk':8} {'下载量':>6}  {'Fedora 基础内核':18} 引用")
     print("  " + "-" * 110)
     dup = 0
     for r in reversed(rows):
@@ -4643,7 +4674,7 @@ def cmd_tags(args):
     if cur.get("index_digest") and cur["index_digest"] != cur["digest"]:
         print(f"  platform manifest 平台 manifest: {cur['digest']}")
     print(f"  version 版本: {cur['annotations'].get('org.opencontainers.image.version')}")
-    print(f"  created 构建时间: {cur.get('created')}   kernel 内核: {cur['annotations'].get('ostree.linux')}")
+    print(f"  created 构建时间: {cur.get('created')}   Fedora base kernel 基础内核 (ostree.linux): {cur['annotations'].get('ostree.linux')}")
     print(f"  chunks 分块: {len(cur['layers'])}  total 总量: {human(sum(l['size'] for l in cur['layers']))}")
     print(f"\ndated tags, newest first (probing the last {args.days} days; a missing day "
           f"means no dated tag was found for that day): / 日期标签，从新到旧（探测最近 {args.days} 天；"
@@ -4686,7 +4717,7 @@ def cmd_layers(args):
           + ("   (auto-swapped to older -> newer / 已自动交换为 旧 -> 新)" if swapped else ""))
     print(f"  version 版本: {a['annotations'].get('org.opencontainers.image.version')}"
           f" -> {b['annotations'].get('org.opencontainers.image.version')}")
-    print(f"  kernel 内核:  {a['annotations'].get('ostree.linux')} -> {b['annotations'].get('ostree.linux')}")
+    print(f"  Fedora base kernel 基础内核 (ostree.linux):  {a['annotations'].get('ostree.linux')} -> {b['annotations'].get('ostree.linux')}")
     print(f"  chunks 分块:  {ld['chunks_a']} -> {ld['chunks_b']} | "
           f"{ld['chunks_changed']} changed 变化, {ld['chunks_reused']} reused 复用")
     print(f"  download 下载: {human(ld['download_bytes'])} ({ld['download_pct']}% of "
@@ -4842,6 +4873,14 @@ def _pkglist_from_cache(data):
                ("name", "src", "arch", "version", "release", "evr", "nvr")):
             return None
         if any(not isinstance(entry.get(k), str) for k in ("vendor", "srpm", "epoch")):
+            return None
+        # Cached derived labels must describe the same build as the RPM fields.
+        # Otherwise the comparison, display, and advisory lookup can disagree.
+        evr = f"{entry['version']}-{entry['release']}"
+        srpm = entry["srpm"]
+        src = (srpm.rsplit("-", 2)[0] if srpm.count("-") >= 2 else "") or name
+        if (entry["evr"] != evr or entry["nvr"] != f"{name}-{evr}" or entry["src"] != src
+                or re.fullmatch(r"[0-9]*", entry["epoch"]) is None):
             return None
         epoch = entry.get("source_epoch", "0")
         if not isinstance(epoch, str) or re.fullmatch(r"[0-9]+", epoch) is None:
@@ -5054,11 +5093,14 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
     bodhi = None if (args.no_bodhi or not rel) else Bodhi(cache_dir=cache_dir,
                                                          max_calls=args.max_bodhi,
                                                          max_seconds=getattr(args, "bodhi_seconds", 0))
+    # Distless builds (shim, fedora-release) cannot establish a shared branch
+    # from their NVRs. Nor can packages carried over from an older release.
+    baseline_release = fedora_release(pa, an_a.get("org.opencontainers.image.version", ""))
     for c in classify_order(diff["changed"]):       # report order stays by name
         if c["dir"] == "arch-change":
             # An equal-EVR arch replacement is not a new version or .upgraded.
             continue
-        c["cls"] = classify_change(c["old"], c["new"], rel, bodhi)
+        c["cls"] = classify_change(c["old"], c["new"], rel, bodhi, baseline_release=baseline_release)
     # parse-quality notes: both of these used to fail silently, and both make the
     # diff look calmer than the data warrants
     tables = (pb,) if pa is pb else (pa, pb)
@@ -5122,6 +5164,9 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
             if n in pa:
                 src_of[n] = pa[n]["src"]
     xc = crosscheck_chunks(ld, diff, src_of)
+    # Backlog lookups for unchanged packages cannot affect this delta's popup.
+    diff["advisory_coverage_complete"] = bodhi is not None and not (
+        bodhi.failed or bodhi.skipped or getattr(bodhi, "truncated_src", ()))
     backlog, coverage = [], None
     if getattr(args, "audit", False) and bodhi is not None:
         # Same Bodhi object as the diff classification above: one shared
@@ -5203,15 +5248,19 @@ def _comparison_json(res: dict, from_label=None, to_label=None) -> dict:
     changed = []
     for c in d["changed"]:
         cls = c.get("cls") or {}
+        is_down = c.get("dir") == "downgrade"
         old, new = _evr_pair(c["old"], c["new"])
         changed.append({"name": c["name"], "old": old, "new": new, "src": c["src"],
                         "old_arch": c["old"].get("arch"), "new_arch": c["new"].get("arch"),
-                        "dir": c["dir"], "security": bool(cls.get("security")),
-                        "cves": cls.get("cves", []), "cves_dropped": cls.get("cves_dropped", []),
-                        "advisory_wide_cves": cls.get("advisory_wide_cves", []),
-                        "aliases": cls.get("aliases", []), "already_had": cls.get("already_had", []),
-                        "not_pushed": cls.get("not_pushed", []), "passed_over": cls.get("passed_over", []),
-                        "why": cls.get("why", [])})
+                        "dir": c["dir"], "security": False if is_down else bool(cls.get("security")),
+                        "cves": [] if is_down else cls.get("cves", []),
+                        "cves_dropped": cls.get("cves_dropped", []),
+                        "advisory_wide_cves": [] if is_down else cls.get("advisory_wide_cves", []),
+                        "aliases": [] if is_down else cls.get("aliases", []),
+                        "already_had": cls.get("already_had", []),
+                        "not_pushed": [] if is_down else cls.get("not_pushed", []),
+                        "passed_over": [] if is_down else cls.get("passed_over", []),
+                        "why": [] if is_down else cls.get("why", [])})
     return {"verdict": res["verdict"],
             "from": a.get("ref") if from_label is None else from_label,
             "to": b.get("ref") if to_label is None else to_label,
@@ -5644,6 +5693,9 @@ def cmd_check(args):
     # way to tell those apart.
     sbn = v.get("secureblue_notification") or {}
     sbn_lvl = sbn.get("level") if not sbn.get("unconditional") else None
+    forward_major = bool(sbn.get("trivalent_updated")) or any(
+        g.get("has_security_erratum") and rpmostree_str2severity(g.get("erratum_severity")) == 4
+        for g in (res.get("groups") or ()))
     if v["level"] == "update-now":
         reasons = []
         if v["cves"]:
@@ -5652,7 +5704,7 @@ def cmd_check(args):
         if v["security_pkgs"]:
             reasons.append(f"security packages ({len(v['security_pkgs'])}): "
                            + clip_list(v["security_pkgs"], 10, joiner=","))
-        if sbn_lvl == "major":
+        if sbn_lvl == "major" and forward_major:
             reasons.append("secureblue treats this update as major")
         fail_reason = "; ".join(reasons) or "update-now with no CVE/erratum attributed"
     else:
@@ -5862,10 +5914,18 @@ def main(argv=None):
     if args.cmd == "history" and args.at_digest is not None:
         if not _clean_sha256_header(args.at_digest) or args.at_digest != args.at_digest.strip():
             ap.error(T("--at-digest requires sha256:<64 hex>", "--at-digest 需要 sha256:<64 位十六进制>"))
+    if args.max_bodhi < 0:
+        ap.error(T("--max-bodhi cannot be negative", "--max-bodhi 不能为负数"))
     if args.bodhi_seconds < 0:
         ap.error(T("--bodhi-seconds cannot be negative", "--bodhi-seconds 不能为负数"))
     if args.backlog_candidates is not None and args.backlog_candidates < 1:
         ap.error(T("--backlog-candidates must be positive", "--backlog-candidates 必须为正数"))
+    if args.cmd == "history" and args.scan < 1:
+        ap.error(T("--scan must be positive", "--scan 必须为正数"))
+    if args.cmd == "check" and args.scan < 0:
+        ap.error(T("--scan cannot be negative", "--scan 不能为负数"))
+    if args.cmd == "check" and args.prune_days < 0:
+        ap.error(T("--prune-days cannot be negative", "--prune-days 不能为负数"))
     if args.cmd == "backlog" and args.no_bodhi:
         ap.error(T("backlog requires Bodhi; --no-bodhi is incompatible",
                    "backlog 需要查询 Bodhi，不能与 --no-bodhi 同用"))

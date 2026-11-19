@@ -2639,7 +2639,8 @@
           if (utf8) {
             const flag = bytes[start++];
             const method = bytes[start++];
-            if (flag !== 0 && (flag !== 1 || method !== 0)) return "";
+            // The method byte is present and must be zero even when compression is disabled.
+            if ((flag !== 0 && flag !== 1) || method !== 0) return "";
             compressed = flag === 1;
             const languageEnd = bytes.indexOf(0, start);
             if (languageEnd < 0) return "";
@@ -2953,8 +2954,9 @@
           return Number.isFinite(v) ? Math.max(-limit, Math.min(limit, v)) : NaN;
         },
 
-        // Build binary TIFF payload (starts at 'II' 0x002A ...) from metadata object
-        buildTiffBuffer(meta, dims, forJpeg = false) {
+        // Build binary TIFF payload (starts at 'II' 0x002A ...) from metadata object.
+        // RGB is the default for uncompressed PNG; JPEG and lossy WebP use YCbCr.
+        buildTiffBuffer(meta, dims, forJpeg = false, rgb = !forJpeg) {
           const encoder = new TextEncoder();
           const MAX_TEXT_BYTES = 8000;
           const makeStr = (meta.make || "").trim();
@@ -3050,7 +3052,8 @@
           const exifIfd = [];
           if (hasExifSub) {
             addRaw(exifIfd, 0x9000, 7, 4, [0x30, 0x32, 0x33, 0x30]); // ExifVersion "0230" (mandatory)
-            addRaw(exifIfd, 0x9101, 7, 4, [1, 2, 3, 0]); // ComponentsConfiguration: Y Cb Cr (mandatory)
+            // ComponentsConfiguration is mandatory: RGB uses 4/5/6, YCbCr uses 1/2/3.
+            addRaw(exifIfd, 0x9101, 7, 4, rgb ? [4, 5, 6, 0] : [1, 2, 3, 0]);
             addRaw(exifIfd, 0xa000, 7, 4, [0x30, 0x31, 0x30, 0x30]); // FlashpixVersion "0100" (mandatory)
             addShort(exifIfd, 0xa001, 1); // ColorSpace: sRGB (mandatory)
             if (hasDims) {
@@ -3389,7 +3392,9 @@
             if (xmpIndex >= 0) header[0] |= 0x04;
             else header[0] &= ~0x04;
             body.splice(xmpIndex >= 0 ? xmpIndex : body.length, 0, {
-              fourcc: "EXIF", payload: this.buildTiffBuffer(meta, { w: canvasW, h: canvasH })
+              fourcc: "EXIF",
+              payload: this.buildTiffBuffer(meta, { w: canvasW, h: canvasH }, false,
+                chunks.some(({ fourcc }) => fourcc === "VP8L"))
             });
             ordered = [{ fourcc: "VP8X", payload: header }, ...body];
           }
@@ -3739,6 +3744,14 @@
         if (ratioStr === "original") return state.rotW / Math.max(1, state.rotH);
         const [w, h] = ratioStr.split(":").map(Number);
         return w && h ? w / h : null;
+      }
+
+      // Integer crops can differ from the ideal ratio by rounding one axis. A fixed relative
+      // tolerance is wrong for large images: it used to accept visibly non-matching manual sizes.
+      function cropRatioMatches(w, h, ratio) {
+        if (!(w > 0 && h > 0 && ratio > 0) || !Number.isFinite(w + h + ratio)) return false;
+        return Math.abs(w - Math.round(h * ratio)) <= 1 ||
+          Math.abs(h - Math.round(w / ratio)) <= 1;
       }
 
       /* ======================================================================
@@ -5006,7 +5019,8 @@
         const size = formatBytes(blob.size);
         const diffPct = state.originalBytes > 0 ? (blob.size - state.originalBytes) * 100 / state.originalBytes : null;
         const increase = diffPct > 0;
-        const delta = diffPct === null ? "" : increase ? `+${diffPct.toFixed(1)}%` : `节省 ${Math.abs(diffPct).toFixed(1)}%`;
+        const delta = diffPct === null ? "" : diffPct === 0 ? "体积不变"
+          : increase ? `+${diffPct.toFixed(1)}%` : `节省 ${Math.abs(diffPct).toFixed(1)}%`;
         outputDetails = {
           spec: `${outW}×${outH} · ${fmtName} (${modeText})`, size, delta, increase,
           compare: `${modeText} (${size})`
@@ -5581,7 +5595,7 @@
             cropInputSnapshot = null;
             // A typed size that no longer matches the locked ratio would make the next drag jump
             const lockedRatio = parseRatioValue(state.cropRatio);
-            if (lockedRatio && Math.abs(w / h - lockedRatio) / lockedRatio > 0.02) {
+            if (lockedRatio && !cropRatioMatches(w, h, lockedRatio)) {
               state.cropRatio = "free";
               setRatioChipActive("free");
             }
@@ -5626,7 +5640,7 @@
           state.cropH = state.rotH;
           // The full frame rarely matches a fixed preset: drop the lock so the next drag cannot jump
           const lockedRatio = parseRatioValue(state.cropRatio);
-          if (lockedRatio && Math.abs(state.rotW / state.rotH - lockedRatio) / lockedRatio > 0.02) {
+          if (lockedRatio && !cropRatioMatches(state.rotW, state.rotH, lockedRatio)) {
             state.cropRatio = "free";
             setRatioChipActive("free");
           }
@@ -5809,7 +5823,7 @@
             if (!raw) return;
             const v = ExifEngine.parsePositiveFixed(raw);
             const next = v > 0 ? String(v) : "";
-            if (!next) showToast(`${name}无效（应为不小于 0.01 的数值），已清除该字段`);
+            if (!next) showToast(`${name}无效（应在 0.01 到 42949672.95 之间），已清除该字段`);
             if (inp.value !== next) {
               inp.value = next;
               readExifFromInputs();
@@ -5821,9 +5835,11 @@
         els.exifIso.addEventListener("change", () => {
           const raw = els.exifIso.value.trim();
           if (!raw) return;
+          const numeric = Number(raw);
           const iso = ExifEngine.parseIso(raw);
           const next = iso > 0 ? String(iso) : "";
-          if (!next) showToast("ISO 感光度无效（应为不小于 1 的整数），已清除该字段");
+          if (!next) showToast("ISO 感光度无效（应为 1 到 4294967295 的整数），已清除该字段");
+          else if (numeric > 0xffffffff) showToast(`ISO 感光度超出 EXIF 上限，已调整为 ${next}`);
           if (els.exifIso.value !== next) {
             els.exifIso.value = next;
             readExifFromInputs();

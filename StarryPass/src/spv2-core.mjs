@@ -5,7 +5,7 @@
  *
  *   SHA-256 .......... Web Crypto API  (crypto.subtle.digest)
  *   HMAC-SHA-256 ..... Web Crypto API  (crypto.subtle.sign)
- *   HKDF-SHA-256 ..... Web Crypto API  (crypto.subtle.deriveBits, RFC 5869)
+ *   HKDF-SHA-256 ..... Web Crypto API / @noble/hashes for long info (RFC 5869)
  *   Argon2id v1.3 .... @noble/hashes   (RFC 9106, passes §5.3 KAT with
  *                                       secret + associated data)
  *   CSPRNG ........... crypto.getRandomValues
@@ -21,6 +21,8 @@
  */
 
 import { argon2id, argon2idAsync } from '@noble/hashes/argon2.js';
+import { extract as hkdfExtract, expand as hkdfExpand } from '@noble/hashes/hkdf.js';
+import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js';
 import hashwasmArgon2Module from '../vendor/hash-wasm/argon2.umd.min.cjs';
 
 /* Argon2id providers
@@ -73,6 +75,9 @@ const DOMAIN_CACHE   = encodeAscii('StarryPass-v2:session-cache-tag:v1\x00');
 
 /* HKDF-Expand stream: 255 blocks x 32 bytes (RFC 5869 §2.2 limit). */
 const HKDF_MAX_BLOCKS = 255;
+// Node/OpenSSL rejects longer HKDF info. Use noble for this case on every
+// platform; truncating or hashing info would change the frozen v2 protocol.
+const NATIVE_HKDF_MAX_INFO_BYTES = 1024;
 
 function encodeAscii(str) {
     const out = new Uint8Array(str.length);
@@ -105,22 +110,6 @@ function writeLE32(out, offset, val) {
 function writeLE16(out, offset, val) {
     out[offset]     = val & 0xff;
     out[offset + 1] = (val >>> 8) & 0xff;
-}
-
-function concatBytes(arrays) {
-    let total = 0;
-    for (const a of arrays) total += a.length;
-    const out = new Uint8Array(total);
-    let pos = 0;
-    for (const a of arrays) { out.set(a, pos); pos += a.length; }
-    return out;
-}
-
-function lenPrefixed(bytes) {
-    const out = new Uint8Array(4 + bytes.length);
-    writeLE32(out, 0, bytes.length);
-    out.set(bytes, 4);
-    return out;
 }
 
 /* ------------------------------------------------------------------ *
@@ -275,18 +264,16 @@ function startArgon2id({ password, salt, ad, memoryKiB, passes, parallelism, tag
  * ------------------------------------------------------------------ */
 
 async function buildSalt(codeBytes, tierId) {
-    let tierByte, codeFrame, saltIn;
+    const codeLenOffset = DOMAIN_SALT.length;
+    const saltIn = new Uint8Array(codeLenOffset + 4 + codeBytes.length + 1);
     try {
-        tierByte = new Uint8Array([tierId]);
-        codeFrame = lenPrefixed(codeBytes);
-        saltIn = concatBytes([DOMAIN_SALT, codeFrame, tierByte]);
-        zeroize(codeFrame);
-        zeroize(tierByte);
+        saltIn.set(DOMAIN_SALT);
+        writeLE32(saltIn, codeLenOffset, codeBytes.length);
+        saltIn.set(codeBytes, codeLenOffset + 4);
+        saltIn[saltIn.length - 1] = tierId;
         return await sha256(saltIn);
     } finally {
         zeroize(saltIn);
-        zeroize(codeFrame);
-        zeroize(tierByte);
     }
 }
 
@@ -323,6 +310,7 @@ class HkdfStream {
     constructor(info, initialBlocks = 1) {
         this.info = info;
         this.ikmKey = null;
+        this.prk = null;
         this.blockIdx = 0;
         this.initialBlocks = Math.max(1, Math.min(HKDF_MAX_BLOCKS, initialBlocks | 0));
         this.buf = new Uint8Array(0);
@@ -330,20 +318,23 @@ class HkdfStream {
     }
 
     async init(sk) {
-        this.ikmKey = await subtle().importKey('raw', sk, 'HKDF', false, ['deriveBits']);
+        if (this.info.length > NATIVE_HKDF_MAX_INFO_BYTES) {
+            this.prk = hkdfExtract(nobleSha256, sk, DOMAIN_EXTRACT);
+        } else {
+            this.ikmKey = await subtle().importKey('raw', sk, 'HKDF', false, ['deriveBits']);
+        }
     }
 
     async refill() {
         if (this.blockIdx === HKDF_MAX_BLOCKS) throw new Error('HKDF_EXHAUSTED');
         const nextIdx = this.blockIdx === 0 ? this.initialBlocks : Math.min(HKDF_MAX_BLOCKS, this.blockIdx * 2);
-        const bits = await subtle().deriveBits(
-            { name: 'HKDF', hash: 'SHA-256', salt: DOMAIN_EXTRACT, info: this.info },
-            this.ikmKey,
-            nextIdx * 32 * 8
-        );
-        // deriveBits also returns all preceding blocks: erase that full
-        // native result and the replaced buffer, not just the last slice.
-        const raw = validateCryptoBytes(bits, nextIdx * 32, 'INVALID_HKDF_OUTPUT');
+        const size = nextIdx * 32;
+        const raw = this.prk ? hkdfExpand(nobleSha256, this.prk, this.info, size)
+            : validateCryptoBytes(await subtle().deriveBits(
+                { name: 'HKDF', hash: 'SHA-256', salt: DOMAIN_EXTRACT, info: this.info }, this.ikmKey, size * 8
+            ), size, 'INVALID_HKDF_OUTPUT');
+        // Both providers return a prefix. Erase the full result and the
+        // replaced buffer, not just the suffix we actually consume.
         try {
             const next = raw.slice(this.blockIdx * 32);
             zeroize(this.buf);
@@ -372,6 +363,8 @@ class HkdfStream {
         zeroize(this.info);
         this.info = null;
         this.ikmKey = null;
+        zeroize(this.prk);
+        this.prk = null;
     }
 }
 
@@ -381,16 +374,16 @@ class HkdfStream {
 
 async function synthesizePassword(sk, codeBytes, counter, length, modeName) {
     const modeSpec = Object.prototype.hasOwnProperty.call(MODES, modeName) ? MODES[modeName] : MODES.full;
-    const meta = new Uint8Array(7);
-    writeLE32(meta, 0, counter >>> 0);
-    writeLE16(meta, 4, length & 0xffff);
-    meta[6] = modeSpec.id;
-    let codeFrame, info, stream;
+    const metaOffset = DOMAIN_EXPAND.length, codeLenOffset = metaOffset + 7;
+    let info, stream;
     try {
-        codeFrame = lenPrefixed(codeBytes);
-        info = concatBytes([DOMAIN_EXPAND, meta, codeFrame]);
-        zeroize(codeFrame);
-        zeroize(meta);
+        info = new Uint8Array(codeLenOffset + 4 + codeBytes.length);
+        info.set(DOMAIN_EXPAND);
+        writeLE32(info, metaOffset, counter >>> 0);
+        writeLE16(info, metaOffset + 4, length & 0xffff);
+        info[metaOffset + 6] = modeSpec.id;
+        writeLE32(info, codeLenOffset, codeBytes.length);
+        info.set(codeBytes, codeLenOffset + 4);
         stream = new HkdfStream(info, Math.ceil(length / 32));
         await stream.init(sk);
         const pool = modeSpec.pool;
@@ -436,9 +429,7 @@ async function synthesizePassword(sk, codeBytes, counter, length, modeName) {
         return result;
     } finally {
         if (stream) stream.dispose();
-        zeroize(info);
-        zeroize(codeFrame);
-        zeroize(meta);
+        else zeroize(info);
     }
 }
 
@@ -465,7 +456,7 @@ function runSelfTest(inWorker, pureJs) {
             const s = new Uint8Array(16).fill(2);
             const k = new Uint8Array(8).fill(3);
             const x = new Uint8Array(12).fill(4);
-            let tagK, shaInput, shaOutput, tcSalt, tcIkm, tcInfo, prk, okm, hkdfKey;
+            let tagK, shaInput, shaOutput, tcSalt, tcIkm, tcInfo, prk, okm, hkdfKey, noblePrk, nobleOkm;
             try {
                 tagK = await argon2idDeriveWithKey(p, s, k, x, inWorker);
                 if (!constantTimeEqual(tagK, EXPECTED_ARGON2_KAT)) {
@@ -503,10 +494,16 @@ function runSelfTest(inWorker, pureJs) {
                     0x34,0x00,0x72,0x08,0xd5,0xb8,0x87,0x18,0x58,0x65,
                 ]);
                 if (!constantTimeEqual(okm, expectedOkm)) throw new Error('KAT_HKDF_FAILED');
+                noblePrk = hkdfExtract(nobleSha256, tcIkm, tcSalt);
+                nobleOkm = hkdfExpand(nobleSha256, noblePrk, tcInfo, expectedOkm.length);
+                if (!constantTimeEqual(noblePrk, expectedPrk) || !constantTimeEqual(nobleOkm, expectedOkm)) {
+                    throw new Error('KAT_HKDF_FAILED');
+                }
             } finally {
                 zeroize(p); zeroize(s); zeroize(k); zeroize(x);
                 zeroize(tagK); zeroize(shaInput); zeroize(shaOutput);
                 zeroize(tcSalt); zeroize(tcIkm); zeroize(tcInfo); zeroize(prk); zeroize(okm);
+                zeroize(noblePrk); zeroize(nobleOkm);
                 hkdfKey = null;
             }
         })().catch((err) => {

@@ -234,6 +234,12 @@ if (engines.includes('chromium')) {
     await type(page, '#exifFNumber', -1.8);
     await page.waitForFunction(() => document.querySelector('#m3Snackbar').textContent.includes('光圈值无效'));
     assert.equal(await page.locator('#exifFNumber').inputValue(), '');
+    await type(page, '#exifIso', 4294967296);
+    await page.waitForFunction(() => document.querySelector('#m3Snackbar').textContent.includes('已调整为 4294967295'));
+    assert.equal(await page.locator('#exifIso').inputValue(), '4294967295');
+    await type(page, '#exifFNumber', 42949672.96);
+    await page.waitForFunction(() => document.querySelector('#m3Snackbar').textContent.includes('0.01 到 42949672.95'));
+    assert.equal(await page.locator('#exifFNumber').inputValue(), '');
   }));
 
   test('chromium: a capped resize keeps the requested slider value', { timeout: 30000 }, () => open('chromium', async (page) => {
@@ -431,6 +437,19 @@ if (engines.includes('chromium')) {
       if (key === 'pixelstudio.prefs') throw new DOMException('Storage blocked', 'SecurityError');
       return set.call(this, key, value);
     };
+  }));
+
+  test('chromium: an unchanged output size is not reported as savings', { timeout: 30000 }, () => open('chromium', async (page) => {
+    await page.locator('#fileInput').setInputFiles(await imageFixture(page, 'one.png', 1, 1, ['red']));
+    await ready(page, '1×1 · PNG');
+    await on(page, 'export');
+    await format(page, 'bmp');
+    await ready(page, '1×1 · BMP');
+    const bmp = await download(page);
+    await page.locator('#fileInput').setInputFiles({ name: 'same.bmp', mimeType: 'image/bmp', buffer: bmp.bytes });
+    await page.waitForFunction(() => document.querySelector('#fileNameLabel').textContent === 'same.bmp');
+    await ready(page, '1×1 · BMP');
+    assert.equal(await page.locator('#sizeDeltaPill').textContent(), '体积不变');
   }));
 
   test('chromium: size metrics and save stay in a very narrow or short dock', { timeout: 30000 }, () => open('chromium', async (page) => {

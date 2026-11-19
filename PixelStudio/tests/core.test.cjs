@@ -12,8 +12,8 @@ const source = Array.from(html.matchAll(/<script>([\s\S]*?)<\/script>/g), ([, sc
   .find((script) => script.includes(init));
 assert.ok(source, 'The application script must contain the initialization hook');
 const el = { addEventListener() {}, setAttribute() {} };
-const { ExifEngine: exif, CodecHelper: codecs, fitResizeScales, makeDownloadFilename } = runInNewContext(
-  source.replace(init, 'return { ExifEngine, CodecHelper, fitResizeScales, makeDownloadFilename };'),
+const { ExifEngine: exif, CodecHelper: codecs, fitResizeScales, cropRatioMatches, makeDownloadFilename } = runInNewContext(
+  source.replace(init, 'return { ExifEngine, CodecHelper, fitResizeScales, cropRatioMatches, makeDownloadFilename };'),
   { document: { getElementById: () => el }, window: el, navigator: {}, TextDecoder, TextEncoder, Blob, DecompressionStream }
 );
 const arrayBuffer = (bytes) => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
@@ -76,11 +76,12 @@ test('PNG ignores invalid CRC and over-limit decompression, and prioritizes EXIF
   const badCrc = pngChunk('tEXt', ascii('Software\0invalid'));
   badCrc[badCrc.length - 1] ^= 0xff;
   const compressed = pngChunk('zTXt', textData('Description\0\0', deflateSync(Buffer.alloc(40000, 65))));
+  const badMethod = pngChunk('iTXt', textData('Description\0\x00\x01\0\0', ascii('invalid method')));
   const fallback = pngChunk('tEXt', ascii('Description\0fallback'));
   const textDate = pngChunk('tEXt', ascii('Creation Time\0Tue, 02 Jan 2024 15:04:05 +0000'));
   const tiffDate = pngChunk('eXIf', exif.buildTiffBuffer({ dateTime: '2021:03:04 05:06:07' }));
   for (const dates of [[textDate, tiffDate], [tiffDate, textDate]]) {
-    const result = await parse(png(badCrc, compressed, fallback, ...dates));
+    const result = await parse(png(badCrc, compressed, badMethod, fallback, ...dates));
     assert.equal(result.description, 'fallback');
     assert.equal(result.software, '');
     assert.equal(result.dateTime, '2021:03:04 05:06:07');
@@ -208,6 +209,27 @@ test('EXIF sensitivity and fixed-point fields round trip at their declared limit
   assert.equal(exif.parsePositiveFixed('42949672.96'), 0);
 });
 
+test('EXIF component order matches RGB and YCbCr image encodings', () => {
+  const components = (bytes) => {
+    const tiff = Buffer.from(bytes);
+    const sub = ifdPointer(tiff, 8, 0x8769);
+    const entry = ifdEntry(tiff, sub, 0x9101);
+    assert.equal(tiff.readUInt16LE(entry + 2), 7);
+    assert.equal(tiff.readUInt32LE(entry + 4), 4);
+    return [...tiff.subarray(entry + 8, entry + 12)];
+  };
+  assert.deepEqual(components(exif.buildTiffBuffer({}, { w: 1, h: 1 })), [4, 5, 6, 0]);
+  assert.deepEqual(components(exif.buildTiffBuffer({}, { w: 1, h: 1 }, true)), [1, 2, 3, 0]);
+
+  for (const [fourcc, expected] of [['VP8L', [4, 5, 6, 0]], ['VP8 ', [1, 2, 3, 0]]]) {
+    const image = webp(riffChunk(fourcc, Buffer.from([0x2f, 0, 0, 0, 0])));
+    const encoded = exif.injectWebpExif(image, false, {}, 1, 1);
+    const chunks = exif._webpChunks(new DataView(arrayBuffer(encoded))).chunks;
+    const payload = chunks.find((chunk) => chunk.fourcc === 'EXIF').payload;
+    assert.deepEqual(components(Buffer.from(payload)), expected);
+  }
+});
+
 test('Rounded resize dimensions obey both browser limits', () => {
   for (const [w, h, sx, sy] of [[8000, 8000, 3, 3], [1600, 1066, 10, 10], [1, 16383, 0.0001, 100],
     [8000, 8000, 8, 0.5], [16383, 3906, 5, 5], [2, 2, 0.01, 0.01]]) {
@@ -219,6 +241,16 @@ test('Rounded resize dimensions obey both browser limits', () => {
   assert.equal(native.limit, 1);
   assert.equal(native.w * native.h, 64000000);
   assert.equal(fitResizeScales(1, 400, 0.5, 0.5).h, 200);
+});
+
+test('Crop ratios allow integer rounding, not a two-percent manual mismatch', () => {
+  assert.equal(cropRatioMatches(1600, 900, 16 / 9), true);
+  assert.equal(cropRatioMatches(1600, 1066, 3 / 2), true); // One-pixel rounding is unavoidable here.
+  assert.equal(cropRatioMatches(101, 100, 1), true);
+  assert.equal(cropRatioMatches(1600, 910, 16 / 9), false);
+  assert.equal(cropRatioMatches(102, 100, 1), false);
+  assert.equal(cropRatioMatches(0, 100, 1), false);
+  assert.equal(cropRatioMatches(100, 100, Infinity), false);
 });
 
 test('BMP is padded bottom-up BGR and composites transparent pixels', async () => {

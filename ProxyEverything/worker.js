@@ -18,6 +18,7 @@
 
 const HOP_BY_HOP = new Set([
 	'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
+	'proxy-connection', // 非标准旧代理连接控制头，同样不能跨越当前连接
 	'te', 'trailer', 'transfer-encoding', 'upgrade',
 ]);
 
@@ -1183,36 +1184,44 @@ XMLHttpRequest.prototype.open=function(m,u){
   return oOpen.apply(this,arguments);
 };
 /* ---- EventSource / sendBeacon / Worker / Audio / WebSocket ---- */
-if(window.EventSource){var oES=window.EventSource;var ES=function(u,c){var nu=rpBase(u);return arguments.length>1?new oES(nu,c):new oES(nu);};ES.prototype=oES.prototype;try{Object.setPrototypeOf(ES,oES);}catch(e){}window.EventSource=ES;}
+/* 与 Request 一样经 Reflect.construct 转发 new.target：子类实例必须得到子类原型，不带 new 的调用照常报错。 */
+function wrapCtor(name,rewrite){
+  var O=window[name];
+  if(!O)return null;
+  var W=function(){
+    if(!new.target)throw new TypeError("Failed to construct '"+name+"': Please use the 'new' operator.");
+    var args=Array.prototype.slice.call(arguments);
+    if(args.length){try{args[0]=rewrite(args[0]);}catch(e){}}
+    return Reflect.construct(O,args,new.target);
+  };
+  W.prototype=O.prototype;
+  try{Object.setPrototypeOf(W,O);}catch(e){}
+  window[name]=W;
+  return W;
+}
+wrapCtor('EventSource',rpBase);
 if(navigator.sendBeacon){var oSB=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,d){try{u=typeof u==='string'&&!u.trim()?rp(base()):rp(u);}catch(e){}return arguments.length>1?oSB(u,d):oSB(u);};}
-if(window.Worker){var oWk=window.Worker;var Wk=function(u,o){var nu=rpBase(u);return arguments.length>1?new oWk(nu,o):new oWk(nu);};Wk.prototype=oWk.prototype;try{Object.setPrototypeOf(Wk,oWk);}catch(e){}window.Worker=Wk;}
-try{if(window.SharedWorker){var oSW=window.SharedWorker;var SW=function(u,o){var nu=rpBase(u);return arguments.length>1?new oSW(nu,o):new oSW(nu);};SW.prototype=oSW.prototype;try{Object.setPrototypeOf(SW,oSW);}catch(e){}window.SharedWorker=SW;}}catch(e){}
-try{if(window.Audio){var oAu=window.Audio;var Au=function(u){return u!==undefined?new oAu(rp(u)):new oAu();};Au.prototype=oAu.prototype;try{Object.setPrototypeOf(Au,oAu);}catch(e){}window.Audio=Au;}}catch(e){}
+wrapCtor('Worker',rpBase);
+try{wrapCtor('SharedWorker',rpBase);}catch(e){}
+try{wrapCtor('Audio',rp);}catch(e){}
 /* Service Worker 无法在代理路径下正确工作，直接禁用注册以免站点异常 */
 try{if(navigator.serviceWorker)navigator.serviceWorker.register=function(){return Promise.reject(new Error('[ProxyEverything] service worker disabled'));};}catch(e){}
 /* ---- WebSocket：目标地址已在路径内，无需污染目标查询串 ---- */
-if(window.WebSocket){
-  var oWS=window.WebSocket;
-  var WS=function(u,protos){
-    var nu=u;
-    try{
-      if(typeof u==='string')nu=rp(u);
-      else if(u instanceof URL)nu=rp(u.href);
-      if(typeof nu==='string'){
-        var au=new URL(nu,location.href||WO);
-        if(au.origin===WO||au.origin===location.origin||isSelfHost(au)){
-          au.protocol=(location.protocol||au.protocol)==='https:'?'wss:':'ws:';
-          nu=au.href;
-        }
-      }
-    }catch(e){}
-    return protos===undefined?new oWS(nu):new oWS(nu,protos);
-  };
-  WS.prototype=oWS.prototype;
-  try{Object.setPrototypeOf(WS,oWS);}catch(e){}
-  ['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k,i){try{WS[k]=i;}catch(e){}});
-  window.WebSocket=WS;
+function rwWsUrl(u){
+  var nu=u;
+  if(typeof u==='string')nu=rp(u);
+  else if(u instanceof URL)nu=rp(u.href);
+  if(typeof nu==='string'){
+    var au=new URL(nu,location.href||WO);
+    if(au.origin===WO||au.origin===location.origin||isSelfHost(au)){
+      au.protocol=(location.protocol||au.protocol)==='https:'?'wss:':'ws:';
+      nu=au.href;
+    }
+  }
+  return nu;
 }
+var WS=wrapCtor('WebSocket',rwWsUrl);
+if(WS)['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k,i){try{WS[k]=i;}catch(e){}});
 /* ---- history / window.open / location.assign ---- */
 function wrapHistory(fn){return function(st,t,u){
   if(u!=null&&u!==''){
@@ -1894,9 +1903,16 @@ function decodeHtmlAttribute(raw) {
 }
 
 // HTMLRewriter 提供原始属性文本；setAttribute 只负责保护引号，不会转义 '&'。
-function getHtmlAttribute(el, name) {
+function decodeXmlAttribute(raw) {
+	// XML 先规范化原始换行及属性空白，再展开引用；&#9; 等引用不能被折叠成空格。
+	return decodeXmlEntities(raw.replace(/\r\n?/g, '\n').replace(/[\t\n]/g, ' '));
+}
+
+function getHtmlAttribute(el, name, isXml = false) {
 	const raw = el.getAttribute(name);
-	return raw == null ? null : decodeHtmlAttribute(raw);
+	// 未解析 DTD 中的自定义实体时，不把它改成 HTML 实体或普通文本。
+	if (raw == null || (isXml && hasCustomXmlEntity(raw))) return null;
+	return isXml ? decodeXmlAttribute(raw) : decodeHtmlAttribute(raw);
 }
 
 function setHtmlAttribute(el, name, value) {
@@ -1993,7 +2009,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 	// 只采纳第一个合法 HTTP(S) href；保留 target 与原始基地址供 shim 使用，移除原生 href。
 	rewriter.on('base', {
 		element(el) {
-			const h = getHtmlAttribute(el, 'href');
+			const h = getHtmlAttribute(el, 'href', isXml);
 			if (h != null && !hasBaseHref) {
 				try {
 					const u = new URL(h, baseUrl);
@@ -2017,22 +2033,22 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 	// CSP/Set-Cookie/X-Frame-Options/referrer meta 标签直接移除；refresh meta 重写目标；charset meta 对齐为 UTF-8
 	rewriter.on('meta', {
 		element(el) {
-			const he = (getHtmlAttribute(el, 'http-equiv') || '').trim().toLowerCase();
-			const name = (getHtmlAttribute(el, 'name') || '').trim().toLowerCase();
+			const he = (getHtmlAttribute(el, 'http-equiv', isXml) || '').trim().toLowerCase();
+			const name = (getHtmlAttribute(el, 'name', isXml) || '').trim().toLowerCase();
 			if (he === 'content-security-policy' || he === 'content-security-policy-report-only' ||
 				he === 'set-cookie' || he === 'x-frame-options' || name === 'referrer') {
 				el.remove();
 				return;
 			}
 			if (he === 'refresh') {
-				const c = getHtmlAttribute(el, 'content');
+				const c = getHtmlAttribute(el, 'content', isXml);
 				if (c) setHtmlAttribute(el, 'content', rewriteRefreshContent(c, baseHref, workerOrigin));
 			}
 			if (he === 'content-type') {
-				const c = getHtmlAttribute(el, 'content');
+				const c = getHtmlAttribute(el, 'content', isXml);
 				if (c) setHtmlAttribute(el, 'content', c.replace(/charset\s*=\s*[^;]*/i, 'charset=UTF-8'));
 			}
-			if (getHtmlAttribute(el, 'charset') != null) {
+			if (getHtmlAttribute(el, 'charset', isXml) != null) {
 				setHtmlAttribute(el, 'charset', 'UTF-8');
 			}
 		},
@@ -2048,7 +2064,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 				: rewriteJsModuleSpecifiers(part, baseHref, workerOrigin)),
 		el => {
 			if (el.hasAttribute('src') || el.hasAttribute('href') || el.hasAttribute('xlink:href')) return null;
-			const type = (getHtmlAttribute(el, 'type') || '').trim().toLowerCase();
+			const type = (getHtmlAttribute(el, 'type', isXml) || '').trim().toLowerCase();
 			return type === 'module' || type === 'importmap' || type === 'speculationrules' ? type : null;
 		}
 	));
@@ -2060,7 +2076,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 				// 内容被我们改写过的资源必须去掉 SRI，否则哈希校验失败被浏览器拦截
 				if (tag === 'script' || tag === 'link') el.removeAttribute('integrity');
 				for (const [attr, kind] of attrs) {
-					const v = getHtmlAttribute(el, attr);
+					const v = getHtmlAttribute(el, attr, isXml);
 					if (v == null) continue;
 					let next;
 					if (kind === 'srcset') {
@@ -2118,7 +2134,8 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 				if (handled && handled.includes(attr)) continue;
 				(handled || (handled = [])).push(attr);
 				if (!rawValue) continue;
-				const v = decodeHtmlAttribute(rawValue);
+				if (isXml && hasCustomXmlEntity(rawValue)) continue;
+				const v = isXml ? decodeXmlAttribute(rawValue) : decodeHtmlAttribute(rawValue);
 				let next = v;
 				if (attr === 'style') {
 					next = rewriteStyleAttr(v, baseHref, workerOrigin);
@@ -2493,14 +2510,20 @@ function rewriteXmlText(body, transform) {
 
 /** 独立 SVG 文档：重写引用属性和样式，保留不理解的 XML 声明与实体。 */
 function rewriteSvg(source, baseUrl, workerOrigin) {
-	const rw = v => rewriteUrl(v, baseUrl, workerOrigin);
 	const out = [];
+	const scopes = [{ name: null, base: baseUrl }];
 	let cursor = 0;
 	for (let start; (start = source.indexOf('<', cursor)) !== -1;) {
 		out.push(source.slice(cursor, start));
 		const { end, kind } = readXmlMarkup(source, start);
 		const tag = source.slice(start, end);
 		cursor = end;
+		const closingName = kind === 'tag' ? /^<\/([^\s\/>]+)[ \t\n\r]*>/.exec(tag)?.[1] : null;
+		if (closingName) {
+			if (scopes.length > 1 && scopes[scopes.length - 1].name === closingName) scopes.pop();
+			out.push(tag);
+			continue;
+		}
 		const qualifiedName = kind === 'tag' ? /^<([^\s\/>]+)(?=[\s\/>])/.exec(tag)?.[1] : null;
 		const localName = qualifiedName?.split(':').pop();
 		const stylesheet = kind === 'pi' && /^<\?xml-stylesheet[ \t\n\r]/.test(tag);
@@ -2509,30 +2532,49 @@ function rewriteSvg(source, baseUrl, workerOrigin) {
 			continue;
 		}
 		if (!localName && !stylesheet) { out.push(tag); continue; }
+		let elementBase = scopes[scopes.length - 1].base;
+		if (localName) {
+			// xml:base 作用于本元素及后代，而非文档余下部分；先解析它，再处理其它属性。
+			for (const [, , name, , dq, sq] of tag.matchAll(XML_ATTR)) {
+				if (name !== 'xml:base') continue;
+				const raw = dq ?? sq;
+				try {
+					if (hasCustomXmlEntity(raw)) throw new Error();
+					elementBase = new URL(decodeXmlAttribute(raw), elementBase ?? undefined).href;
+				} catch { elementBase = null; }
+				break;
+			}
+		}
+		const rw = v => elementBase === null ? v : rewriteUrl(v, elementBase, workerOrigin);
 		let type;
 		let hasRef = false;
 		out.push(tag.replace(XML_ATTR, (m, space, name, equals, dq, sq) => {
 			const raw = dq ?? sq;
-			if (name === 'type' && type === undefined) type = decodeXmlEntities(raw).trim().toLowerCase();
+			if (name === 'type' && type === undefined) type = decodeXmlAttribute(raw).trim().toLowerCase();
 			if (name === 'src' || name === 'href' || name === 'xlink:href') hasRef = true;
 			if (name === 'integrity' && (localName === 'script' || localName === 'link')) return '';
-			if (hasCustomXmlEntity(raw)) return m;
-			const decoded = decodeXmlEntities(raw);
+			if (hasCustomXmlEntity(raw) || elementBase === null) return m;
+			const decoded = decodeXmlAttribute(raw);
 			let next;
-			if (XML_REFERENCE_ATTRS.has(name)) next = rw(decoded);
-			else if (name === 'srcset' || name === 'imagesrcset') next = rewriteSrcset(decoded, baseUrl, workerOrigin);
+			// 保留原生片段引用的含义，但让浏览器解析片段时也留在代理基地址内。
+			if (name === 'xml:base' && localName) next = rewriteUrl(elementBase, baseUrl, workerOrigin);
+			else if (XML_REFERENCE_ATTRS.has(name)) next = rw(decoded);
+			else if (name === 'srcset' || name === 'imagesrcset') next = rewriteSrcset(decoded, elementBase, workerOrigin);
 			else if (name === 'ping' && decoded.trim()) next = decoded.trim().split(/\s+/).map(rw).join(' ');
-			else if (SVG_CSS_ATTRS.has(name)) next = rewriteStyleAttr(decoded, baseUrl, workerOrigin);
+			else if (SVG_CSS_ATTRS.has(name)) next = rewriteStyleAttr(decoded, elementBase, workerOrigin);
 			return next === undefined || next === decoded ? m : `${space}${name}${equals}"${escapeXmlAttr(next)}"`;
 		}));
-		if (tag.endsWith('/>')) continue;
+		if (!localName || tag.endsWith('/>')) continue;
+		scopes.push({ name: qualifiedName, base: elementBase });
 		const rewrite = localName === 'style' ? rewriteCss : localName === 'script' && !hasRef && type === 'module' ? rewriteJsModuleSpecifiers : null;
 		if (!rewrite) continue;
 		const close = readXmlTextEnd(source, cursor, qualifiedName);
 		if (close) {
-			out.push(rewriteXmlText(source.slice(cursor, close.start), part => rewrite(part, baseUrl, workerOrigin)),
+			const text = source.slice(cursor, close.start);
+			out.push(elementBase === null ? text : rewriteXmlText(text, part => rewrite(part, elementBase, workerOrigin)),
 				source.slice(close.start, close.end));
 			cursor = close.end;
+			scopes.pop(); // 上面的扫描已消费这个元素的闭合标签。
 		}
 	}
 	out.push(source.slice(cursor));
@@ -2646,8 +2688,10 @@ function targetPolicyError(targetUrl, env) {
 	const configured = env?.ALLOWED_TARGET_ORIGINS;
 	try {
 		if (typeof configured !== 'string' || !configured.trim()) throw new Error();
-		const origins = configured.split(',').map(value => {
-			const entry = value.trim();
+		// 多行配置常带尾随逗号或空行；空项不代表任何来源，忽略而不是让整个列表失效。
+		const entries = configured.split(',').map(value => value.trim()).filter(Boolean);
+		if (!entries.length) throw new Error();
+		const origins = entries.map(entry => {
 			// 先验证来源语法：URL 解析会消除点路径、反斜线、空查询串等输入错误。
 			if (!/^https?:\/\/[^\s\\/@?#*\x00-\x1f\x7f]+\/?$/i.test(entry)) throw new Error();
 			const u = new URL(entry);
@@ -2763,7 +2807,11 @@ async function handleWebSocket(request, targetUrl, ck, workerOrigin, env) {
 	const upstream = resp.webSocket;
 	if (!upstream) {
 		if (resp.body) resp.body.cancel().catch(() => {});
-		return new Response('上游不支持 WebSocket（不自动跟随重定向）', { status: 502 });
+		// 上游明确拒绝握手（4xx/5xx）时保留其状态码供排查；重定向不自动跟随，其余情况一律 502。
+		const status = resp.status >= 400 && resp.status <= 599 ? resp.status : 502;
+		return new Response('上游未完成 WebSocket 握手（不自动跟随重定向）', {
+			status, headers: { 'Cache-Control': 'no-store' },
+		});
 	}
 	const pair = new WebSocketPair();
 	const client = pair[0];
@@ -2941,10 +2989,21 @@ Disallow: /
 			if (resp.body) resp.body.cancel().catch(() => {});
 			// 这些字段描述的是原始字节；没有正文时无法判断是否触发大小限制，
 			// 因而不能冒充下游 GET 的长度、编码、摘要或验证器。
-			if (![204, 205, 206].includes(upstream.status) && transformKind(upstream.headers, request) &&
-				!hasNoTransform(request.headers.get('Cache-Control'))) {
+			const kind = [204, 205, 206].includes(upstream.status) || hasNoTransform(request.headers.get('Cache-Control'))
+				? null : transformKind(upstream.headers, request);
+			// 声明长度超过上限且无需解码的正文必然原样透传，HEAD 可沿用与 GET 相同的表示元数据。
+			const declaredLength = Number(upstream.headers.get('Content-Length'));
+			const passthrough = kind !== null && kind !== 'html' && request.method === 'HEAD' &&
+				declaredLength > MAX_TRANSFORM_BYTES && contentCoding(upstream.headers) === 'identity';
+			if (kind && !passthrough) {
 				stripTransformedHeaders(resp.headers);
-				resp.headers.delete('Content-Type'); // 最终 charset 依赖正文嗅探与透传判定
+				// 304 不重复声明媒体类型。HEAD 必须保留它：HTML 总会流式改写为 UTF-8；
+				// 其它类型的 charset 取决于正文大小是否触发透传，只保留不含参数的媒体类型。
+				if (upstream.status === 304) resp.headers.delete('Content-Type');
+				else {
+					const mime = mimeType(upstream.headers.get('Content-Type'));
+					resp.headers.set('Content-Type', kind === 'html' ? `${mime}; charset=UTF-8` : mime);
+				}
 			}
 			return new Response(null, resp);
 		}

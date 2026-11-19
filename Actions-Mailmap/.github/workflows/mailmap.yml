@@ -1,0 +1,116 @@
+name: Batch Replace Commit Email in All Public Repos
+
+on:
+  workflow_dispatch:
+    inputs:
+      github_token:
+        description: "具有 repo 和 workflow 权限的 GitHub Token (PAT)"
+        required: true
+        type: string
+      old_email:
+        description: "需要替换的旧邮箱地址 (Old Email)"
+        required: true
+        type: string
+      new_email:
+        description: "替换后的新邮箱地址 (New Email)"
+        required: true
+        type: string
+      new_name:
+        description: "（可选）同时替换匹配邮箱的作者/提交者名称，留空则保留原名称"
+        required: false
+        default: ""
+        type: string
+      include_forks:
+        description: "是否包含 Fork 的公开仓库"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: replace-email-${{ github.repository_owner }}
+  cancel-in-progress: false
+
+jobs:
+  rewrite-and-force-push:
+    name: 批量替换公开仓库提交邮箱并 Force Push
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ inputs.github_token }}
+      OWNER: ${{ github.repository_owner }}
+      CURRENT_REPO: ${{ github.event.repository.name }}
+      OLD_EMAIL: ${{ inputs.old_email }}
+      NEW_EMAIL: ${{ inputs.new_email }}
+      NEW_NAME: ${{ inputs.new_name }}
+      INCLUDE_FORKS: ${{ inputs.include_forks }}
+    steps:
+      - name: 校验参数并安装依赖
+        run: |
+          echo "::add-mask::${GH_TOKEN}"
+          if [[ -z "$GH_TOKEN" || -z "$OLD_EMAIL" || -z "$NEW_EMAIL" || "$OLD_EMAIL" == "$NEW_EMAIL" ]]; then
+            echo "::error::参数无效：Token、新旧邮箱均不能为空，且新旧邮箱不能相同。"
+            exit 1
+          fi
+          sudo apt-get update && sudo apt-get install -y git-filter-repo
+
+      - name: 批量替换邮箱并 Force Push
+        run: |
+          WORKDIR=$(mktemp -d)
+          trap 'rm -rf "$WORKDIR"' EXIT
+
+          MAILMAP="${WORKDIR}/mailmap"
+          if [[ -n "$NEW_NAME" ]]; then
+            printf '%s <%s> <%s>\n' "$NEW_NAME" "$NEW_EMAIL" "$OLD_EMAIL" > "$MAILMAP"
+          else
+            printf '<%s> <%s>\n' "$NEW_EMAIL" "$OLD_EMAIL" > "$MAILMAP"
+          fi
+
+          # 获取所有非空、未归档的公开仓库，并将当前工作流所在仓库排在最后
+          REPOS=$(gh repo list "$OWNER" --visibility public --no-archived --limit 1000 \
+            --json name,isEmpty,isFork \
+            --jq "map(select((.isEmpty | not) and (${INCLUDE_FORKS:-false} or (.isFork | not)))) | sort_by(.name == \"$CURRENT_REPO\") | .[].name")
+
+          SUCCESS=0; SKIPPED=0; FAILED=()
+
+          for REPO in $REPOS; do
+            echo "=== 处理仓库: ${OWNER}/${REPO} ==="
+            REPO_DIR="${WORKDIR}/${REPO}.git"
+            REMOTE_URL="https://x-access-token:${GH_TOKEN}@github.com/${OWNER}/${REPO}.git"
+
+            if ! git clone --bare "$REMOTE_URL" "$REPO_DIR"; then
+              echo "::warning::克隆 ${OWNER}/${REPO} 失败"
+              FAILED+=("${REPO} (clone failed)")
+              continue
+            fi
+
+            # 仅当仓库存在匹配旧邮箱的提交时才执行重写与强推
+            if ! git -C "$REPO_DIR" log --all --format='%ae%n%ce' | grep -Fixq "$OLD_EMAIL"; then
+              echo "未检测到旧邮箱记录，跳过。"
+              SKIPPED=$((SKIPPED + 1))
+              rm -rf "$REPO_DIR"
+              continue
+            fi
+
+            if git -C "$REPO_DIR" filter-repo --force --mailmap "$MAILMAP" && \
+               git -C "$REPO_DIR" push --force "$REMOTE_URL" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'; then
+              SUCCESS=$((SUCCESS + 1))
+            else
+              echo "::warning::${OWNER}/${REPO} 重写或 Force Push 失败"
+              FAILED+=("${REPO} (push failed)")
+            fi
+
+            rm -rf "$REPO_DIR"
+          done
+
+          {
+            echo "## 批量替换提交邮箱执行汇总"
+            echo "- **所有者**: \`${OWNER}\` | **邮箱替换**: \`${OLD_EMAIL}\` -> \`${NEW_EMAIL}\`"
+            echo "- **成功更新**: ${SUCCESS} | **跳过(无匹配邮箱)**: ${SKIPPED} | **失败**: ${#FAILED[@]}"
+            if (( ${#FAILED[@]} > 0 )); then
+              echo ""
+              echo "### 失败仓库"
+              printf -- '- `%s`\n' "${FAILED[@]}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          (( ${#FAILED[@]} == 0 ))

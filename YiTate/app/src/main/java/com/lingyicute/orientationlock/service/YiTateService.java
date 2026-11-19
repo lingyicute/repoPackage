@@ -82,7 +82,6 @@ public class YiTateService extends Service {
     public void onCreate() {
         super.onCreate();
         preferences = PreferenceManager.getInstance(this);
-        ensureNotificationChannel();
         // API 21-25 also need a foreground service to keep the lock alive.
         setForeground();
         // Do not stop a queued foreground start from the Activity before we get here.
@@ -93,17 +92,22 @@ public class YiTateService extends Service {
         filter.addAction(Intent.ACTION_SCREEN_ON);
         // These are protected system broadcasts, not app-defined broadcasts.
         registerReceiver(screenReceiver, filter);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            AppOpsManager appOps = getSystemService(AppOpsManager.class);
-            if (appOps != null) {
-                try {
+        AppOpsManager appOps = (AppOpsManager) getSystemService(APP_OPS_SERVICE);
+        if (appOps != null) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
                             getPackageName(), overlayListener);
-                    overlayOps = appOps;
-                } catch (SecurityException e) {
-                    // Wake and selection still recheck permission on devices that block the watch.
-                    Log.w(TAG, "Unable to watch overlay permission", e);
+                } else {
+                    // API 21-22 cannot map the overlay op string; use its hidden integer overload.
+                    java.lang.reflect.Method watch = AppOpsManager.class.getMethod("startWatchingMode",
+                            int.class, String.class, AppOpsManager.OnOpChangedListener.class);
+                    watch.invoke(appOps, 24, getPackageName(), overlayListener);
                 }
+                overlayOps = appOps;
+            } catch (ReflectiveOperationException | IllegalArgumentException | SecurityException e) {
+                // Wake and selection still recheck permission on devices that block the watch.
+                Log.w(TAG, "Unable to watch overlay permission", e);
             }
         }
     }
@@ -112,9 +116,9 @@ public class YiTateService extends Service {
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         if (currentOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                && (!getString(R.string.running_notification_title).equals(lastNotificationTitle)
+                && (!getString(R.string.running_notification_channel_name).equals(lastChannelName)
+                || !getString(R.string.running_notification_title).equals(lastNotificationTitle)
                 || !getNotificationText().equals(lastNotificationText))) {
-            ensureNotificationChannel();
             setForeground();
         }
     }
@@ -180,6 +184,7 @@ public class YiTateService extends Service {
     }
 
     private void setForeground() {
+        ensureNotificationChannel();
         String title = getString(R.string.running_notification_title);
         String text = getNotificationText();
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O

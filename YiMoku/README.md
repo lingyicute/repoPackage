@@ -9,7 +9,7 @@ Made with ❤️ by [lingyicute](https://github.com/lingyicute).
 [🇺🇸 English] • [🌐 Source Code](https://github.com/lingyicute/YiMoku) • [🐛 Report Bug](https://github.com/lingyicute/YiMoku/issues)
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-orange.svg)](https://github.com/lingyicute/YiMoku/blob/main/LICENSE)
-[![Single File ~235 KiB](https://img.shields.io/badge/Single%20File-~235%20KiB-blue)](https://github.com/lingyicute/YiMoku/blob/main/index.html)
+[![Single File ~240 KiB](https://img.shields.io/badge/Single%20File-~240%20KiB-blue)](https://github.com/lingyicute/YiMoku/blob/main/index.html)
 [![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero-brightgreen)](https://github.com/lingyicute/YiMoku)
 [![No Ads No Tracking](https://img.shields.io/badge/Ads%20%26%20Trackers-Zero-brightgreen)](https://github.com/lingyicute/YiMoku)
 [![GitHub Stars](https://img.shields.io/github/stars/lingyicute/YiMoku?style=flat&color=yellow)](https://github.com/lingyicute/YiMoku)
@@ -26,7 +26,7 @@ Browser gomoku is usually one of two things: a board buried under banner ads, or
   - Standard **15×15** board, black opens, **five in a row** horizontally, vertically or diagonally wins (overlines count); a full board is a draw.
   - The winning run is **highlighted** and the latest move is **marked**, so you never lose track of the game.
   - **Undo** retracts your move *and* the AI's reply as one pair — and even works after the game ends, resuming the clock where it stopped.
-  - Live **move counter** and **elapsed-time** clock above the board; timing starts with your first stone.
+  - Live **move counter** and **elapsed-time** clock above the board; timing starts with the first stone on the board (the AI's opening move when you play white).
 - **🤖 An AI That Actually Plays**
   - **Four difficulties**: **简单 Easy** (noisy, occasionally misses your threats), **中等 Medium** (greedy with a light jitter), **困难 Hard** (alpha–beta under a **550 ms** budget) and **专家 Expert** (deeper iterative deepening under a **900 ms** budget).
   - **Choose your side** — take black and open, or take white and let the AI start automatically.
@@ -136,13 +136,13 @@ npm run test:session  # localStorage resume / corrupt-save regressions (also par
 npm run test:bench    # AI strength & latency benchmark                           (~1–2 min)
 ```
 
-`npm test` also runs in GitHub Actions on every push and pull request, together with `test:fuzz` and `test:bench` in separate jobs.
+`npm test` and `test:fuzz` run in GitHub Actions on pushes to `main` and on pull requests; `test:bench` runs in a separate job.
 
-- **`tests/selftest.js` + `tests/selftest-core.js`** — *zero-dependency*. The runner extracts the embedded `<script id="main">` from `index.html`, appends the development-only assertion body kept in `tests/selftest-core.js`, and runs it in Node: win detection in all four directions, shape classification, threat counting and terminal leaf evaluation, the `TW[0]` NaN regression, guaranteed win/block at every difficulty, and a full simulated game.
+- **`tests/selftest.js` + `tests/selftest-core.js`** — *zero-dependency*. The runner extracts the embedded `<script id="main">` from `index.html`, appends the development-only assertion body kept in `tests/selftest-core.js`, and runs it in Node: win detection in all four directions, shape classification, threat counting and terminal leaf evaluation, the `TW[0]` NaN regression, guaranteed wins at every difficulty and blocks from Medium up (plus Easy's deliberate miss), and a full simulated game.
 - **`tests/offline-contract.js`** — *zero-dependency*. Static guard that the shipped HTML has no external `src`/`href`, no `fetch`/XHR, no remote CSS/`@import`, no dev-only self-test code, and that the Worker engine markers are present.
 - **`tests/worker-contract.js`** — *zero-dependency*. Evaluates the `ENGINE_START`/`ENGINE_END` slice in a scope with no `document`/`window`, then simulates a real `chooseMove` message round-trip — this is what makes the self-bootstrapping Worker safe to refactor.
 - **`tests/smoke.js`** — *needs `npm install`*. Boots the real page inside jsdom and drives it end to end: the first-run help dialog, stone placement, AI replies, undo pairs, mode / difficulty / side switching, theme & palette popovers, record clearing, keyboard play, win highlighting and all three result-bar texts. Without jsdom it prints a skip notice instead of failing, so a bare clone still passes `npm test`.
-- **`tests/session.js`** — *needs `npm install`*. Boots the real page in jsdom to verify automatic save/restore of the board, move list, clock and settings, plus rejection of ten kinds of malformed saves.
+- **`tests/session.js`** — *needs `npm install`*. Boots the real page in jsdom to verify automatic save/restore of the board, move list, clock and settings, plus rejection of eighteen kinds of malformed saves.
 - **`tests/bench.js`** — *zero-dependency, slow on purpose*. Plays real AI-vs-AI matches and fails on regression: Expert must beat Easy ≥ 5/6 and Medium ≥ 3/4, and per-move latency must stay inside the engine budgets (550 ms hard / 900 ms expert) plus machine slack. Run it whenever the engine changes.
 
 ## 🤗 Contributing
