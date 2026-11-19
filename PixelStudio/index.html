@@ -1170,6 +1170,18 @@
     .m3-field #exifExposure {
       font-family: var(--font-mono);
     }
+    /* Fields and sliders are disabled until a picture is loaded: the explicit text colour and pointer
+       cursor above would otherwise hide the browser's disabled look, so they seemed editable */
+    .m3-field input:disabled,
+    .m3-field select:disabled,
+    input[type="range"].m3-slider:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    /* The EXIF form is dimmed as a whole while its fields are switched off */
+    #exifFormFields .m3-field input:disabled {
+      opacity: 1;
+    }
 
     /* Resize Aspect Lock Row */
     .resize-lock-row {
@@ -5666,6 +5678,10 @@
             state.resizeLimit = 1;
             syncResizeInputs(input);
           }
+          // The field keeps the typed number until blur: say so when the canvas limits cut it down,
+          // instead of silently replacing it later (the ratio note only covers the locked axis).
+          const applied = byWidth ? state.targetW : state.targetH;
+          if (applied < raw) showToast(`目标${byWidth ? "宽度" : "高度"}超出浏览器画布上限，已调整为 ${applied} px`);
           if (state.compareMode) renderCompareView();
           scheduleOutputEncode();
         };
@@ -5786,12 +5802,14 @@
           });
         });
 
-        [els.exifFNumber, els.exifFocal].forEach((inp) => {
+        // Like the shutter speed and date fields, say why a value disappears instead of clearing it silently
+        [[els.exifFNumber, "光圈值"], [els.exifFocal, "焦距"]].forEach(([inp, name]) => {
           inp.addEventListener("change", () => {
             const raw = inp.value.trim();
             if (!raw) return;
             const v = ExifEngine.parsePositiveFixed(raw);
             const next = v > 0 ? String(v) : "";
+            if (!next) showToast(`${name}无效（应为不小于 0.01 的数值），已清除该字段`);
             if (inp.value !== next) {
               inp.value = next;
               readExifFromInputs();
@@ -5805,6 +5823,7 @@
           if (!raw) return;
           const iso = ExifEngine.parseIso(raw);
           const next = iso > 0 ? String(iso) : "";
+          if (!next) showToast("ISO 感光度无效（应为不小于 1 的整数），已清除该字段");
           if (els.exifIso.value !== next) {
             els.exifIso.value = next;
             readExifFromInputs();

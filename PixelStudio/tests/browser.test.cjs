@@ -228,6 +228,12 @@ if (engines.includes('chromium')) {
     assert.equal(await page.locator('#exifArtist').isDisabled(), false);
     assert.equal(await page.locator('#inpCropW').inputValue(), '1600');
     assert.equal(await page.locator('#sliderScalePercent').isDisabled(), false);
+    await type(page, '#exifIso', 0);
+    await page.waitForFunction(() => document.querySelector('#m3Snackbar').textContent.includes('ISO 感光度无效'));
+    assert.equal(await page.locator('#exifIso').inputValue(), '');
+    await type(page, '#exifFNumber', -1.8);
+    await page.waitForFunction(() => document.querySelector('#m3Snackbar').textContent.includes('光圈值无效'));
+    assert.equal(await page.locator('#exifFNumber').inputValue(), '');
   }));
 
   test('chromium: a capped resize keeps the requested slider value', { timeout: 30000 }, () => open('chromium', async (page) => {
@@ -250,6 +256,11 @@ if (engines.includes('chromium')) {
     await click(page, '[data-scale="0.5"]');
     assert.equal(await slider.inputValue(), '50');
     assert.equal(await page.locator('#resizePresetChips .active').count(), 1);
+    await click(page, '#btnLockAspect');
+    await type(page, '#inpResizeW', 20000);
+    await page.waitForFunction(() => document.querySelector('#m3Snackbar').textContent.includes('宽度超出浏览器画布上限，已调整为 16383 px'));
+    assert.equal(await page.locator('#inpResizeW').inputValue(), '16383');
+    await ready(page, '16383×1 · PNG');
   }));
 
   test('chromium: detected file format and unknown input preserve transparency', { timeout: 30000 }, () => open('chromium', async (page) => {

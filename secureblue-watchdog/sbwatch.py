@@ -2087,7 +2087,13 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
     def add_advisory_cves(update):
         source, shared = _advisory_cve_scope(update)
         info["cves"].update(source)
-        info["advisory_wide_cves"].update(shared)
+        # The ids of a multi-source erratum belong to whichever build brought
+        # them. Only a security erratum vouches for them as a whole: the bug list
+        # of a non-security side-tag rebuild names other packages' CVEs (the
+        # 738-build "OpenSSL 4.0 rebuild" FEDORA-2026-54c7ad647e carries three
+        # frr ones), and each of its rebuilds read as a security update.
+        if update.get("type") == "security":
+            info["advisory_wide_cves"].update(shared)
 
     # (a) changelog entries that are new in this build: Fedora writes CVE ids there.
     # The per-package caps only guard against a pathological changelog (no real
@@ -2261,7 +2267,7 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None) 
                         f"(matched Fedora's {sorted(hit_corresponding)[0]} only after "
                         f"stripping the local release marker from {new['release']} - "
                         f"rpm-ostree does not attach it to this build)")
-            elif SEV_RANK.get(sev_word, 0) >= 3 or any(_advisory_cve_scope(u)):
+            elif SEV_RANK.get(sev_word, 0) >= 3 or _advisory_cve_scope(u)[0]:
                 # A released erratum of another type that ranks high or lists CVE
                 # ids marks the package security-relevant below, so name it: the
                 # evidence cell of shadow-utils (bugfix, severity=high) was empty.
@@ -2815,14 +2821,24 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         # `chunkah/unclaimed`, secureblue's own configuration among them, and nothing
         # here looks inside that chunk: 45.20261114.0 was rebuilt for an edit to
         # hardening.conf and its report was badged "REBUILD ONLY - SKIP".
+        # chunkah gives an unowned file too big for `chunkah/unclaimed` a
+        # `bigfiles/<path>` component instead, and secureblue's configuration is
+        # among those: the live manifest carries bigfiles/usr/share/secureblue/
+        # etc/trivalent/filter/trivalent-blocklist, .../selinux/targeted/policy/
+        # policy.35 and .../udev/hwdb.bin. Left out: the rpmdb, which was read,
+        # and the initramfs, which the image build regenerates from packages.
+        def _unowned(c):
+            return (not c.startswith("rpm/")
+                    and c.rpartition("/")[2] not in (CHUNK_MATCH, "initramfs.img"))
         loose = sum(ch["size"] for ch in ldiff.get("changed_chunks") or []
-                    if "chunkah/unclaimed" in (ch.get("components") or []))
+                    if any(_unowned(c) for c in ch.get("components") or []))
         if loose:
-            v["headline"] += (f". Not inspected: {human(loose)} of files that no package "
-                              f"owns (chunkah/unclaimed, secureblue's own configuration "
-                              f"among them) changed as well")
+            v["headline"] += (f". Not inspected: {human(loose)} of files that no package owns "
+                              f"(chunkah/unclaimed and bigfiles/* chunks, secureblue's own "
+                              f"configuration among them) changed as well")
             v["headline_zh"] += (f"。未检查：另有 {human(loose)} 不属于任何软件包的文件"
-                                 f"（chunkah/unclaimed，secureblue 自己的配置就在其中）发生了变化")
+                                 f"（chunkah/unclaimed 与 bigfiles/* chunk，secureblue 自己的配置"
+                                 f"就在其中）发生了变化")
     elif sec:
         v["level"] = "update-now"
         # Two separate renderings: the trivia (", " vs "，", the count wording)
