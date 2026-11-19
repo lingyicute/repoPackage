@@ -39,20 +39,33 @@ async function banner(page, kind, title) {
 async function offline(page) {
   const network = [];
   page.on('request', request => { if (/^https?:/.test(request.url())) network.push(request.url()); });
-  await page.addInitScript(() => { window.AbortController = window.TextEncoder = undefined; });
+  await page.addInitScript(() => {
+    window.AbortController = window.TextEncoder = undefined;
+    Array.prototype.flatMap = String.prototype.trimStart = String.prototype.trimEnd = undefined;
+    Blob.prototype.arrayBuffer = undefined;
+    if (window.crypto) Object.defineProperty(window.crypto, 'subtle', {value: undefined});
+  });
   await page.goto(pathToFileURL(path).href);
   assert.equal(await page.locator('input[name=algorithm]:enabled').count(), 14);
   await choose(page, 'offline.txt');
+  const hex = checksum('abc');
+  await expected(page, `SHA256     ${hex}     C:\\Downloads\\offline.txt`);
   await compute(page);
-  const digest = page.locator('.digest-value');
-  await digest.waitFor();
-  assert.equal(await digest.textContent(), checksum('abc'));
+  await banner(page, 'match', /SHA-256/);
+  assert.equal(await page.locator('.digest-value').textContent(), hex);
+  await expected(page, `${hex} offline.txt`);
+  await banner(page, 'match', /SHA-256/);
   assert.deepEqual(network, []);
 }
 
 async function verdicts(page, url) {
   await page.goto(url);
+  const defaultHint = await page.locator('#compareHint').textContent();
+  assert.match(defaultHint, /十六进制.*Base64 和文件名区分大小写/);
+  await expected(page, `SHA-256: ${checksum('abc')}`);
   await choose(page, 'current.txt');
+  await page.locator('#clearExpected').click();
+  assert.doesNotMatch(await page.locator('#resultsPanel .empty-description').textContent(), /与预期值比对/);
   await expected(page, `SHA256 (other.txt) = ${checksum('abc')}`);
   await compute(page);
   await page.locator('.digest-row').waitFor();
@@ -72,6 +85,7 @@ async function verdicts(page, url) {
   await banner(page, 'info', /已匹配 SHA-256/);
   await page.locator('#clearExpected').click();
   assert.equal(await page.locator('.match-pill').count(), 0);
+  assert.equal(await page.locator('#compareHint').textContent(), defaultHint);
   await page.locator('#clearFile').click();
   assert.equal(await page.evaluate(() => document.activeElement.id), 'dropzone');
 }
@@ -91,8 +105,20 @@ async function cancellation(page, url) {
   await compute(page);
   await page.waitForFunction(() => window.pendingDigests.length === 1);
   assert.equal(await page.getByRole('progressbar', {name: '摘要计算进度'}).getAttribute('aria-valuenow'), '0');
+  assert.ok(await page.locator('#computeIcon').isHidden());
+  assert.ok(await page.locator('#buttonSpinner').isVisible());
+  const leaveFlags = () => page.evaluate(() => {
+    const event = new Event('beforeunload', {cancelable: true});
+    Object.defineProperty(event, 'returnValue', {value: '', writable: true});
+    window.dispatchEvent(event);
+    return [event.defaultPrevented, Boolean(event.returnValue)];
+  });
+  assert.deepEqual(await leaveFlags(), [true, true]);
   await page.getByRole('button', {name: '取消计算'}).click();
+  assert.deepEqual(await leaveFlags(), [false, false]);
   assert.match(await page.locator('#statusLine').textContent(), /已取消/);
+  assert.ok(await page.locator('#computeIcon').isVisible());
+  assert.ok(await page.locator('#buttonSpinner').isHidden());
   await choose(page, 'current.txt', 'def');
   await expected(page, checksum('def'));
   await compute(page);
@@ -121,6 +147,7 @@ async function clipboard(page, url) {
   await button.click();
   await page.waitForFunction(() => document.getElementById('copyStatus').textContent.includes('已复制'));
   assert.equal(await page.evaluate(() => window.copiedText), `SHA-256: ${checksum('abc')}`);
+  assert.equal(await page.locator('#copyAllButton.is-copied').count(), 1);
   await page.evaluate(() => {
     navigator.clipboard.writeText = () => Promise.reject(new Error('denied'));
     document.execCommand = () => { throw new Error('denied'); };
@@ -128,9 +155,20 @@ async function clipboard(page, url) {
   await button.focus();
   await button.click();
   await page.locator('#copyStatus.is-error').waitFor();
+  assert.equal(await page.locator('#copyAllButton.is-copied').count(), 0);
   assert.equal(await page.locator('textarea').count(), 1);
   assert.equal(await page.evaluate(() => document.activeElement.id), 'copyAllButton');
   assert.equal(await page.locator('#statusLine').textContent(), status);
+  await page.evaluate(() => {
+    const value = document.querySelector('.digest-value').firstChild;
+    window.getSelection().setBaseAndExtent(value, value.length, value, 0);
+    document.getElementById('copyAllButton').click();
+  });
+  await page.locator('#copyStatus.is-error').waitFor();
+  assert.deepEqual(await page.evaluate(() => {
+    const selection = window.getSelection();
+    return [selection.toString(), selection.anchorOffset > selection.focusOffset];
+  }), [checksum('abc'), true]);
   await page.evaluate(() => {
     navigator.clipboard.writeText = () => new Promise(resolve => { window.finishCopy = resolve; });
   });
@@ -179,6 +217,10 @@ async function dragAndTheme(page, url) {
   assert.ok(dropped);
   assert.match(await page.locator('#fileNotice').textContent(), /不支持文件夹/);
   assert.equal(await page.locator('#fileName').textContent(), 'first.txt');
+  const extension = 'x'.repeat(180);
+  await choose(page, `long.${extension}`);
+  assert.ok((await page.locator('#fileMeta').textContent()).startsWith(extension.toUpperCase()));
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 280);
 }
 
 async function main() {

@@ -1,8 +1,15 @@
 #!/bin/sh
 set -eu
-(set -o pipefail) 2>/dev/null && set -o pipefail
 
 app_data_dir="${HOME:?}/.var/app"
+# Support relocated app data, but never treat the home directory or an ancestor as its contents.
+if [ -d "$app_data_dir" ]; then
+    data_root=$(realpath -e -- "$app_data_dir")
+    home_root=$(realpath -e -- "$HOME")
+    case "$home_root/" in
+        "${data_root%/}/"*) echo "错误：应用数据目录指向 HOME 或其上级目录，已停止。" >&2; exit 1 ;;
+    esac
+fi
 
 # ==========================================
 # 1. 运行前状态展示
@@ -61,9 +68,18 @@ EOF
     exit 1
 }
 
-# 加上 || true 防止 grep 没找到内容导致脚本中断
 stop_instances
-LC_ALL=C flatpak documents --columns=id | grep -v ' ' | xargs -rn1 flatpak document-unexport --doc-id || true
+documents_ok=true
+if ids=$(LC_ALL=C flatpak documents --columns=id); then
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        flatpak document-unexport --doc-id -- "$id" < /dev/null || documents_ok=false
+    done <<EOF
+$ids
+EOF
+else
+    documents_ok=false
+fi
 stop_instances
 
 # -H：~/.var/app 本身是符号链接时也照常清理链接指向的目录
@@ -79,19 +95,36 @@ if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/app" ] && [ ! -L "$XD
     find -P "$XDG_RUNTIME_DIR/app" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 fi
 if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/.flatpak" ] && [ ! -L "$XDG_RUNTIME_DIR/.flatpak" ]; then
-    find -P "$XDG_RUNTIME_DIR/.flatpak" -type d ! -perm -u=rwx -exec chmod u+rwx -- {} \;
-    find -P "$XDG_RUNTIME_DIR/.flatpak" -mindepth 2 -maxdepth 2 \( -name tmp -o -name xdg-run -o -name dev-shm \) -exec rm -rf -- {} +
+    # Only traverse the slots that will be removed, not unrelated instance metadata.
+    find -P "$XDG_RUNTIME_DIR/.flatpak" -maxdepth 1 -type d ! -perm -u=rx -exec chmod u+rx -- {} \;
+    for app in "$XDG_RUNTIME_DIR/.flatpak"/*; do
+        [ -d "$app" ] && [ ! -L "$app" ] || continue
+        for slot in tmp xdg-run dev-shm; do
+            path="$app/$slot"
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            [ -w "$app" ] || chmod u+w -- "$app"
+            if [ -d "$path" ] && [ ! -L "$path" ]; then
+                find -P "$path" -type d ! -perm -u=rwx -exec chmod u+rwx -- {} \;
+            fi
+            rm -rf -- "$path"
+        done
+    done
 fi
 
 # 以 per-app-dev-shm 运行过的应用，其 /dev/shm 是宿主机上的 /dev/shm/flatpak-$APP_ID-XXXXXX（内存中，应用可写）。
 # 只处理属于当前用户的真实目录，不跟随符号链接。CLEANUP_SHM_DIR 仅供测试覆盖。
-for shm in "${CLEANUP_SHM_DIR:-/dev/shm}"/flatpak-*; do
+for shm in "${CLEANUP_SHM_DIR:-/dev/shm}"/flatpak-*.*.*-??????; do
+    case "${shm##*-}" in *[!a-zA-Z0-9]*) continue ;; esac
     [ -d "$shm" ] && [ ! -L "$shm" ] && [ -O "$shm" ] || continue
     find -P "$shm" -type d ! -perm -u=rwx -exec chmod u+rwx -- {} \;
     rm -rf -- "$shm"
 done
 
-echo "清理完成！"
+if [ "$documents_ok" = true ]; then
+    echo "清理完成！"
+else
+    echo "本地数据已清理，但未能确认所有文档已取消导出。" >&2
+fi
 echo ""
 
 
@@ -116,3 +149,4 @@ if [ -t 0 ]; then
     printf "按回车键(Enter)退出..."
     read -r _ || true
 fi
+[ "$documents_ok" = true ]

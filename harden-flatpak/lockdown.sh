@@ -40,18 +40,25 @@ echo ""
     # already set to none, so a later override reset would bring those names back.
     installed_apps=$(flatpak list --app --columns=installation,ref | sort -u)
     while IFS=$'\t' read -r inst ref; do
-        [ -n "${ref}" ] || continue
+        [ -n "${inst}${ref}" ] || continue
+        if [[ ! ${ref} =~ ^[^/[:space:]]+/[^/[:space:]]+/[^/[:space:]]+$ ]]; then
+            echo "error: incomplete Flatpak ref in installation list; nothing was changed." >&2
+            exit 1
+        fi
         case "${inst}" in
             user) sel=(--user) ;;
             system) sel=(--system) ;;
             "system ("*")") inst=${inst#"system ("}; sel=("--installation=${inst%")"}") ;;
             *) echo "error: unknown flatpak installation: ${inst}" >&2; exit 1 ;;
         esac
-        perms=$(
-            flatpak info "${sel[@]}" --show-metadata "${ref}" < /dev/null
-            echo
-            flatpak info "${sel[@]}" --show-permissions "${ref}" < /dev/null
-        )
+        perms=$(flatpak info "${sel[@]}" --show-metadata "${ref}" < /dev/null)
+        perms+=$'\n'$(flatpak info "${sel[@]}" --show-permissions "${ref}" < /dev/null)
+        # A previous user deny also hides grants that exist only in a system override.
+        # Read both lower layers before replacing the user policy on a re-run.
+        if [ "${inst}" != user ]; then
+            perms+=$'\n'$(flatpak override "${sel[@]}" --show < /dev/null)
+            perms+=$'\n'$(flatpak override "${sel[@]}" --show "${ref%%/*}" < /dev/null)
+        fi
         app_flags=$(awk '
             { sub(/\r$/, "") }
             /^[[:space:]]*(#|$)/ { next }
@@ -63,6 +70,11 @@ echo ""
                 if (val != "" && val != "none" && sec == "[Session Bus Policy]") print "--no-talk-name=" k
                 else if (val != "" && val != "none" && sec == "[System Bus Policy]") print "--system-no-talk-name=" k
                 else if (sec ~ /^\[Policy .+\]$/) {
+                    # Do not split an escaped GKeyFile list into different rules.
+                    if (index(val, "\\")) {
+                        print "error: escaped subsystem policy values are unsupported; nothing was changed." > "/dev/stderr"
+                        exit 1
+                    }
                     n = split(val, v, ";")
                     for (i = 1; i <= n; i++)
                         if (v[i] != "" && v[i] !~ /^!/) print "--remove-policy=" substr(sec, 9, length(sec) - 9) "." k "=" v[i]
@@ -146,9 +158,17 @@ echo ""
         global_args+=("${flag}")
     done <<< "${installed_flags}"
 
-    echo "-- Resetting And Writing Global Overrides --"
-    "${kCommand[@]}" --reset < /dev/null
-    "${kCommand[@]}" "${global_args[@]}" < /dev/null
+    # Build from an empty installation, but keep the old file until serialization succeeds.
+    replace_override() (
+        name=$1; shift
+        mkdir -p -- "${overrides_dir}"
+        stage=$(mktemp -d -- "${overrides_dir}/.lockdown.XXXXXXXX")
+        trap 'rm -rf -- "$stage"' EXIT
+        FLATPAK_USER_DIR="${stage}" "${kCommand[@]}" "$@" < /dev/null
+        mv -fT -- "${stage}/overrides/${name}" "${overrides_dir}/${name}"
+    )
+    echo "-- Replacing Global Overrides --"
+    replace_override global "${global_args[@]}"
 
     flatseal_system_args=()
     if [ "${#app_system_flags[@]}" -gt 0 ]; then
@@ -189,8 +209,6 @@ echo ""
     fi
 
     echo "-- Granting Flatseal Access --"
-    echo "	Resetting Flatseal overrides..."
-    "${kCommand[@]}" --reset com.github.tchx84.Flatseal < /dev/null
     flatseal_args=("${flatseal_system_args[@]}")
     if [ "${#flatseal_system_args[@]}" -gt 0 ]; then
         echo "	Rejecting system bus names for com.github.tchx84.Flatseal..."
@@ -207,10 +225,11 @@ echo ""
         echo "	Granting ${i}..."
         flatseal_args+=("--talk-name=${i}")
     done
-    "${kCommand[@]}" "${flatseal_args[@]}" com.github.tchx84.Flatseal < /dev/null
+    replace_override com.github.tchx84.Flatseal "${flatseal_args[@]}" com.github.tchx84.Flatseal
 
     echo "-- Per-app Overrides (these still win over everything above; inspect: flatpak override --user --show APP_ID) --"
     echo "Note: apps that got the system bus denies above are listed too."
-    ls -A "${overrides_dir}" 2>/dev/null | grep -vxF -e global -e com.github.tchx84.Flatseal || echo "	none"
+    remaining=$(find -H "${overrides_dir}" -mindepth 1 -maxdepth 1 ! -name global ! -name com.github.tchx84.Flatseal -printf '%f\n' | sort)
+    printf '%s\n' "${remaining:-none}"
 
     echo "Lockdown complete!"

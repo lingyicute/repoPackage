@@ -10,7 +10,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'sha256-iDnhUlyAE+38tXFfALFW8Qzn0vop6N//Oxs1fnhroPQ=' 'sha256-EJ8361zf5aUstXPjmHlSoMABAXDFZF8+H6dkIWPopsE='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+    content="default-src 'none'; script-src 'sha256-iDnhUlyAE+38tXFfALFW8Qzn0vop6N//Oxs1fnhroPQ=' 'sha256-Ah0jqK1GAt9TJDq8gctGjuZVq2rM3/8Ut0cWSuSI+aY='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#f7f5fa">
   <title>Hashroom 文件摘要小助手 by lingyicute</title>
@@ -564,9 +564,13 @@
       text-align: left;
     }
 
-    .file-details strong {
+    .file-details strong,
+    .file-details > span {
       overflow-wrap: break-word;
       overflow-wrap: anywhere;
+    }
+
+    .file-details strong {
       white-space: pre-wrap;
     }
 
@@ -1452,7 +1456,7 @@
               autocorrect="off" autocomplete="off" aria-describedby="compareHint" placeholder="粘贴预期哈希，例如 SHA-256: e3b0c442… 或 sha256sum 输出"></textarea>
           </label>
           <div class="compare-tools">
-            <p class="compare-hint" id="compareHint">计算完成后会自动比对，忽略大小写和分隔符。</p>
+            <p class="compare-hint" id="compareHint">十六进制摘要可忽略大小写和分隔符；Base64 和文件名区分大小写。</p>
             <button class="text-button" id="applySuggested" type="button" hidden>补选可能的算法</button>
           </div>
           <div class="compare-banner" id="compareBanner" hidden role="status" aria-live="polite"></div>
@@ -1542,6 +1546,7 @@
     const algorithmCount = document.getElementById('algorithmCount');
     const expectedInput = document.getElementById('expectedInput');
     const compareHint = document.getElementById('compareHint');
+    const defaultCompareHint = compareHint.textContent;
     const compareBanner = document.getElementById('compareBanner');
     const applySuggested = document.getElementById('applySuggested');
     const clearExpected = document.getElementById('clearExpected');
@@ -1966,9 +1971,13 @@
 
     // 状态用 Int32Array 保存：值始终是 32 位整数，比 Uint32Array 里的无符号数快得多。
     // 每个 64 位 lane 拆成低、高两个 32 位字（state[2i]、state[2i+1]）。
-    const KECCAK_RC = Int32Array.from('0000000000000001 0000000000008082 800000000000808a 8000000080008000 000000000000808b 0000000080000001 8000000080008081 8000000000008009 000000000000008a 0000000000000088 0000000080008009 000000008000000a 000000008000808b 800000000000008b 8000000000008089 8000000000008003 8000000000008002 8000000000000080 000000000000800a 800000008000000a 8000000080008081 8000000000008080 0000000080000001 8000000080008008'.split(' ').flatMap(hex => [parseInt(hex.slice(8), 16), parseInt(hex.slice(0, 8), 16)]));
+    const KECCAK_RC = new Int32Array(48);
+    '0000000000000001 0000000000008082 800000000000808a 8000000080008000 000000000000808b 0000000080000001 8000000080008081 8000000000008009 000000000000008a 0000000000000088 0000000080008009 000000008000000a 000000008000808b 800000000000008b 8000000000008089 8000000000008003 8000000000008002 8000000000000080 000000000000800a 800000008000000a 8000000080008081 8000000000008080 0000000080000001 8000000080008008'.split(' ').forEach((hex, index) => {
+      KECCAK_RC[index * 2] = parseInt(hex.slice(8), 16);
+      KECCAK_RC[index * 2 + 1] = parseInt(hex.slice(0, 8), 16);
+    });
 
-    // Keccak-f[1600]：24 轮完全展开，lane 都放在局部变量里，避免数组间接访问和循环开销，
+    // Keccak-f[1600]：每轮的 lane 操作展开，lane 都放在局部变量里，避免数组间接访问和循环开销，
     // 比逐 lane 的循环写法快数倍。ρ 的旋转量和 π 的换位已按标准表写死在代码里。
     function keccakF(state) {
       let l0 = state[0], h0 = state[1],
@@ -2466,7 +2475,17 @@
           malformed = {unsupported: label};
         }
       }
-      return malformed;
+      if (malformed) return malformed;
+      // SRI 的算法标识符可能是本工具不认识的名字。只把有完整摘要形状的字段计为不支持，
+      // 不把普通的带连字符文本当成 SRI，也不因此丢掉同一行中的可用摘要。
+      const unrecognized = /^([a-z][a-z0-9]*)-([A-Za-z0-9+/_-]+={0,2})$/i.exec(value);
+      if (unrecognized) {
+        const [, label, payload] = unrecognized;
+        if (HASH_LENGTHS.has(hexValue(payload).length) || [...HASH_LENGTHS].some(length => base64Value(payload, length / 2))) {
+          return {unsupported: label};
+        }
+      }
+      return null;
     }
 
     function parseDigestLine(content, tag) {
@@ -2488,7 +2507,7 @@
     }
 
     function normalizeDigest(text) {
-      return text.replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, ' ');
+      return text.replace(/[\u200b-\u200d\u2060\ufeff]/g, '').replace(/[\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/g, ' ');
     }
 
     const WINDOWS_PATH = /^(?:[a-z]:[\\/]|\\\\|\.{1,2}\\)/i;
@@ -2512,43 +2531,61 @@
       return {file, path, invalidFile: invalidFile || !file};
     }
 
-    function splitChecksumLine(line) {
+    function splitChecksumLine(line, allowPosix = true) {
       const escaped = line.startsWith('\\');
       const text = escaped ? line.slice(1) : line;
       const bsd = text.match(/^([A-Za-z][\w/-]*)\s*\(([\s\S]*)\)\s*=\s*([\s\S]*)$/);
       if (bsd) return {tag: bsd[1], content: bsd[3], ...checksumFile(bsd[2], escaped)};
-      // POSIX cksum 输出十进制校验和和文件大小，用的并不是这里的 CRC32。
-      const posix = !escaped && text.match(/^(\d{1,10}) \d+ ([\s\S]+)$/);
-      if (posix && !hexValue(text)) return {tag: 'POSIX cksum', content: posix[1], ...checksumFile(posix[2])};
-      // 前缀必须以十六进制字符结束，避免末尾大量空格被两段正则反复分配。
-      const grouped = text.match(/^([0-9a-fx:：,，_\t \-]*[0-9a-f])[ \t]{2,}(\S[\s\S]*)$/i);
-      if (!escaped && grouped && /^[0-9a-f]{2,16}[ \t:：,，_\-]/i.test(grouped[1]) && /[./\\]/.test(grouped[2])) {
-        const hex = hexValue(grouped[1]);
-        const groups = grouped[1].trim().split(/[\t :：,，_\-]+/);
-        if (hex && (HASH_LENGTHS.has(hex.length) || groups.length > 2)) return {content: grouped[1], ...checksumFile(grouped[2])};
+      // POSIX cksum 的十进制校验和、大小和可选文件名即使恰好都是十六进制字符，也不能按本工具的摘要比对。
+      const posix = allowPosix && !escaped && text.match(/^(0|[1-9]\d{0,9}) (?:0|[1-9]\d*)(?: ([\s\S]*))?$/);
+      if (posix && Number(posix[1]) <= 0xffffffff) {
+        return {tag: 'POSIX cksum', content: posix[1], ...(posix[2] ? checksumFile(posix[2]) : {})};
       }
       const prefixed = text.match(/^([a-z][\w/-]*)[ \t]+([\s\S]*)$/i);
       const tag = prefixed && (/sum$/i.test(prefixed[1]) || findAlgorithmNames(prefixed[1]).length ||
         findAlgorithmNames(prefixed[1], UNSUPPORTED_PATTERN).length) ? prefixed[1] : undefined;
       const payload = tag ? prefixed[2] : text;
-      const looksLikeDigest = value => /^[0-9a-f]{8,128}$/i.test(normalizeDigest(value)) ||
-        (tag && /^[A-Za-z0-9+/_-]+=*$/.test(value));
+      const looksLikeHex = value => /^(?:0x)?[0-9a-f]+$/i.test(normalizeDigest(value));
+      const looksLikeDigest = value => looksLikeHex(value) || (tag && /^[A-Za-z0-9+/_-]+=*$/.test(value));
       const sum = payload.match(/^(\S+)( [ *])([\s\S]+)$/);
-      if (sum && looksLikeDigest(sum[1]) &&
-          (escaped || sum[2] !== '  ' || sum[1].length > 16 || !hexValue(normalizeDigest(`${sum[1]} ${sum[3]}`)))) {
-        // PowerShell 的列宽填充不属于绝对路径；GNU 清单的两个分隔字符之后则必须原样保留。
-        const tablePath = !escaped && tag && !/sum$/i.test(tag) && WINDOWS_PATH.test(sum[3].trimStart());
-        const name = tablePath ? sum[3].trimStart() : sum[3];
-        return {tag, content: sum[1], ...checksumFile(name, escaped)};
+      if (sum && looksLikeDigest(sum[1])) {
+        // 优先使用 GNU 的固定标记；只在整行像分组摘要时才考虑合并短的前导组。
+        // 完整的短摘要之后只有一个十六进制词时，那个词仍可能是 GNU 文件名。
+        const joined = !escaped && sum[2] === '  ' && sum[1].length <= 16 && hexValue(normalizeDigest(payload));
+        const isGrouped = joined && (tag ? labelledField(tag, joined).hex :
+          HASH_LENGTHS.has(joined.length) && (!HASH_LENGTHS.has(hexValue(normalizeDigest(sum[1])).length) || /\S[ \t]+\S/.test(sum[3])));
+        if (!isGrouped) {
+          // PowerShell 的列宽填充不属于绝对路径；GNU 标记后的文件名则必须原样保留。
+          const unpadded = sum[3].replace(/^[ \t]+/, '');
+          const tablePath = !escaped && tag && !/sum$/i.test(tag) && WINDOWS_PATH.test(unpadded);
+          const name = tablePath ? unpadded : sum[3];
+          return {tag, content: sum[1], ...checksumFile(name, escaped)};
+        }
+      }
+      // 首个双字符分隔符之后是文件名；不要把文件名开头的十六进制词吞进摘要。
+      const grouped = text.match(/^([0-9a-fx:：,，_\t \-]*?[0-9a-f])[ \t]{2}([\s\S]+)$/i);
+      if (!escaped && grouped && /^[0-9a-f]{2,16}[ \t:：,，_\-]/i.test(grouped[1]) && /[./\\]/.test(grouped[2])) {
+        const hex = hexValue(grouped[1]);
+        const groups = grouped[1].trim().split(/[\t :：,，_\-]+/);
+        if (hex && (HASH_LENGTHS.has(hex.length) || groups.length > 2)) return {content: grouped[1], ...checksumFile(grouped[2])};
       }
       if (escaped) return {invalidFile: true};
       // 表格或手写的清单也可能只用一个空格或制表符分隔；不能把下一组十六进制当作文件名。
       const spaced = payload.match(/^(\S+)[ \t]+(\S[\s\S]*)$/);
-      if (spaced && looksLikeDigest(spaced[1]) && /[./\\]/.test(spaced[2])) {
-        return {tag, content: spaced[1], ...checksumFile(spaced[2])};
+      if (spaced && looksLikeDigest(spaced[1])) {
+        const [, value, name] = spaced;
+        const pathLike = /[./\\]/.test(name) && !/^[./\\]+[ \t]/.test(name);
+        const token = name.replace(/[ \t]+$/, '');
+        // 不猜无结构的多词注释，也不把连续十六进制组解释成文件名。
+        const singleName = /^[^\s*:=]+$/.test(token) && !hexValue(normalizeDigest(token));
+        if (pathLike || (singleName && (tag ? labelledField(tag, normalizeDigest(value)).hex : HASH_LENGTHS.has(hexValue(normalizeDigest(value)).length)))) {
+          return {tag, content: value, ...checksumFile(name)};
+        }
       }
       const prefixFile = text.match(/^([\s\S]+?)[:：][ \t]+([\s\S]+)$/);
-      if (prefixFile && !/\s[/\\]\s/.test(prefixFile[1]) && /[.\/\\]/.test(prefixFile[1])) {
+      // SHA-512/224、SHA-512/256 的斜杠属于算法名，不是文件路径。
+      const slashLabel = prefixFile && /^(?:--)?sha[-_]?(?:2[-_]?)?512\/\d+$/i.test(prefixFile[1].trim());
+      if (prefixFile && !slashLabel && !/\s[/\\]\s/.test(prefixFile[1]) && /[.\/\\]/.test(prefixFile[1])) {
         return {content: prefixFile[2], ...checksumFile(prefixFile[1])};
       }
       return {content: line};
@@ -2596,8 +2633,14 @@
           // CertUtil 的标签与文件名在摘要的上一行。
           const cert = line.match(/^([a-z][\w/-]*) hash of (?:file )?([\s\S]+):\s*$/i);
           const record = cert ? {tag: cert[1], content: '', ...checksumFile(cert[2])} : splitChecksumLine(line);
-          if (cert && i + 1 < rows.length && rows[i + 1].length <= MAX_LINE_LENGTH && hexValue(normalizeDigest(rows[i + 1]))) {
-            record.content = rows[++i];
+          if (cert && i + 1 < rows.length && rows[i + 1].length <= MAX_LINE_LENGTH) {
+            const next = rows[i + 1].replace(/^[ \t]+/, '');
+            // 下一行必须只有摘要；带十六进制文件名的独立清单条目不属于这个标题。
+            // 已有明确算法的 CertUtil 字节组可能从两个十进制数字开始，不使用 POSIX 猜测。
+            if (hexValue(normalizeDigest(next)) && !splitChecksumLine(next, false).file) {
+              record.content = next;
+              i += 1;
+            }
           }
           const {content, file, path, tag, invalidFile} = record;
           if (file && !invalidFile) files.set(path, {file, path});
@@ -2730,7 +2773,7 @@
       // 只含零宽字符之类的输入解析不出任何一行，同样按没有填写处理。
       if (!parsed.entries.length && !parsed.invalid) {
         compareBanner.hidden = true;
-        compareHint.textContent = '计算完成后会自动比对，忽略大小写和分隔符。';
+        compareHint.textContent = defaultCompareHint;
         return;
       }
       if (parsed.invalid) {
@@ -2773,7 +2816,8 @@
       const named = [...new Set(expectedEntries.map(entry => entry.algorithm).filter(Boolean))];
       const unnamed = expectedEntries.filter(entry => !entry.algorithm);
       const unnamedLengths = [...new Set(unnamed.map(entry => entry.hex.length))];
-      const lengthNames = [...new Set(unnamed.flatMap(entry => algorithmsForLength(entry.hex.length).map(item => item.id)))];
+      const lengthNames = [];
+      for (const length of unnamedLengths) lengthNames.push(...algorithmsForLength(length).map(item => item.id));
       let hint = named.length ? `已识别 ${named.join('、')}` : `已识别 ${unnamedLengths.join('、')} 位十六进制`;
       if (named.length && unnamedLengths.length) hint += ` 及 ${unnamedLengths.join('、')} 位十六进制`;
       if (lengthNames.length) hint += `，可能是 ${lengthNames.join('、')}`;
@@ -2873,7 +2917,9 @@
       // 计算中按钮变成“取消计算”，大文件不必等到算完或者靠改选项才能中止。
       computeButton.disabled = !isCalculating && (!selectedFile || !selectedAlgorithms().length);
       computeLabel.textContent = isCalculating ? '取消计算' : (hasExpectedValue() ? '计算并比对' : '计算哈希');
-      computeIcon.hidden = isCalculating;
+      // SVG 元素没有 HTMLElement.hidden 属性，需要直接设置隐藏特性。
+      if (isCalculating) computeIcon.setAttribute('hidden', '');
+      else computeIcon.removeAttribute('hidden');
       buttonSpinner.hidden = !isCalculating;
       // 只在计算期间挂上离开确认：Firefox 不会把带 beforeunload 监听的页面放进往返缓存（bfcache）。
       if (isCalculating) window.addEventListener('beforeunload', confirmLeave);
@@ -2883,7 +2929,8 @@
     // 大文件算到一半时误关标签页或刷新会前功尽弃，计算期间让浏览器先确认一下。
     function confirmLeave(event) {
       event.preventDefault();
-      event.returnValue = '';
+      // 旧版浏览器还需要 truthy 的 returnValue；是否弹窗由浏览器决定。
+      event.returnValue = true;
     }
 
     function renderMessage(title, description, kind = 'empty', progress = 0) {
@@ -3003,11 +3050,7 @@
       lastElapsed = '';
       copyAllButton.disabled = true;
       clearCopyFeedback();
-      const previous = copyTimers.get(copyAllButton);
-      if (previous) clearTimeout(previous);
-      const icon = copyAllButton.querySelector('.copy-icon');
-      if (icon) icon.innerHTML = iconMarkup.copy;
-      copyAllButton.classList.remove('is-copied');
+      resetCopyButton(copyAllButton);
     }
 
     function onAlgorithmsChanged() {
@@ -3068,13 +3111,22 @@
       // 按钮的 aria-label 会盖掉内部文字，读屏软件需要在标签里听到文件名。
       dropzone.setAttribute('aria-label', `已选择文件 ${selectedFile.name}，${fileMeta.textContent}。点击更换文件`);
       setStatus(ready ? '文件已就绪，可以开始计算。' : '请至少选择一种算法。', ready ? '' : 'error');
-      renderMessage('文件已就绪', !ready ? '至少选择一种算法后才能计算。' : hasExpectedValue() ? '计算后会立即与预期值比对。' : '点击计算后，所选摘要会显示在这里。');
+      renderMessage('文件已就绪', ready ? '点击计算后，所选摘要会显示在这里。' : '至少选择一种算法后才能计算。');
     }
 
     function fallbackCopy(text) {
       const active = document.activeElement;
       const selection = active && typeof active.selectionStart === 'number' ?
         [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+      const pageSelection = selection ? null : document.getSelection();
+      const ranges = [];
+      let endpoints;
+      if (pageSelection) {
+        for (let i = 0; i < pageSelection.rangeCount; i += 1) ranges.push(pageSelection.getRangeAt(i).cloneRange());
+        if (ranges.length === 1) {
+          endpoints = [pageSelection.anchorNode, pageSelection.anchorOffset, pageSelection.focusNode, pageSelection.focusOffset];
+        }
+      }
       const textarea = document.createElement('textarea');
       textarea.value = text;
       textarea.setAttribute('readonly', '');
@@ -3096,6 +3148,11 @@
           active.focus({preventScroll: true});
           if (selection) active.setSelectionRange(...selection);
         }
+        if (pageSelection) {
+          pageSelection.removeAllRanges();
+          if (endpoints && typeof pageSelection.setBaseAndExtent === 'function') pageSelection.setBaseAndExtent(...endpoints);
+          else ranges.forEach(range => pageSelection.addRange(range));
+        }
       }
     }
 
@@ -3106,8 +3163,18 @@
       copyStatus.classList.remove('is-error');
     }
 
+    function resetCopyButton(button) {
+      clearTimeout(copyTimers.get(button));
+      copyTimers.delete(button);
+      if (!button.classList.contains('is-copied')) return;
+      const icon = button.querySelector('.copy-icon');
+      if (icon) icon.innerHTML = iconMarkup.copy;
+      button.classList.remove('is-copied');
+    }
+
     async function copyText(text, button, message) {
       clearCopyFeedback();
+      resetCopyButton(button);
       const request = copyRequest;
       const stillCurrent = () => copyRequest === request && button.isConnected && !button.disabled;
       try {
@@ -3129,14 +3196,7 @@
         copyStatusTimer = setTimeout(() => {
           if (stillCurrent()) copyStatus.textContent = '';
         }, 2400);
-        const previous = copyTimers.get(button);
-        if (previous) clearTimeout(previous);
-        copyTimers.set(button, setTimeout(() => {
-          if (!button.isConnected) return;
-          const currentIcon = button.querySelector('.copy-icon');
-          if (currentIcon) currentIcon.innerHTML = iconMarkup.copy;
-          button.classList.remove('is-copied');
-        }, 1600));
+        copyTimers.set(button, setTimeout(() => resetCopyButton(button), 1600));
       } catch (error) {
         if (stillCurrent()) {
           copyStatus.classList.add('is-error');
@@ -3171,10 +3231,9 @@
     }
 
     // 浏览器用 FileReader 读取，取消时能中止正在读的分块或整文件，而不只是丢掉结果。
-    function readBlob(blob, signal) {
-      if (signal.aborted) return Promise.reject(readAbortError());
-      if (typeof FileReader !== 'function') return blob.arrayBuffer();
-      return new Promise((resolve, reject) => {
+    async function readBlob(blob, signal) {
+      if (signal.aborted) throw readAbortError();
+      const pending = typeof FileReader !== 'function' ? blob.arrayBuffer() : new Promise((resolve, reject) => {
         const reader = new FileReader();
         const finish = (settle, value) => {
           signal.removeEventListener('abort', abort);
@@ -3195,6 +3254,10 @@
           finish(reject, error);
         }
       });
+      const buffer = await pending;
+      // Uint8Array 会把 null 和某些无效值当成零长度或全零数据，不能先转换再校验。
+      if (!(buffer instanceof ArrayBuffer)) throw new Error('Invalid file read buffer');
+      return buffer;
     }
 
     const HASH_STEP = 256 * 1024;
@@ -3213,8 +3276,10 @@
         let hex = '';
         if (WEB_CRYPTO.has(id)) {
           try {
-            const digest = new Uint8Array(await subtle.digest(id, bytes));
-            if (digest.length === ALGORITHMS.find(item => item.id === id).bits / 8) hex = bytesToHex(digest);
+            const digest = await subtle.digest(id, bytes);
+            if (digest instanceof ArrayBuffer && digest.byteLength === ALGORITHMS.find(item => item.id === id).bits / 8) {
+              hex = bytesToHex(new Uint8Array(digest));
+            }
             lastYield = performance.now();
           } catch (error) {
             // 原生计算失败，仍用已读取的字节走纯 JS 路径。
@@ -3242,29 +3307,29 @@
       return signal.aborted ? null : results;
     }
 
-    async function hashStreamed(file, ids, signal, onProgress) {
+    async function hashStreamed(file, size, ids, signal, onProgress) {
       const hashers = ids.map(id => ({id, hasher: createHasher(id)}));
       const readSlice = offset => {
-        const pending = readBlob(file.slice(offset, Math.min(offset + SLICE_SIZE, file.size)), signal).then(buffer => new Uint8Array(buffer));
+        const pending = readBlob(file.slice(offset, Math.min(offset + SLICE_SIZE, size)), signal).then(buffer => new Uint8Array(buffer));
         // 预读可能在当前块计算时失败；等用到该块再报告错误。
         pending.catch(() => {});
         return pending;
       };
       // 空文件也应尝试打开，不能把已删除、不可读或伪装成空文件的项目直接算成空摘要。
-      if (file.size === 0) {
+      if (size === 0) {
         const empty = await readBlob(file, signal);
         if (signal.aborted) return null;
         if (empty.byteLength !== 0) throw new Error('Unexpected file read length');
         onProgress(1);
       }
-      let next = file.size > 0 ? readSlice(0) : null;
+      let next = size > 0 ? readSlice(0) : null;
       let lastYield = performance.now();
-      for (let offset = 0; offset < file.size; offset += SLICE_SIZE) {
+      for (let offset = 0; offset < size; offset += SLICE_SIZE) {
         if (signal.aborted) return null;
         const bytes = await next;
         if (signal.aborted) return null;
-        if (bytes.length !== Math.min(SLICE_SIZE, file.size - offset)) throw new Error('Unexpected file read length');
-        next = offset + SLICE_SIZE < file.size ? readSlice(offset + SLICE_SIZE) : null;
+        if (bytes.length !== Math.min(SLICE_SIZE, size - offset)) throw new Error('Unexpected file read length');
+        next = offset + SLICE_SIZE < size ? readSlice(offset + SLICE_SIZE) : null;
         for (const {hasher} of hashers) {
           for (let start = 0; start < bytes.length; start += HASH_STEP) {
             hasher.update(bytes.subarray(start, start + HASH_STEP));
@@ -3275,7 +3340,7 @@
             }
           }
         }
-        onProgress((offset + bytes.length) / file.size);
+        onProgress((offset + bytes.length) / size);
       }
       if (signal.aborted) return null;
       return hashers.map(item => ({algorithm: item.id, hex: item.hasher.digest()}));
@@ -3283,9 +3348,11 @@
 
     async function hashFile(file, ids, signal, onProgress) {
       if (signal.aborted) return null;
+      const size = file.size;
+      if (!Number.isSafeInteger(size) || size < 0) throw new Error('Invalid file size');
       const subtle = window.crypto && window.crypto.subtle;
       try {
-        if (!bufferedHashBusy && file.size <= BUFFER_LIMIT && subtle && ids.some(id => WEB_CRYPTO.has(id))) {
+        if (!bufferedHashBusy && size <= BUFFER_LIMIT && subtle && ids.some(id => WEB_CRYPTO.has(id))) {
           bufferedHashBusy = true;
           try {
             let bytes;
@@ -3295,12 +3362,12 @@
               // 整文件读不进内存时改走分块读取。
             }
             if (signal.aborted) return null;
-            if (bytes && bytes.length === file.size) return await hashBuffered(bytes, ids, subtle, signal, onProgress);
+            if (bytes && bytes.length === size) return await hashBuffered(bytes, ids, subtle, signal, onProgress);
           } finally {
             bufferedHashBusy = false;
           }
         }
-        return await hashStreamed(file, ids, signal, onProgress);
+        return await hashStreamed(file, size, ids, signal, onProgress);
       } catch (error) {
         if (signal.aborted) return null;
         throw error;

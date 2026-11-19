@@ -129,6 +129,18 @@ function checkComparison() {
   const sha3 = {algorithm: 'SHA3-256', hex: expected('SHA3-256', Buffer.from('abc'))};
   const sha512t = {algorithm: 'SHA-512/256', hex: expected('SHA-512/256', Buffer.from('abc'))};
   const wrong = '1'.repeat(64);
+  // 页面复制的「算法: 摘要」必须能原样粘回去，不变成路径或同长度的其他算法。
+  for (const {id} of ALGORITHMS) {
+    const hex = expected(id, Buffer.from('abc'));
+    const parsed = parseExpected(`${id}: ${hex}`);
+    assert.deepStrictEqual(parsed.entries, [{algorithm: id, hex, file: ''}], id);
+    assert.deepStrictEqual(parsed.files, [], id);
+    assert.deepStrictEqual([...compareDigests(parsed.entries, [{algorithm: id, hex}], enabled).matched], [id]);
+  }
+  const tagged = parseExpected(`SHA-512/256: ${sha256.hex}`);
+  assert.deepStrictEqual([...compareDigests(tagged.entries, [sha256], enabled).needed], ['SHA-512/256']);
+  assert.deepStrictEqual(parseExpected(`SHA-512/192: ${sha256.hex}`).unsupported, ['SHA-512/192']);
+  assert.deepStrictEqual(parseExpected(`release/256: ${sha256.hex}`).entries.map(entry => entry.path), ['release/256']);
   const check = (text, results, supported = enabled) => compareDigests(parseExpected(text).entries, results, supported);
   const pending = check(sha3.hex, [sha256]);
   assert.deepStrictEqual([...pending.needed], ['SHA-512/256', 'SHA3-256']);
@@ -244,7 +256,11 @@ async function checkLargeStream() {
 
 async function main() {
   checkScriptPolicy(src);
-  console.log('ok    CSP script hashes');
+  assert.throws(() => checkScriptPolicy(src.replace('<head>', '<head><script>/* 检查顺序 */</script>')), /出现在页面资源之前/);
+  assert.throws(() => checkScriptPolicy(src.replace("default-src 'none'", "default-src 'self'")), /本地处理限制/);
+  assert.throws(() => checkScriptPolicy(src.replace("form-action 'none'", "form-action 'none'; connect-src 'self'")), /覆盖限制/);
+  assert.throws(() => checkScriptPolicy(src.replace("default-src 'none'", "default-src 'none'; default-src 'self'")), /重复的 CSP 指令/);
+  console.log('ok    CSP placement, restrictions and script hashes');
   checkBitLength();
   checkDurationFormat();
   checkFileMetadata();
@@ -282,7 +298,7 @@ async function main() {
   fallback.forEach(item => assert.strictEqual(item.hex, expected(item.algorithm, buf), `hashFile fallback ${item.algorithm}`));
   // 一次性读取没有报错、却只读到一部分时，同样不能算出截断数据的摘要，应退回流式处理。
   const shortFirstRead = new Blob([buf]);
-  shortFirstRead.arrayBuffer = () => Promise.resolve(buf.subarray(0, 1048576));
+  shortFirstRead.arrayBuffer = () => Promise.resolve(buf.slice(0, 1048576).buffer.slice(buf.byteOffset, buf.byteOffset + 1048576));
   const shortFallback = await hashFile(shortFirstRead, ['SHA-256', 'MD5'], freshSignal(), () => {});
   shortFallback.forEach(item => assert.strictEqual(item.hex, expected(item.algorithm, buf), `hashFile short-read fallback ${item.algorithm}`));
   // 没有 Blob.arrayBuffer() 的旧浏览器应通过 FileReader 读取，结果保持一致。
@@ -337,12 +353,29 @@ async function main() {
   await assert.rejects(hashFile(gone, ['MD5'], freshSignal(), () => {}), /file was removed/);
   const changedEmpty = {size: 0, arrayBuffer: async () => new ArrayBuffer(1)};
   await assert.rejects(hashFile(changedEmpty, ['MD5'], freshSignal(), () => {}), /Unexpected file read length/);
+  for (const value of [null, 0, new Uint8Array(0)]) {
+    for (const algorithm of ['MD5', 'SHA-256']) {
+      const unread = {size: 0, arrayBuffer: async () => value};
+      await assert.rejects(hashFile(unread, [algorithm], freshSignal(), () => {}), /Invalid file read buffer/);
+    }
+  }
+  const invalidNative = loadHashroom({digest: async () => 32});
+  assert.deepStrictEqual(await invalidNative.hashFile(new Blob(['abc']), ['SHA-256'], freshSignal(), () => {}),
+    [{algorithm: 'SHA-256', hex: expected('SHA-256', Buffer.from('abc'))}]);
+  for (const size of [-1, 0.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    const invalidFile = {size, arrayBuffer() { assert.fail('无效大小不应触发读取'); }};
+    await assert.rejects(hashFile(invalidFile, ['SHA-256'], freshSignal(), () => {}), /Invalid file size/);
+  }
   console.log('ok    hashFile');
   await checkCancellation();
   await checkLargeStream();
 
   const sha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
   const spaced = sha256.match(/.{8}/g).join(' ');
+  for (const file of ['cafe  edition.iso', '   leading spaces.iso']) {
+    const groupedRecord = parseExpected(`${spaced}  ${file}`);
+    assert.deepStrictEqual(groupedRecord.entries, [{algorithm: null, hex: sha256, file, path: file}]);
+  }
   const cases = [
     [`SHA-256: ${spaced}`, 'SHA-256', 64],
     [`sha256sum ${sha256}  deadbeef.bin`, 'SHA-256', 64],
@@ -418,9 +451,17 @@ async function main() {
       assert.strictEqual(entriesForFile(parsed.entries, file).entries.length, 1);
     }
   }
-  assert.strictEqual(parseExpected('cbf43926  cafe  edition.iso').entries[0].file, 'cafe  edition.iso');
+  for (const file of ['cafe  edition.iso', 'cafe beef  edition.iso', 'a'.repeat(24), '   padded.txt']) {
+    const parsed = parseExpected(`cbf43926  ${file}`);
+    assert.deepStrictEqual(parsed.entries, [{algorithm: null, hex: 'cbf43926', file, path: file}]);
+    assert.deepStrictEqual(entriesForFile(parsed.entries, 'other.txt', parsed.files).entries, []);
+  }
+  const brokenManifest = parseExpected(`${sha256}  a/same.iso\nfffffff  b/same.iso`);
+  assert.strictEqual(brokenManifest.invalidLines, 1);
+  assert.deepStrictEqual(brokenManifest.files.map(entry => entry.path), ['a/same.iso', 'b/same.iso']);
+  assert.strictEqual(entriesForFile(brokenManifest.entries, 'same.iso', brokenManifest.files).issue, 'ambiguous');
   // 网页上复制来的哈希可能用不换行空格、全角空格分组或夹带零宽字符；文件名可能是 NFD 形式。
-  for (const space of ['\u00a0', '\u3000', '\u202f']) {
+  for (const space of ['\u00a0', '\u3000', '\u2028', '\u2029', '\u202f']) {
     const parsed = parseExpected(`SHA-256:${space}${sha256.match(/.{8}/g).join(space)}`);
     assert.deepStrictEqual(parsed.entries.map(entry => [entry.algorithm, entry.hex]), [['SHA-256', sha256]], JSON.stringify(space));
   }
@@ -463,6 +504,12 @@ async function main() {
   const sri = ['sha256', 'sha384'].map(id => `${id}-${crypto.createHash(id).update('abc').digest('base64')}`);
   const sriResult = parseExpected(`${sri[0]}?option=1 ${sri[1]}`);
   assert.deepStrictEqual(sriResult.entries.map(entry => entry.algorithm), ['SHA-256', 'SHA-384']);
+  const mixedSri = parseExpected(`future256-${Buffer.from(sha256, 'hex').toString('base64')} ${sri.join(' ')}`);
+  assert.deepStrictEqual(mixedSri.entries, sriResult.entries);
+  assert.deepStrictEqual(mixedSri.unsupported, ['future256']);
+  assert.strictEqual(mixedSri.partialInvalid, true);
+  assert.strictEqual(mixedSri.invalidLines, 1);
+  assert.strictEqual(parseExpected('ordinary-text').unsupported.length, 0);
   assert.deepStrictEqual(parseExpected(`# ${sha256}\n; ${sha256}`).entries, []);
   const tooLarge = parseExpected(`${sha256}\n${'copy '.repeat(60000)}`);
   assert.strictEqual(tooLarge.tooLarge, true);
@@ -489,7 +536,9 @@ async function main() {
     'CRC32C: cbf43926',
     `SHAKE-128-256: ${sha256}`,
     `GOST256: ${sha256}`,
-    '12345678 42 ./sample.zip'
+    '12345678 42 ./sample.zip',
+    `12345678 42 ${'a'.repeat(22)}`, // 文件名全为十六进制字符、拼接后正好有 32 位。
+    '1234 5678' // 从标准输入计算时没有文件名。
   ]) {
     const foreign = parseExpected(line);
     assert.strictEqual(foreign.invalid, true, line);
@@ -522,6 +571,14 @@ async function main() {
   const mixed = parseExpected(`SHA256 hash of file.iso:\n${sha256}\nCertUtil: -hashfile command completed successfully.`);
   assert.deepStrictEqual(mixed.entries, [{algorithm: 'SHA-256', hex: sha256, file: 'file.iso', path: 'file.iso'}]);
   assert.strictEqual(mixed.invalidLines, 0);
+  const certBytes = '12 34 ' + 'a1 '.repeat(30).trim();
+  assert.strictEqual(parseExpected(`SHA256 hash of file.iso:\n${certBytes}`).entries[0].hex, certBytes.replace(/ /g, ''));
+  const md5 = 'd41d8cd98f00b204e9800998ecf8427e';
+  const hexName = 'a'.repeat(32);
+  const separate = parseExpected(`SHA256 hash of current.iso:\n${md5}  ${hexName}`);
+  assert.deepStrictEqual(separate.entries, [{algorithm: null, hex: md5, file: hexName, path: hexName}]);
+  assert.strictEqual(entriesForFile(separate.entries, 'current.iso', separate.files).issue, 'unusable');
+  assert.strictEqual(separate.invalidLines, 1);
   const windows = parseExpected(`Algorithm   Hash   Path\n---------   ----   ----\nSHA256       ${sha256}       C:\\Downloads\\test.iso`);
   assert.strictEqual(windows.invalidLines, 0);
   assert.deepStrictEqual(windows.entries.map(({algorithm, file}) => [algorithm, file]), [['SHA-256', 'test.iso']]);
@@ -556,6 +613,10 @@ async function main() {
   assert.deepStrictEqual(parseExpected(`${sha256} ubuntu.iso`).entries.map(entry => entry.file), ['ubuntu.iso']);
   assert.deepStrictEqual(parseExpected(`${sha256}\t./sub/other.iso`).entries.map(entry => entry.file), ['other.iso']);
   assert.deepStrictEqual(parseExpected(`sha256sum ${sha256} dir/win.iso`).entries.map(entry => [entry.algorithm, entry.file]), [['SHA-256', 'win.iso']]);
+  assert.deepStrictEqual(parseExpected(`${sha256} LICENSE`).entries.map(entry => entry.file), ['LICENSE']);
+  assert.deepStrictEqual(parseExpected(`sha256sum ${sha256}\t说明`).entries.map(entry => [entry.algorithm, entry.file]), [['SHA-256', '说明']]);
+  assert.strictEqual(parseExpected(`${sha256} *`).invalid, true); // 不是名为 * 的单空格条目。
+  assert.strictEqual(parseExpected(`SHA-256 ${sha256} / ${sha256}`).invalid, true);
   // 分隔符后是另一段十六进制（分组哈希的后续片段）时不能当成文件名。
   assert.deepStrictEqual(parseExpected(`${sha256.slice(0, 32)} ${sha256.slice(32)}`).entries, [{algorithm: null, hex: sha256, file: ''}]);
   // 超长的行不能拖慢解析（输入框每次改动都会重新解析）。
@@ -577,7 +638,5 @@ async function main() {
   console.log('ok    parseExpected');
 }
 
-main().catch(error => {
-  console.error(error);
-  process.exit(1);
-});
+// 测试运行器会把始终未完成的 Promise 计为失败，而不是让空闲事件循环正常退出。
+require('node:test').test('Hashroom 回归', {timeout: 60000}, main);
