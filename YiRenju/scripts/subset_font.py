@@ -10,7 +10,7 @@ Nebulove 字体子集化 & 内嵌（方式与 YiMines 一致）
   python3 scripts/subset_font.py --all-text          # 保守模式：文件里出现的字符全收
   python3 scripts/subset_font.py --extra-chars glyphs.txt
 """
-import argparse, base64, io, os, re, sys, tempfile, urllib.request
+import argparse, base64, hashlib, io, os, re, sys, tempfile, urllib.request
 FONT_URL = "https://raw.githubusercontent.com/lingyicute/Nebulove/main/Nebulove.woff2"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_HTML = os.path.join(os.path.dirname(HERE), "index.html")
@@ -51,15 +51,15 @@ def build_subset(chars, ttf_path):
     from fontTools.ttLib import TTFont
     from fontTools.subset import Subsetter, Options
 
-    font = TTFont(ttf_path, recalcTimestamp=False)   # 不写 head.modified，保证同样输入 → 同样字节
-    subsetter = Subsetter(options=Options())
-    subsetter.populate(text="".join(sorted(chars)))
-    subsetter.subset(font)
-    font.flavor = "woff2"
-    buf = io.BytesIO()
-    font.save(buf)
-    data = buf.getvalue()
-    covered = set(font.getBestCmap().keys())
+    with TTFont(ttf_path, recalcTimestamp=False) as font:  # 不写 head.modified，保证同样输入 → 同样字节
+        subsetter = Subsetter(options=Options())
+        subsetter.populate(text="".join(sorted(chars)))
+        subsetter.subset(font)
+        font.flavor = "woff2"
+        buf = io.BytesIO()
+        font.save(buf)
+        data = buf.getvalue()
+        covered = set(font.getBestCmap().keys())
     return data, covered
 
 
@@ -89,17 +89,17 @@ def download(url, path):
         atomic_write(path, r.read(), binary=True)
 
 
-def make_font_face(b64, full_mb, woff_kb, b64_kb, count, mode):
+def make_font_face(b64, full_mb, full_fmt, woff_kb, b64_kb, count, mode):
     return (
         "/* ===== Nebulove 子集（内嵌，离线可用）=====\n"
         "   由 scripts/subset_font.py 生成：只保留本页会用到的 %d 个字形（%s 模式）。\n"
-        "   %.2f MB woff2 → %.1f KB woff2（base64 后 %.1f KB），随页面一起加载、无网络请求。 ===== */\n"
+        "   %.2f MB %s → %.1f KB woff2（base64 后 %.1f KB），随页面一起加载、无网络请求。 ===== */\n"
         '@font-face {\n'
         "  font-family: 'Nebulove';\n"
         '  src: url("data:font/woff2;base64,%s") format("woff2");\n'
         "  font-weight: normal;\n"
         "  font-style: normal;\n"
-        "}" % (count, mode, full_mb, woff_kb, b64_kb, b64)
+        "}" % (count, mode, full_mb, full_fmt, woff_kb, b64_kb, b64)
     )
 
 
@@ -131,7 +131,14 @@ def main():
     mode = "全文本" if args.all_text else "可渲染文本"
     print("可渲染字符：%d 个（%s）" % (len(chars), mode))
 
-    ttf = args.ttf or os.path.join(tempfile.gettempdir(), "Nebulove.woff2")
+    if args.ttf:
+        ttf = args.ttf
+    elif args.font_url == FONT_URL:
+        ttf = os.path.join(tempfile.gettempdir(), "Nebulove.woff2")
+    else:
+        tag = hashlib.sha256(args.font_url.encode("utf-8")).hexdigest()[:8]
+        ext = os.path.splitext(args.font_url.split("?", 1)[0])[1] or ".woff2"
+        ttf = os.path.join(tempfile.gettempdir(), "Nebulove-%s%s" % (tag, ext))
     if args.ttf:
         if not os.path.exists(ttf):
             sys.exit("找不到本地字体文件：%s" % ttf)
@@ -162,7 +169,8 @@ def main():
     print("子集文件：%s" % keep)
 
     b64 = base64.b64encode(wofl).decode("ascii")
-    new_face = make_font_face(b64, os.path.getsize(ttf) / 1024 / 1024, len(wofl) / 1024, len(b64) / 1024, len(covered), mode)
+    full_fmt = os.path.splitext(ttf)[1].lstrip(".").lower() or "woff2"
+    new_face = make_font_face(b64, os.path.getsize(ttf) / 1024 / 1024, full_fmt, len(wofl) / 1024, len(b64) / 1024, len(covered), mode)
     new_html, n = FONT_FACE_RE.subn(lambda _: new_face, html, count=1)
     if new_html == html:
         print("页面已经是目标内容，未改动。")

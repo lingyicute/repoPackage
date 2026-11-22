@@ -322,7 +322,7 @@ $('findBtn').onclick=()=>{if(!S.A||!S.B)return notice(t('needTwo'));compare();$(
 // drawAligned 的线性部分是 L = s·R(θ)·F（F 为翻转对角阵），L⁻¹ = (1/s)·F·R(−θ)：
 // 无翻转或同时水平 + 垂直翻转（F = −I，与旋转可交换）时为 R(−θ)·F；只有一个方向翻转时 F·R(−θ) = R(θ)·F，旋转角保持不变。
 function invertAlign(al,a,b){const th=(al.rot%360)*Math.PI/180,c=Math.cos(th),s=Math.sin(th),k=1/al.scale,vx=a.w/2-b.w/2-al.dx,vy=a.h/2-b.h/2-al.dy,ux=k*(c*vx+s*vy)*(al.fh?-1:1),uy=k*(-s*vx+c*vy)*(al.fv?-1:1),one=!!al.fh!==!!al.fv;
-  return {dx:b.w/2+ux-a.w/2,dy:b.h/2+uy-a.h/2,rot:one?al.rot:-al.rot||0,scale:k,fh:!!al.fh,fv:!!al.fv}}
+  return {dx:b.w/2+ux-a.w/2,dy:b.h/2+uy-a.h/2,rot:(one?al.rot:-al.rot)||0,scale:k,fh:!!al.fh,fv:!!al.fv}}
 $('swapBtn').onclick=()=>{if(!S.A||!S.B)return;const a=S.A,b=S.B,al=invertAlign(S.align,a,b);try{comparisonFrame(b,a,al)}catch(e){notice(t('alignOutOfRange'));return}cancelLoads();setImage('A',b.c,b.name,true);setImage('B',a.c,a.name,true);S.align=al;compare()};
 $('resetBtn').onclick=()=>{cancelLoads();clearComparison();S.align=defAlign();S.passes=[];S.seeded=false;S.regions=[];S.active=-1;if(S.A&&S.B)compare()};
 
@@ -419,7 +419,7 @@ $('fitBtn').onclick=fit;
 $('zoomRange').oninput=e=>{setZoom(e.target.value/100,viewport.clientWidth/2,viewport.clientHeight/2)};
 function setZoom(z,cx,cy){z=Math.max(.05,Math.min(8,z));const k=z/S.zoom;S.px=cx-(cx-S.px)*k;S.py=cy-(cy-S.py)*k;S.zoom=z;applyTransform();stage.classList.toggle('pix',S.zoom>=3);drawOverlay()}
 viewport.addEventListener('wheel',e=>{e.preventDefault();const r=viewport.getBoundingClientRect();setZoom(S.zoom*(e.deltaY<0?1.12:1/1.12),e.clientX-r.left,e.clientY-r.top)},{passive:false});
-viewport.onpointerdown=e=>{if(e.target.closest('.sl-handle'))return;viewport.setPointerCapture(e.pointerId);viewport.classList.add('panning');const sx=e.clientX-S.px,sy=e.clientY-S.py;viewport.onpointermove=ev=>{S.px=ev.clientX-sx;S.py=ev.clientY-sy;applyTransform()};viewport.onpointerup=viewport.onpointercancel=()=>{viewport.onpointermove=null;viewport.classList.remove('panning')}};
+viewport.onpointerdown=e=>{if(e.button!==0||!e.isPrimary||e.target.closest('.sl-handle'))return;viewport.setPointerCapture(e.pointerId);viewport.classList.add('panning');const sx=e.clientX-S.px,sy=e.clientY-S.py;viewport.onpointermove=ev=>{if(ev.pointerId!==e.pointerId)return;S.px=ev.clientX-sx;S.py=ev.clientY-sy;applyTransform()};viewport.onpointerup=viewport.onpointercancel=viewport.onlostpointercapture=ev=>{if(ev.pointerId!==e.pointerId)return;viewport.onpointermove=null;viewport.classList.remove('panning')}};
 /* toolbar */
 $('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;const sp=S.mode==='split';S.mode=b.dataset.mode;$('modeSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));renderStage();if(sp||S.mode==='split')fit()};// 只有进出并排模式时舞台尺寸才会变；其余模式之间切换保留当前的缩放与位置，便于对着同一处细节来回比较
 $('fadeRange').oninput=e=>{S.fade=e.target.value/100;$('fadeVal').textContent=e.target.value+'%';if(mainCanvas)paintBaseMode(mainCanvas.getContext('2d'),'fade',baseA,baseB)};
@@ -549,7 +549,7 @@ function syncAlignInputs(){$('alDx').value=alTmp.dx.toFixed(1);$('alDy').value=a
 for(const [id,k] of alignFields)$(id).oninput=e=>{stopAuto();$('alignErr').textContent='';const v=e.target.valueAsNumber;if(validAlignValue(k,v)){alTmp[k]=v;drawAlign()}};
 for(const id of ['allowRot','allowScale'])$(id).onchange=()=>{stopAuto();$('alignErr').textContent=''};
 $('flipH').onclick=()=>{stopAuto();alTmp.fh=!alTmp.fh;syncAlignInputs();drawAlign()};$('flipV').onclick=()=>{stopAuto();alTmp.fv=!alTmp.fv;syncAlignInputs();drawAlign()};$('alOpacity').oninput=drawAlign;
-{const v=$('alignView');v.onpointerdown=e=>{stopAuto();v.setPointerCapture(e.pointerId);const sx=e.clientX,sy=e.clientY,odx=alTmp.dx,ody=alTmp.dy;v.onpointermove=ev=>{alTmp.dx=odx+(ev.clientX-sx)/(alView.z*alView.sx);alTmp.dy=ody+(ev.clientY-sy)/(alView.z*alView.sy);syncAlignInputs();drawAlign()};v.onpointerup=v.onpointercancel=()=>{v.onpointermove=null}};
+{const v=$('alignView');v.onpointerdown=e=>{if(e.button!==0||!e.isPrimary)return;stopAuto();v.setPointerCapture(e.pointerId);const sx=e.clientX,sy=e.clientY,odx=alTmp.dx,ody=alTmp.dy;v.onpointermove=ev=>{if(ev.pointerId!==e.pointerId)return;alTmp.dx=odx+(ev.clientX-sx)/(alView.z*alView.sx);alTmp.dy=ody+(ev.clientY-sy)/(alView.z*alView.sy);syncAlignInputs();drawAlign()};v.onpointerup=v.onpointercancel=v.onlostpointercapture=ev=>{if(ev.pointerId!==e.pointerId)return;v.onpointermove=null}};
  v.addEventListener('wheel',e=>{e.preventDefault();const r=v.getBoundingClientRect();const cx=e.clientX-r.left,cy=e.clientY-r.top;const z=Math.max(.02,Math.min(10,alView.z*(e.deltaY<0?1.12:1/1.12)));const k=z/alView.z;alView.x=cx-(cx-alView.x)*k;alView.y=cy-(cy-alView.y)*k;alView.z=z;drawAlign()},{passive:false})}
 $('autoAlignBtn').onclick=async()=>{
   const job=++alignJob,current=()=>job===alignJob,A=S.A.c,B=S.B.c;
@@ -566,7 +566,7 @@ function fft1d(re,im,inv){const n=re.length;for(let i=1,j=0;i<n;i++){let bit=n>>
   if(inv)for(let i=0;i<n;i++){re[i]/=n;im[i]/=n}}
 function fft2d(re,im,N,inv){const r=new Float64Array(N),m=new Float64Array(N);for(let y=0;y<N;y++){fft1d(re.subarray(y*N,y*N+N),im.subarray(y*N,y*N+N),inv)}for(let x=0;x<N;x++){for(let y=0;y<N;y++){r[y]=re[y*N+x];m[y]=im[y*N+x]}fft1d(r,m,inv);for(let y=0;y<N;y++){re[y*N+x]=r[y];im[y*N+x]=m[y]}}}
 function grayPatch(src,N,sc,rot,fh,fv,wOut,hOut){// render src into N×N (fitting wOut×hOut frame at scale 'frame') and return windowed gray float array
-  const c=mk(N,N),cx=c.getContext('2d');cx.fillStyle='#808080';cx.fillRect(0,0,N,N);const f=N/Math.max(wOut,hOut);cx.save();cx.scale(f,f);cx.translate(src.width/2,src.height/2);cx.rotate(rot*Math.PI/180);cx.scale(sc*(fh?-1:1),sc*(fv?-1:1));cx.drawImage(src,-src.width/2,-src.height/2);cx.restore();
+  const c=mk(N,N),cx=c.getContext('2d');cx.fillStyle='#808080';cx.fillRect(0,0,N,N);const f=N/Math.max(wOut,hOut);cx.save();cx.translate(N/2,N/2);cx.scale(f,f);cx.rotate(rot*Math.PI/180);cx.scale(sc*(fh?-1:1),sc*(fv?-1:1));cx.drawImage(src,-src.width/2,-src.height/2);cx.restore();
   const d=cx.getImageData(0,0,N,N).data,g=new Float64Array(N*N);let mean=0;for(let i=0;i<N*N;i++){g[i]=d[i*4]*.299+d[i*4+1]*.587+d[i*4+2]*.114;mean+=g[i]}mean/=N*N;
   for(let y=0;y<N;y++){const wy=.5-.5*Math.cos(2*Math.PI*y/(N-1));for(let x=0;x<N;x++){const wx=.5-.5*Math.cos(2*Math.PI*x/(N-1));g[y*N+x]=(g[y*N+x]-mean)*wx*wy}}g._c=1;return {g,f}}
 function phaseCorr(ga,gb,N){let F=ga._c&&ga._fft;if(ga._c&&(!F||F.N!==N)){const r=Float64Array.from(ga),i=new Float64Array(N*N);fft2d(r,i,N,false);F=ga._fft={N,r,i}}
@@ -588,24 +588,27 @@ async function autoAlign(A,B,allow){
   // 1) coarse search 128²
   let N=128,pa=grayPatch(A,N,1,0,false,false,W,H),best=null,n=0;
   const scales=allow.scale?[0.85,0.9,0.95,1,1.05,1.1,1.15].map(s=>s*baseScale):[baseScale];if(allow.scale&&!scales.includes(1))scales.push(1);/* 尺寸不同往往只是裁剪 / 留白不同、内容并没有缩放：按尺寸比推出的候选里通常没有 1，补上“不缩放”，否则只能落在邻近的错误比例上，还会用多余的旋转去凑 */const rots=allow.rot?[-6,-4,-2,-1,0,1,2,4,6]:[0];
-  best=evalAt(N,pa,baseScale,0);/* 只有明显优于“不旋转不缩放”时才采用其他候选，避免噪声导致虚假的缩放 */
-  for(const sc of scales)for(const rot of rots){if(sc===baseScale&&rot===0)continue;const r=evalAt(N,pa,sc,rot);if(r.psr>best.psr*1.05)best=r;if(++n%10===0){await tick();if(!active())return null}}
+  const base1=evalAt(N,pa,baseScale,0);best=base1;let cand1=null;/* 只有明显优于基准时才采用其他候选，且候选之间按真实峰值比较，避免受遍历顺序影响 */
+  for(const sc of scales)for(const rot of rots){if(sc===baseScale&&rot===0)continue;const r=evalAt(N,pa,sc,rot);if(!cand1||r.psr>cand1.psr)cand1=r;if(++n%10===0){await tick();if(!active())return null}}
+  if(cand1&&cand1.psr>base1.psr*1.05)best=cand1;
   // 2) refine 256² around best
-  N=256;pa=grayPatch(A,N,1,0,false,false,W,H);let ref=evalAt(N,pa,best.sc,best.rot);
+  N=256;pa=grayPatch(A,N,1,0,false,false,W,H);const base2=evalAt(N,pa,best.sc,best.rot);let ref=base2,cand2=null;
   const scales2=allow.scale?[-0.03,-0.015,0,0.015,0.03].map(d=>best.sc*(1+d)):[best.sc];const rots2=allow.rot?[-1,-0.5,0,0.5,1].map(d=>best.rot+d):[0];
-  for(const sc of scales2)for(const rot of rots2){if(sc===best.sc&&rot===best.rot)continue;const r=evalAt(N,pa,sc,rot);if(r.psr>ref.psr*1.03)ref=r;if(++n%6===0){await tick();if(!active())return null}}
+  for(const sc of scales2)for(const rot of rots2){if(sc===best.sc&&rot===best.rot)continue;const r=evalAt(N,pa,sc,rot);if(!cand2||r.psr>cand2.psr)cand2=r;if(++n%6===0){await tick();if(!active())return null}}
+  if(cand2&&cand2.psr>base2.psr*1.03)ref=cand2;
   // 无关图片也会在大量候选位移中偶然出现低峰；仅接受可靠的相关峰。
   const minPsr=8;if(!Number.isFinite(ref.psr)||ref.psr<minPsr)return null;
   // 3) final translation at 512²
-  N=512;pa=grayPatch(A,N,1,0,false,false,W,H);let fin=evalAt(N,pa,ref.sc,ref.rot);const f=fin.f;
-  /* 终步在 512² 上再做一轮更细的旋转/缩放搜索，只有明显更优才替换 */
-  for(const dr of allow.rot?[0,-1,-.5,-.25,.25,.5,1]:[0])for(const ds of allow.scale?[-.01,0,.01]:[0]){if(!dr&&!ds)continue;const r=evalAt(N,pa,ref.sc*(1+ds),ref.rot+dr);if(r.psr>fin.psr*1.06)fin=r;await tick();if(!active())return null}
+  N=512;pa=grayPatch(A,N,1,0,false,false,W,H);const base3=evalAt(N,pa,ref.sc,ref.rot);let fin=base3,cand3=null;const f=base3.f;
+  /* 终步在 512² 上再做一轮更细的旋转/缩放搜索，只有明显优于基准才采用最高峰候选 */
+  for(const dr of allow.rot?[0,-1,-.5,-.25,.25,.5,1]:[0])for(const ds of allow.scale?[-.01,0,.01]:[0]){if(!dr&&!ds)continue;const r=evalAt(N,pa,ref.sc*(1+ds),ref.rot+dr);if(!cand3||r.psr>cand3.psr)cand3=r;await tick();if(!active())return null}
+  if(cand3&&cand3.psr>base3.psr*1.06)fin=cand3;
   if(!Number.isFinite(fin.psr)||fin.psr<minPsr)return null;
-  // Both patches are drawn with their top-left at the frame origin (same as drawAligned with dx=dy=0), so the
-  // correlation peak is directly the shift that must be applied to B (peak at -d when B = A shifted by d).
+  // 两张图均在 N×N 画布中心绘制（对齐 Hann 窗且避免放大后在负坐标处被裁掉），
+  // 因此相关峰值是 B 中心相对 A 中心的位移，换算回 drawAligned 的 (dx, dy) 需加上中心差 (A - B)/2。
   // 不旋转也不缩放时把位移取整：这种情况（截图错位、裁剪、留白）真实位移几乎总是整数像素，而亚像素估计约 0.1px 的误差会让整张图被重采样，在边缘处冒出大量假差异
   const whole=fin.rot===0&&fin.sc===1,px=v=>whole?Math.round(v)||0:v;
-  return {dx:px(fin.dx/f),dy:px(fin.dy/f),rot:fin.rot,scale:fin.sc,fh,fv,conf:Math.min(1,fin.psr/40)};
+  return {dx:px((A.width-B.width)/2+fin.dx/f),dy:px((A.height-B.height)/2+fin.dy/f),rot:fin.rot,scale:fin.sc,fh,fv,conf:Math.min(1,fin.psr/40)};
 }
 function alignWithOpenCV(A,B){const cv=window.cv,del=[];const keep=x=>(del.push(x),x);
   try{const ma=keep(cv.imread(A)),mb=keep(cv.imread(B)),ga=keep(new cv.Mat()),gb=keep(new cv.Mat());cv.cvtColor(ma,ga,cv.COLOR_RGBA2GRAY);cv.cvtColor(mb,gb,cv.COLOR_RGBA2GRAY);const orb=keep(new cv.ORB(4000,1.2,8,31,0,2,cv.ORB_HARRIS_SCORE,31,20));const k1=keep(new cv.KeyPointVector()),k2=keep(new cv.KeyPointVector()),d1=keep(new cv.Mat()),d2=keep(new cv.Mat()),nomask=keep(new cv.Mat());orb.detectAndCompute(ga,nomask,k1,d1);orb.detectAndCompute(gb,nomask,k2,d2);
@@ -672,6 +675,7 @@ $('exportGo').onclick=async()=>{
       if(!blob)throw new Error('PNG encoding failed');download(blob,filename);return;
     }
     rep.innerHTML=reportHtml(exportCanvas());await Promise.all([...rep.querySelectorAll('img')].map(decodeReportImage));
+    if(!S.W){clearPrintReport();return}
     printing=true;document.body.classList.add('printing-image-report');window.print();
   }catch(e){clearPrintReport();console.error(e);notice(t(e.message==='pngTooLarge'?'pngTooLarge':'exportFailed'))}
   finally{exporting=false}

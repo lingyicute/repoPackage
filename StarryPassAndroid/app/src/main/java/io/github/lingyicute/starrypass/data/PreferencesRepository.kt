@@ -169,7 +169,8 @@ class PreferencesRepository(private val dataStore: DataStore<Preferences>) {
                 }
                 if (!policyOnly && codeIdx >= 0 && codeIdx != idx) current.removeAt(codeIdx)
             } else {
-                current.add(0, normalized)
+                val entry = if (idIdx >= 0) normalized.copy(id = UUID.randomUUID().toString()) else normalized
+                current.add(0, entry)
             }
             prefs[Keys.SITE_PRESETS_JSON] = json.encodeToString(current)
         }
@@ -207,12 +208,6 @@ class PreferencesRepository(private val dataStore: DataStore<Preferences>) {
             val current = decodePresets(prefs[Keys.SITE_PRESETS_JSON])
                 .filterNot { it.id == cleanId }
             prefs[Keys.SITE_PRESETS_JSON] = json.encodeToString(current)
-        }
-    }
-
-    suspend fun clearAllPresets() {
-        dataStore.edit { prefs ->
-            prefs.remove(Keys.SITE_PRESETS_JSON)
         }
     }
 
@@ -480,6 +475,7 @@ class PreferencesRepository(private val dataStore: DataStore<Preferences>) {
             }
             if (NON_NETWORK_URI.containsMatchIn(s)) return ""
             val hasAuthorityPrefix = SCHEME_PREFIX.containsMatchIn(s) || s.startsWith("//")
+            if (!hasAuthorityPrefix && (s.startsWith("http:") || s.startsWith("https:"))) return ""
             s = when {
                 SCHEME_PREFIX.containsMatchIn(s) -> s.replaceFirst(SCHEME_PREFIX, "")
                 s.startsWith("//") -> s.removePrefix("//")
@@ -522,9 +518,12 @@ class PreferencesRepository(private val dataStore: DataStore<Preferences>) {
                 }
             }
             // Cookie-style entries (`.example.com`, `*.example.com`) already match by suffix.
+            val bracketValidated = s.startsWith("[")
             while (s.startsWith(".") || s.startsWith("*.")) {
                 s = s.removePrefix("*.").trimStart('.')
             }
+            // A bracket exposed only by stripping the prefix never went through the IPv6 check above.
+            if (s.startsWith("[") && !bracketValidated) return ""
             if (s == "www." || s.startsWith("www..")) return ""
             s = s.trimEnd('.')
             if (s.isEmpty() || s == "*" || (!s.startsWith("[") && s.contains(".."))) return ""

@@ -876,13 +876,22 @@ test('excel.inlineDiff: 忽略空白时空白差异不标成改动，且仍能�
     excel.opts.ignoreWs = true;
     const join = (segs, k) => segs.map(s => s[k]).join('');
     const bad = s => s.t !== 0 && !(s.t === 1 ? s.a : s.b).trim();
-    for (const [l, r] of [['a  b x', 'a b y'], ['  a b x', 'a b y'], ['x  y', 'x y z'], ['a\tb', 'a b'], ['ab', 'a b']]) {
+    for (const [l, r] of [['a  b x', 'a b y'], ['  a b x', 'a b y'], ['x  y', 'x y z'], ['a\tb', 'a b'], [' ab', 'ab'], ['ab', 'ab \t']]) {
       const segs = excel.inlineDiff(l, r);
       assert.equal(join(segs, 'a'), l); assert.equal(join(segs, 'b'), r);
       assert.ok(!segs.some(bad), JSON.stringify([l, r, segs]));
     }
     assert.ok(excel.inlineDiff('x  y', 'x y z').every(s => s.t === 0 || s.b === 'z'));
     assert.ok(excel.inlineDiff('a  b', 'a b').every(s => s.t === 0));
+    // normalize 只折叠内部空白并裁掉首尾，"ab" 与 "a b" 仍算不同：这样的单元格会标为修改，行内必须标出那个内部空格
+    assert.notEqual(excel.normalize('ab'), excel.normalize('a b'));
+    const changes = (l, r) => JSON.stringify(excel.inlineDiff(l, r).filter(s => s.t !== 0).map(s => [s.t, s.a, s.b]));
+    assert.equal(changes('ab', 'a b'), JSON.stringify([[2, '', ' ']]));
+    assert.equal(changes('a b', 'ab'), JSON.stringify([[1, ' ', '']]));
+    assert.equal(changes('İ\t\tς \t', 'İς'), JSON.stringify([[1, '\t\t', '']]));
+    excel.opts.ignoreCase = true;
+    assert.equal(changes('ΣS', 'Σ S '), JSON.stringify([[2, '', ' ']]));
+    excel.opts.ignoreCase = false;
     excel.opts.ignoreWs = false;
     assert.ok(excel.inlineDiff('a  b', 'a b').some(s => s.t !== 0));
   } finally { excel.opts.ignoreWs = saved; }
@@ -1271,6 +1280,7 @@ test('共享公式：长标识符保持原样，非 ASCII 字母不会误认成�
 test('共享公式：超出原工作表网格的名称不能被移进网格', () => {
   assert.equal(excel.shiftFormula('XFE1+A1048577+XFE:XFF+1048577:1048578+B2', -1, -1),
     'XFE1+A1048577+XFE:XFF+1048577:1048578+A1');
+  assert.equal(excel.shiftFormula('A01+Q04+01:02+A1+1:2', 1, 1), 'A01+Q04+01:02+B2+2:3');
 });
 
 test('XLSX 单元格地址保留实际坐标并拒绝越界或非法地址', () => {
@@ -1422,6 +1432,8 @@ test('Excel 切换对比模式或显示模式时，即使尚未对比也同步�
 test('image.invertAlign 与 maybePromptAlign: 零角度求逆不产生负零，比较失败时不覆盖错误提示', async () => {
   const zeroInv = img.invertAlign({ dx: 0, dy: 0, rot: 0, scale: 1, fh: false, fv: false }, { w: 100, h: 80 }, { w: 100, h: 80 });
   assert.ok(Object.is(zeroInv.rot, 0));
+  const flipZeroInv = img.invertAlign({ dx: 0, dy: 0, rot: -0, scale: 1, fh: true, fv: false }, { w: 100, h: 80 }, { w: 100, h: 80 });
+  assert.ok(Object.is(flipZeroInv.rot, 0));
 
   const s = script('image-compare.html');
   const code = between(s, 'function alignNotice', 'function showPrompt');
@@ -1445,4 +1457,88 @@ test('image.invertAlign 与 maybePromptAlign: 零角度求逆不产生负零，�
     await onGo();
     assert.equal(notices.length, ok ? 1 : 0);
   }
+});
+
+test('image.autoAlign: 不同尺寸图片居中采样时平移换算补上中心差', async () => {
+  const s = script('image-compare.html');
+  const patchCode = between(s, 'function grayPatch', 'function phaseCorr');
+  const ops = [];
+  const mk = (w, h) => ({
+    width: w, height: h,
+    getContext: () => ({
+      fillRect() {}, save() {}, restore() {},
+      translate(x, y) { ops.push(['translate', x, y]); },
+      scale(x, y) { ops.push(['scale', x, y]); },
+      rotate() {}, drawImage() {},
+      getImageData: () => ({ data: new Uint8ClampedArray(w * h * 4) }),
+    }),
+  });
+  const { grayPatch } = run(patchCode, 'grayPatch', 'const mk=this._mk;');
+  // 直接通过上下文传入 mk
+  const ctx = { mk }; vm.createContext(ctx);
+  vm.runInContext(patchCode + ';this.grayPatch=grayPatch;', ctx);
+  ctx.grayPatch({ width: 250, height: 200 }, 128, 4, 0, false, false, 1000, 800);
+  assert.deepEqual(ops[0], ['translate', 64, 64]);
+
+  const alignCode = between(s, 'async function autoAlign', 'function alignWithOpenCV');
+  const pre = 'const window={},setTimeout=f=>f();'
+    + 'function grayPatch(src,N,sc,rot,fh,fv,W,H){return {g:sc,f:N/Math.max(W,H)}}'
+    + 'function phaseCorr(){return {dx:0,dy:0,psr:50}}';
+  const { autoAlign } = run(alignCode, 'autoAlign', pre);
+  const r = await autoAlign({ width: 1000, height: 800 }, { width: 250, height: 200 }, { rot: false, scale: true });
+  assert.equal(r.dx, 375);
+  assert.equal(r.dy, 300);
+});
+
+test('image.autoAlign: 候选搜索按真实峰值择优，不因遍历顺序被先遇到的次优候选挡住', async () => {
+  const alignCode = between(script('image-compare.html'), 'async function autoAlign', 'function alignWithOpenCV');
+  const pre = 'const window={},setTimeout=f=>f();'
+    + 'function grayPatch(src,N,sc,rot){return {g:{N,sc,rot},f:1}}'
+    + 'function phaseCorr(a,b){const p=b.rot===0?10:b.rot===2?20:b.rot===4?20.6:5;return {dx:0,dy:0,psr:p}}';
+  const { autoAlign } = run(alignCode, 'autoAlign', pre), dim = { width: 64, height: 64 };
+  const r = await autoAlign(dim, dim, { rot: true, scale: false });
+  assert.equal(r.rot, 4);
+});
+
+test('xlsx.customDateKind: 只有秒占位后的小数位才按时间格式忽略，纯小数数值格式不误判为日期', () => {
+  const { customDateKind } = run(between(script('excel-compare.html'), 'function customDateKind', 'function isoDateCell'), 'customDateKind');
+  assert.equal(customDateKind('.00 USD'), '');
+  assert.equal(customDateKind('.00 days'), '');
+  assert.equal(customDateKind('hh:mm:ss.000'), 'time');
+  assert.equal(customDateKind('yyyy-mm-dd hh:mm:ss.00'), 'date');
+});
+
+test('excel.isoDateCell: 孤立的 T 时间前缀和尾部孤立 T 保持原文', () => {
+  assert.equal(excel.isoDateCell('T10:30:00'), 'T10:30:00');
+  assert.equal(excel.isoDateCell('2024-03-05T'), '2024-03-05T');
+  assert.equal(excel.isoDateCell('2024-03-0510:30:00'), '2024-03-0510:30:00');
+  assert.equal(excel.isoDateCell(' 10:30:00 '), '10:30:00');
+});
+
+test('excel.parseCsv: 错误分隔符命中更多行但触发引号错误时，选择无语法错误的真实分隔符', () => {
+  const rows = JSON.parse(JSON.stringify(excel.parseCsv('note,title\nx,"5" pipe;10\ny,"6" pipe;20').sheets[0].grid.rows.map(r => r.map(c => c.v))));
+  assert.deepEqual(rows, [['note,title'], ['x,"5" pipe', '10'], ['y,"6" pipe', '20']]);
+});
+
+test('excel.compare: 忽略空白时新增列里的纯空白单元格不标为新增且不阻止折叠', () => {
+  const G = rows => ({ rows: rows.map(r => r.map(v => ({ v: String(v), f: null, d: false }))), cols: Math.max(0, ...rows.map(r => r.length)) });
+  const old = { ...excel.opts };
+  try {
+    Object.assign(excel.opts, { mode: 'table', matchHeaders: true, ignoreWs: true, sortRows: false, sortCols: false });
+    const R = excel.compare(G([['K', 'V'], ['1', 'a'], ['2', 'b']]), G([['K', 'V', 'Extra'], ['1', 'a', '   '], ['2', 'b', 'hi']]), 0, 0);
+    assert.equal(R.rows[0].cells[2].st, 'eq');
+    assert.equal(R.rows[0].hasColData, false);
+    assert.equal(R.rows[1].cells[2].st, 'cins');
+    assert.equal(R.rows[1].hasColData, true);
+  } finally { Object.assign(excel.opts, old); }
+});
+
+test('text.synClasses: Python 三引号字符串正确处理转义引号且不误染后续代码', () => {
+  const { synClasses } = run(between(script('text-compare.html'), 'const SYN={', '/* ===================== state'), 'synClasses');
+  const src = '"""a \\""" b""" + 1';
+  const cls = synClasses(src, 'py');
+  assert.equal(cls[cls.length - 1], 'n');
+  assert.equal(cls.slice(0, 14).every(c => c === 's'), true);
+  const unclosed = '"""abc\\';
+  assert.equal(synClasses(unclosed, 'py').every(c => c === 's'), true);
 });

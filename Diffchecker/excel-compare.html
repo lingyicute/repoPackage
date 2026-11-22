@@ -263,7 +263,7 @@ const xstr=s=>s.indexOf('_x')<0?s:s.replace(/_x([0-9A-Fa-f]{4})_/g,(m,h)=>String
 // 共享公式（<f t="shared" si="…"/>）：只有主单元格带公式文本，其余单元格要按位移平移相对引用（$ 锁定的行 / 列不动，字符串与带引号的工作表名里的内容不动）
 function shiftFormula(f,dr,dc){if(!dr&&!dc)return f;
   // 跳过字符串、工作表限定符与结构化引用。后者的列名可以恰好形如 A1，也可以嵌套括号。
-  const tokens=/("(?:[^"]|"")*"|'(?:[^']|'')*'|[\p{L}\p{N}_.]+(?::[\p{L}\p{N}_.]+)?!)|(\[)|(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![\p{L}\p{N}_.(!])|(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![\p{L}\p{N}_.(!])|(\$?)(\d+):(\$?)(\d+)(?![\p{L}\p{N}_.(!])|[\p{L}\p{N}_.]+/gu;
+  const tokens=/("(?:[^"]|"")*"|'(?:[^']|'')*'|[\p{L}\p{N}_.]+(?::[\p{L}\p{N}_.]+)?!)|(\[)|(\$?)([A-Za-z]{1,3})(\$?)([1-9]\d*)(?![\p{L}\p{N}_.(!])|(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![\p{L}\p{N}_.(!])|(\$?)([1-9]\d*):(\$?)([1-9]\d*)(?![\p{L}\p{N}_.(!])|[\p{L}\p{N}_.]+/gu;
   // XFE1、A1048577 等超出网格的词可以是 Excel 名称，而不是待平移的引用。
   // 共享公式的相对引用越过网格边界时会环绕到另一端；原本越界的名称则不是引用。
   const wrap=(n,size)=>(n%size+size)%size;
@@ -307,7 +307,7 @@ function customDateKind(format){
   const bare=format.replace(/"[^"]*"|[\\_*]./g,'');
   if(/\[(?:h+|m+|s+)\]/i.test(bare))return 'elapsed';
   const code=bare.replace(/\[[^\]]*\]|AM\/PM|A\/P/gi,'');
-  if(!/[ymdhs]/i.test(code)||/[#0?]/.test(code.replace(/\.0+/g,'')))return '';
+  if(!/[ymdhs]/i.test(code)||/[#0?]/.test(code.replace(/s+\.0+/gi,'s')))return '';
   return /[yd]/i.test(code)||!/[hs]/i.test(code)?'date':'time';
 }
 function dateNumberStyle(format){
@@ -337,10 +337,10 @@ function customNumberStyle(format){
 // t="d" 单元格（ISO 8601 文本，如 2024-03-05T00:00:00 / 10:30:00）：统一成与日期序列号一致的显示，否则同一日期在两种存储方式下会被误报为修改
 function isoDateCell(raw){
   // SpreadsheetML 的日期/时间是本地时刻，最多三位小数秒；带时区的非标准值保留原文。
-  const m=/^\s*(?:(\d{4})-(\d{2})-(\d{2}))?(?:(?:^|T|\s)(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?\s*$/.exec(raw||'');if(!m||(!m[1]&&!m[4]))return raw??'';
-  const y=+(m[1]||0),mo=+(m[2]||0),dy=+(m[3]||0),h=+(m[4]||0),mi=+(m[5]||0),se=+(m[6]||0),dim=mo===2?28+(y%4===0&&(y%100!==0||y%400===0)?1:0):[4,6,9,11].includes(mo)?30:31;
+  const m=/^\s*(?:(\d{4})-(\d{2})-(\d{2})(?:([T\s])|$))?(?:(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?\s*$/.exec(raw||'');if(!m||(!m[1]&&!m[5])||(m[4]==='T'&&!m[5]))return raw??'';
+  const y=+(m[1]||0),mo=+(m[2]||0),dy=+(m[3]||0),h=+(m[5]||0),mi=+(m[6]||0),se=+(m[7]||0),dim=mo===2?28+(y%4===0&&(y%100!==0||y%400===0)?1:0):[4,6,9,11].includes(mo)?30:31;
   if(h>23||mi>59||se>59||(m[1]&&(y<1||mo<1||mo>12||dy<1||dy>dim)))return raw??'';
-  const tm=m[4]?`${m[4]}:${m[5]}:${m[6]||'00'}${secondFraction(m[7])}`:'';if(!m[1])return tm;const d=`${m[1]}-${m[2]}-${m[3]}`;return tm&&tm!=='00:00:00'?d+' '+tm:d}
+  const tm=m[5]?`${m[5]}:${m[6]}:${m[7]||'00'}${secondFraction(m[8])}`:'';if(!m[1])return tm;const d=`${m[1]}-${m[2]}-${m[3]}`;return tm&&tm!=='00:00:00'?d+' '+tm:d}
 // 只认完整的 ZIP 签名（PK\x03\x04 / 空包 PK\x05\x06 / 分卷 PK\x07\x08）；仅凭 "PK" 两个字节会把以 PK 开头的 CSV 误判成 xlsx
 const isZipSig=u=>u[0]===0x50&&u[1]===0x4B&&((u[2]===3&&u[3]===4)||(u[2]===5&&u[3]===6)||(u[2]===7&&u[3]===8));
 // OOXML 部件可能使用带前缀的命名空间（<x:sheet>、<x:row>…），getElementsByTagName 只按限定名匹配，会把这类文件读成空工作簿；统一按本地名匹配
@@ -442,10 +442,10 @@ function scanCsv(text,delim,collect,maxRows=Infinity,limit=MAX_IMPORTED_CELLS){
   return {rows,hit,top,errors,quoteEvidence};
 }
 function parseCsv(text,delim){
-  if(!delim){let best;for(const d of [',','\t',';','|']){
+  if(!delim){let best;const ok=x=>Number(x.hit>0&&x.errors===0);for(const d of [',','\t',';','|']){
     const s=scanCsv(text,d,false,10);
-    // 合法的带引号记录比行数更有辨识力：错误分隔符可能把同一个多行字段拆成很多看似规则的行。
-    if(!best||(Number(s.quoteEvidence)-Number(best.quoteEvidence)||s.hit-best.hit||s.top-best.top||best.errors-s.errors)>0){best=s;delim=d}
+    // 优先选择能分成多列且无引号语法错误的候选；合法的带引号记录比行数更有辨识力。
+    if(!best||(ok(s)-ok(best)||Number(s.quoteEvidence)-Number(best.quoteEvidence)||s.hit-best.hit||s.top-best.top||best.errors-s.errors)>0){best=s;delim=d}
   }}
   let cols=0;const grid=scanCsv(text,delim,true).rows.map(r=>{cols=Math.max(cols,r.length);return r.map(v=>({v,f:null,d:false}))});
   const sheet={name:'Sheet1',target:'',grid:{rows:grid,cols}};return {sheets:[sheet],load:s=>s.grid,type:'csv'}
@@ -495,8 +495,8 @@ function projectedCaseDiff(l,r,ws,big){
   let ops;if(A.length+B.length>INLINE_MAX_TOKENS){let p=0,q=0;while(p<A.length&&p<B.length&&na[p]===nb[p])p++;while(q<A.length-p&&q<B.length-p&&na[A.length-1-q]===nb[B.length-1-q])q++;
     ops=[];for(let i=0;i<p;i++)ops.push([EQ,i,i]);for(let i=p;i<A.length-q;i++)ops.push([DEL,i,-1]);for(let i=p;i<B.length-q;i++)ops.push([INS,-1,i]);for(let i=0;i<q;i++)ops.push([EQ,A.length-q+i,B.length-q+i]);
   }else ops=diffSeq(na,nb);
-  const eqs=[];let ap=0,bp=0;const mark=(p,start,token)=>{if(ws&&!token.trim())return;for(let i=start;i<start+token.length;i++)p.marks[p.map[i]]=1};
-  for(const [op,i,j] of ops){if(op===EQ&&(!ws||A[i].trim()))eqs.push([ap,bp,A[i].length]);if(op!==INS){if(op===DEL)mark(a,ap,A[i]);ap+=A[i].length}if(op!==DEL){if(op===INS)mark(b,bp,B[j]);bp+=B[j].length}}
+  const eqs=[];let ap=0,bp=0;const mark=(p,start,token,skip)=>{if(skip)return;for(let i=start;i<start+token.length;i++)p.marks[p.map[i]]=1};
+  for(let k=0;k<ops.length;k++){const [op,i,j]=ops[k];if(op===EQ&&(!ws||A[i].trim()))eqs.push([ap,bp,A[i].length]);if(op!==INS){if(op===DEL)mark(a,ap,A[i],ws&&wsIgnorable(ops,k,A,B));ap+=A[i].length}if(op!==DEL){if(op===INS)mark(b,bp,B[j],ws&&wsIgnorable(ops,k,A,B));bp+=B[j].length}}
   for(let pass=0,chg=true;chg&&pass<4;pass++){chg=false;for(const [x,y,n] of eqs)for(let k=0;k<n;k++){const ai=a.map[x+k],bi=b.map[y+k];if(a.marks[ai]!==b.marks[bi]){a.marks[ai]=b.marks[bi]=1;chg=true}}}
   const out=[],add=(t,x,y)=>{const last=out[out.length-1];if(last&&last.t===t){last.a+=x;last.b+=y}else out.push({t,a:x,b:y})};
   for(const [p,side] of [[a,'a'],[b,'b']])for(let i=0;i<p.raw.length;){const ch=String.fromCodePoint(p.raw.codePointAt(i)),t=p.marks[i]?(side==='a'?DEL:INS):EQ;add(t,side==='a'?ch:'',side==='b'?ch:'');i+=ch.length}
@@ -508,7 +508,12 @@ function inlineDiff(l,r){const ws=opts.ignoreWs,big=l.length+r.length>400,tk=s=>
   if(A.length+B.length>INLINE_MAX_TOKENS){// 超长单元格（最长 32767 字符）：只裁掉公共前后缀，中间整体标记为改动，避免 Myers 的 O(ND) 卡死页面（与文本页一致）
     let p=0;while(p<A.length&&p<B.length&&na[p]===nb[p])p++;let q=0;while(q<A.length-p&&q<B.length-p&&na[A.length-1-q]===nb[B.length-1-q])q++;
     const m=[],add=(t,a,b)=>{if(a||b)m.push({t,a,b})};add(EQ,A.slice(0,p).join(''),B.slice(0,p).join(''));add(DEL,A.slice(p,A.length-q).join(''),'');add(INS,'',B.slice(p,B.length-q).join(''));add(EQ,A.slice(A.length-q).join(''),B.slice(B.length-q).join(''));return m}
-  const ops=diffSeq(na,nb);const m=[];for(const [op,i,j] of ops){const s={t:ws&&op!==EQ&&!(op===INS?B[j]:A[i]).trim()?EQ:op,a:op===INS?'':A[i],b:op===DEL?'':B[j]};const p=m[m.length-1];if(p&&p.t===s.t){p.a+=s.a;p.b+=s.b}else m.push(s)}return m}
+  const ops=diffSeq(na,nb);const m=[];for(let k=0;k<ops.length;k++){const [op,i,j]=ops[k];const s={t:op!==EQ&&ws&&wsIgnorable(ops,k,A,B)?EQ:op,a:op===INS?'':A[i],b:op===DEL?'':B[j]};const p=m[m.length-1];if(p&&p.t===s.t){p.a+=s.a;p.b+=s.b}else m.push(s)}return m}
+// 忽略空白时 normalize 只折叠连续空白并裁掉首尾，“ab”与“a b”仍算不同。单侧多出的空白只有位于首尾、或紧挨着其他已标出的改动时才不标成改动；
+// 内部单独多出的空格要照常高亮，否则单元格被标为修改却看不到任何改动位置
+function wsIgnorable(ops,k,A,B){const tok=o=>o[0]===INS?B[o[2]]:A[o[1]],[op,i,j]=ops[k];if(tok(ops[k]).trim())return false;
+  if(op===INS?j===0||j===B.length-1:i===0||i===A.length-1)return true;
+  const real=o=>!!o&&o[0]!==EQ&&!!tok(o).trim();return real(ops[k-1])||real(ops[k+1])}
 
 /* ===================== comparison engine ===================== */
 const opts={mode:'table',val:'standard',matchHeaders:true,ignoreWs:false,ignoreCase:false,normDates:true,sortRows:false,sortCols:false,hideRows:false,hideCols:false,showOld:true};
@@ -582,8 +587,8 @@ function compare(gA,gB,hA,hB){
   const stats={rowsDel:0,rowsIns:0,rowsChg:0,cells:0,colsIns:columns.filter(c=>c.st==='ins').length,colsDel:columns.filter(c=>c.st==='del').length,colsMov:columns.filter(c=>c.st==='mov').length};const colChanged=new Set();
   columns.forEach((c,k)=>{if(c.hdrChg){colChanged.add(k);stats.cells++}});
   const result=outRows.map(e=>{const r={type:e.type,ai:e.ai,bi:e.bi,na:e.ai!=null?e.ai+startA:null,nb:e.bi!=null?e.bi+startB:null,cells:[]};let rowChg=false;
-    let hasColData=false;for(let k=0;k<columns.length;k++){const c=columns[k];const a=e.ai!=null?cellsA[e.ai][k]:'',b=e.bi!=null?cellsB[e.bi][k]:'';let st='eq',segs=null;
-      if(e.type==='del'||e.type==='ins'){st=e.type==='del'?'rdel':'rins';if(a||b)colChanged.add(k)}/* 整行新增 / 删除的内容也属于改动：所在列不能被“隐藏未修改的列”藏起来 */else if(c.ia<0||c.ib<0){if(a||b){st=c.ia<0?'cins':'cdel';hasColData=true;colChanged.add(k)}}/* 新增 / 删除列的内容单独记下，不增加共有列的行 / 单元格修改数，但不能在“隐藏未修改的行”中折叠 */else{const na=normA[e.ai][k],nb=normB[e.bi][k];if(na!==nb){st=!a?'cins':!b?'cdel':'chg';segs=st==='chg'?inlineDiff(a,b):null;stats.cells++;rowChg=true;colChanged.add(k)}}
+    let hasColData=false;for(let k=0;k<columns.length;k++){const c=columns[k];const a=e.ai!=null?cellsA[e.ai][k]:'',b=e.bi!=null?cellsB[e.bi][k]:'',na=e.ai!=null?normA[e.ai][k]:'',nb=e.bi!=null?normB[e.bi][k]:'';let st='eq',segs=null;
+      if(e.type==='del'||e.type==='ins'){st=e.type==='del'?'rdel':'rins';if(na||nb)colChanged.add(k)}/* 整行新增 / 删除的内容也属于改动：所在列不能被“隐藏未修改的列”藏起来 */else if(c.ia<0||c.ib<0){if(na||nb){st=c.ia<0?'cins':'cdel';hasColData=true;colChanged.add(k)}}/* 新增 / 删除列的内容单独记下，不增加共有列的行 / 单元格修改数，但不能在“隐藏未修改的行”中折叠 */else{if(na!==nb){st=!a?'cins':!b?'cdel':'chg';segs=st==='chg'?inlineDiff(a,b):null;stats.cells++;rowChg=true;colChanged.add(k)}}
       r.cells.push({a,b,st,segs})}
     r.hasColData=hasColData;if(e.type==='del')stats.rowsDel++;else if(e.type==='ins')stats.rowsIns++;else if(e.type==='chg'){if(!rowChg)r.type='eq';else stats.rowsChg++}return r});
   for(const r of result)if(r.type==='chg')r.cells.forEach((c,k)=>{if(c.st!=='eq')colChanged.add(k)});

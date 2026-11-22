@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -392,6 +391,8 @@ private fun PresetEditDialog(
     var tier by remember { mutableStateOf(initial?.tier ?: Spv2Tier.STANDARD) }
     var domain by remember { mutableStateOf(initial?.autofillDomain ?: "") }
     var pkg by remember { mutableStateOf(initial?.autofillPackage ?: "") }
+    val parsedCounter = counterText.toIntOrNull()
+    val isCounterValid = parsedCounter != null && parsedCounter in Spv2Spec.MIN_COUNTER..Spv2Spec.MAX_COUNTER
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -469,6 +470,7 @@ private fun PresetEditDialog(
                             }
                         },
                         singleLine = true,
+                        isError = counterText.isNotEmpty() && !isCounterValid,
                         label = { Text("#") },
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Number,
@@ -534,7 +536,7 @@ private fun PresetEditDialog(
             val normalizedDomain = PreferencesRepository.normalizeDomain(trimmedDomain)
             val isDomainInvalid = trimmedDomain.isNotEmpty() && normalizedDomain.isEmpty()
             Button(
-                enabled = Spv2Spec.ecmaTrim(code).isNotEmpty() && !isDomainInvalid,
+                enabled = Spv2Spec.ecmaTrim(code).isNotEmpty() && !isDomainInvalid && isCounterValid,
                 onClick = {
                     val ctr = Spv2Spec.clampCounter(counter)
                     val result = (initial ?: SitePreset(code = code)).copy(

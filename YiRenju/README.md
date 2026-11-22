@@ -110,7 +110,7 @@ Forbidden-move detection checks Black's candidate points against the three forbi
 
 ### 3. Search-Based AI
 
-Hard and Expert use negamax search with alpha-beta pruning and a transposition table keyed by Zobrist hashing. Candidate moves are limited to empty points near existing stones. A threat search follows continuous fours (VCF) and lived-threes (VCT) to find forced wins and forced defenses, and a final guard pass vetoes any move that would hand the opponent a provable forced win. The engine bootstraps itself into a Web Worker carved from the same `index.html`, so the page never freezes while the AI thinks.
+Hard and Expert use negamax search with alpha-beta pruning and a transposition table keyed by Zobrist hashing. Candidate moves are limited to empty points near existing stones. A threat search follows continuous fours (VCF) and live threes (VCT) to find forced wins and forced defenses, and a final guard pass vetoes any move that would hand the opponent a provable forced win. The engine bootstraps itself into a Web Worker carved from the same `index.html`, so the page never freezes while the AI thinks.
 
 ### 4. Your Data Stays on Your Device
 
@@ -187,7 +187,7 @@ node tests/renju-core-test.mjs
 # Transposition-table regression — win/loss scores must not drift when the table is reused
 node tests/tt-mate-regression-test.mjs
 
-# Search control regressions (abort/root/guard) — 6 cases, frozen clock, zero dependencies
+# Search control regressions (abort/root/guard) — 7 cases, frozen clock, zero dependencies
 node tests/ai-search-regression.mjs
 
 # Optimisation equivalence regressions — naive reference impls, 14 boards × per-point diff
@@ -210,7 +210,7 @@ node tests/ai-selfplay-smoke.mjs
 # (report only, ~6–7 min at GAMES=1; bump samples with GAMES=3)
 node tests/ai-tournament.mjs
 
-# Browser end-to-end UI tests — 102 assertions (one-time setup required)
+# Browser end-to-end UI tests — 107 assertions (one-time setup required)
 python3 -m http.server 8600     # serve this directory
 npm i --no-save playwright-core # --no-save: keep package.json dependency-free
 npx playwright-core install chromium-headless-shell

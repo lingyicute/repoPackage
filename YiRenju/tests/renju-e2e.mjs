@@ -533,6 +533,9 @@ ok('无效主题/配色回落到合法值',await page.evaluate(()=>{
   return (d.theme==='dark'||d.theme==='light')&&d.accent==='purple'
     &&['dark','light'].includes(JSON.parse(localStorage.getItem('yirenju.settings')).theme);
 }));
+await page.evaluate(()=>{history.length=0;localStorage.setItem('yirenju.settings',JSON.stringify({sound:'false'}));});
+await page.reload();await page.waitForTimeout(250);
+ok('非布尔 sound 归一化为开启',await page.evaluate(()=>settings.sound===true&&document.getElementById('soundText').textContent.includes('开')));
 await page.evaluate(()=>{history.length=0;localStorage.setItem('yirenju.settings',JSON.stringify({mode:'constructor'}));});
 await page.reload();await page.waitForTimeout(250);
 ok('原型继承键不能作为对局模式',await page.evaluate(()=>mode==='ai-easy'&&settings.mode==='ai-easy'
@@ -682,6 +685,37 @@ ok('数组战绩桶与负数小数计数被归一化',await page.evaluate(()=>{
   const bkt={easy:{w:-2,l:1},medium:{w:1.5,l:0}};
   const r1=recIn(bkt,'easy'),r2=recIn(bkt,'medium');
   return notArr&&r1.w===0&&r1.l===0&&r2.w===0&&r2.l===0;
+}));
+ok('单桶损坏的战绩保留完好桶且不嵌套 b/w 键',await page.evaluate(()=>{
+  const p=parseRecords({b:{easy:{w:3,l:1}},w:[]});
+  return p.b.easy.w===3&&p.b.easy.l===1&&!('b' in p.b)&&!('w' in p.b)&&!Array.isArray(p.w);
+}));
+
+/* 28. 恢复棋子无缩放动画、AI 回合光标报子、长按空格/回车防连发 */
+ok('恢复的棋子不触发落子缩放动画',await page.evaluate(()=>{
+  setMode('pvp');newGame(true);
+  setCell(7,7,BLACK);history.push({x:7,y:7,p:BLACK,at:null});
+  drawQueued=false;drawBoard();
+  const q=drawQueued;newGame(true);return q===false;
+}));
+ok('AI 回合光标移到已有棋子时仍播报棋子',await page.evaluate(async()=>{
+  setMode('ai-easy');applySide('B');newGame(true);
+  setCell(7,7,BLACK);turn=WHITE;cursor={x:7,y:7};kbdCursor=true;
+  announceCursor();
+  await new Promise(r=>setTimeout(r,150));
+  const t=document.getElementById('a11yStatus').textContent;
+  newGame(true);
+  return t.includes('光标 H8，已有黑棋');
+}));
+ok('长按空格或回车触发的重复按键不会落子',await page.evaluate(()=>{
+  setMode('pvp');newGame(true);
+  cursor={x:7,y:7};kbdCursor=true;
+  document.getElementById('board').focus();
+  document.dispatchEvent(new KeyboardEvent('keydown',{key:' ',repeat:true,bubbles:true}));
+  document.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',repeat:true,bubbles:true}));
+  const empty=history.length===0;
+  newGame(true);
+  return empty;
 }));
 
 console.log(`\n${pass} passed, ${fail} failed`);

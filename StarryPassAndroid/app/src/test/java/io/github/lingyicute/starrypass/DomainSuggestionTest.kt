@@ -106,6 +106,9 @@ class DomainSuggestionTest {
         assertEquals("", PreferencesRepository.normalizeDomain("example.com:"))
         assertEquals("", PreferencesRepository.normalizeDomain("[::1]:"))
         assertEquals("", PreferencesRepository.normalizeDomain("http:"))
+        assertEquals("", PreferencesRepository.normalizeDomain("http:8080"))
+        assertEquals("", PreferencesRepository.normalizeDomain("https:443/login"))
+        assertEquals("", PreferencesRepository.normalizeDomain("blob:http:8080"))
         assertEquals("", PreferencesRepository.normalizeDomain("magnet:?xt=urn:btih:123"))
         assertEquals("", PreferencesRepository.normalizeDomain("example[1].com"))
         assertEquals("", PreferencesRepository.normalizeDomain("-example.com"))
@@ -364,5 +367,14 @@ class DomainSuggestionTest {
                 badMatch == null
             )
         }
+    }
+
+    @Test
+    fun `cookie-style prefix cannot expose an unvalidated bracket host`() {
+        for (raw in listOf(".[", "*.[example]", ".[abc]:80", "..[0")) {
+            assertEquals(raw, "", PreferencesRepository.normalizeDomain(raw))
+        }
+        assertEquals("[::1]", PreferencesRepository.normalizeDomain("[::1]:8080"))
+        assertEquals("[2001:db8::1]", PreferencesRepository.normalizeDomain("http://[2001:db8::1]/x"))
     }
 }

@@ -39,12 +39,12 @@ html{-webkit-text-size-adjust:100%}
 :root{--acc:#a78bfa;--acc-deep:#6a54c8} /* 兜底：accent 规则失效时降级为紫色 */
 [data-accent="purple"]{--acc:#a78bfa;--acc-deep:#6a54c8}
 [data-accent="blue"]{--acc:#82aaff;--acc-deep:#3f63c0}
-[data-accent="teal"]{--acc:#5edfd0;--acc-deep:#0f7a6e}
+[data-accent="teal"]{--acc:#5edfd0;--acc-deep:#0d7569}
 [data-accent="green"]{--acc:#6fdc8c;--acc-deep:#1e7a3c}
 [data-accent="yellow"]{--acc:#ecc64f;--acc-deep:#7d660d}
 [data-accent="orange"]{--acc:#f6ad7b;--acc-deep:#a04d08}
 [data-accent="pink"]{--acc:#f17bb0;--acc-deep:#b02e6e}
-[data-accent="red"]{--acc:#ef6f6f;--acc-deep:#c03230}
+[data-accent="red"]{--acc:#f27474;--acc-deep:#c03230}
 
 html[data-theme="light"]{
   color-scheme:light;
@@ -110,7 +110,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:14p
   color:var(--on-primary)}
 html[data-theme="dark"] .app-icon{background:linear-gradient(135deg,color-mix(in srgb,var(--acc) 88%,#fff),var(--acc))}
 .brand-name{font-size:21px;font-weight:800;letter-spacing:.2px}
-.brand-badge{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--container-high);color:var(--primary)}
+.brand-badge{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px;background:var(--container-high);color:var(--on-surface)}
 .header-actions{display:flex;align-items:center;gap:2px;position:relative}
 .icon-btn{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--on-surface);transition:background .18s,transform .1s}
 .icon-btn:hover{background:color-mix(in srgb,currentColor 8%,transparent)}
@@ -167,7 +167,7 @@ h1{font-size:38px;font-weight:800;letter-spacing:1px}
 .chip:hover{background:var(--container)}
 .chip:active{transform:scale(.96)}
 .chip.sel{background:var(--container-high);border-color:transparent}
-.chip .ck{display:none;color:var(--primary)}
+.chip .ck{display:none;color:var(--on-surface)}
 .chip.sel .ck{display:block}
 
 /* 底部说明 */
@@ -403,7 +403,7 @@ const LS={
   },
   set(k,v){try{localStorage.setItem('yirenju.'+k,JSON.stringify(v));}catch(e){}}
 };
-const ACCENTS={purple:'#a78bfa',blue:'#82aaff',teal:'#5edfd0',green:'#6fdc8c',yellow:'#ecc64f',orange:'#f6ad7b',pink:'#f17bb0',red:'#ef6f6f'};
+const ACCENTS={purple:'#a78bfa',blue:'#82aaff',teal:'#5edfd0',green:'#6fdc8c',yellow:'#ecc64f',orange:'#f6ad7b',pink:'#f17bb0',red:'#f27474'};
 /* 色名只出现在色块的 title / aria-label 里（浏览器提示与读屏播报，不经页面字体渲染）：
    写成转义序列，源码里不出现这些字，内嵌字体子集就不必为它们加字形 */
 const ACCENT_NAME={purple:'\u7d2b\u8272',blue:'\u84dd\u8272',teal:'\u9752\u8272',green:'\u7eff\u8272',yellow:'\u9ec4\u8272',orange:'\u6a59\u8272',pink:'\u7c89\u8272',red:'\u7ea2\u8272'};
@@ -647,14 +647,6 @@ function winCellsAt(x,y,p){
   return null;
 }
 /* ============ 连珠禁手检测（仅黑棋受约束） ============ */
-/* 沿 (dx,dy) 偏移 o 处的目标，是否与 (x,y) 之间只隔着黑子（保证新形由落子参与形成） */
-function linkedTo(x,y,dx,dy,o,p){
-  const s=Math.sign(o);
-  for(let t=1;t<Math.abs(o);t++){
-    if(board[x+dx*s*t][y+dy*s*t]!==p)return false;
-  }
-  return true;
-}
 /* 沿方向 (dx,dy) 统计：多少个空位补上 p 色子后能形成「经过 (x,y) 的取胜连子」
    （黑棋要求恰好5连，白棋5连及以上）。
    ===== 补点唯一性（本文件多处复用的关键变换）=====
@@ -1294,7 +1286,6 @@ function negamax(depth,alpha,beta,p,lastX,lastY){
       break;
     }
   }
-  if(searchAborted)return best;   /* 被时间截断的半截结果不写表，否则会污染同代其它结点 */
   /* 胜负分不入表：negamax 的胜负分带 depth*1000 加成，qNode 的按 qd 计（见 qMate），两种约定并存，
      无法用同一种深度归一化存取——旧版按 depth 归一化入表，qNode 的胜负分取回时漂移 ±1000 的整数倍
      （实测：复用表后白方被杀线分值从 -9000080 变为 -8999090，根节点在多条必输着法间排序错误）。
@@ -1352,15 +1343,11 @@ function aiChooseRaw(p){
   /* 能赢先赢 */
   const wp=p===WHITE?fivePoint(WHITE):blackWinPoint();
   if(wp)return wp;
-  /* 中等及以上：不允许随机放弃唯一的合法必挡点。对方已有两个成五点（活四/双杀）时堵不住，
-     但每一手都是一步败，搜索得到的全是同分，同分随机会走到毫不相干的点上：与简单档一样任堵其一 */
-  if(mode!=='ai-easy'){
-    const opWins=winPointsAll(op);
-    if(opWins.length===1&&isLegalMoveAt(p,opWins[0].x,opWins[0].y))return opWins[0];
-    if(opWins.length>=2){
-      const b=opWins.filter(w=>isLegalMoveAt(p,w.x,w.y));
-      if(b.length)return b[(Math.random()*b.length)|0];
-    }
+  /* 全难度：对方已有成五点时必挡；活四/双杀堵不住也任堵其一合法点，避免搜索同分随机乱走 */
+  const opWins=winPointsAll(op);
+  if(opWins.length){
+    const b=opWins.filter(w=>isLegalMoveAt(p,w.x,w.y));
+    if(b.length)return b.length===1?b[0]:b[(Math.random()*b.length)|0];
   }
   /* 困难及专家：VCT 给出攻击/防守提示，统一交给主搜索验证，而非直接认定必胜。 */
   if(VCT_ENABLED&&(mode==='ai-hard'||mode==='ai-expert')){
@@ -1376,13 +1363,6 @@ function aiChooseRaw(p){
     vctAborted=false;
   }
   if(mode==='ai-easy'){
-    /* 对方成五点必挡；双杀点任堵其一（守不住也挣扎一下） */
-    const ow=winPointsAll(op);
-    if(ow.length===1&&isLegalMoveAt(p,ow[0].x,ow[0].y))return ow[0];
-    if(ow.length>=2){
-      const b=ow.filter(w=>isLegalMoveAt(p,w.x,w.y));
-      if(b.length)return b[(Math.random()*b.length)|0];
-    }
     /* 静态分加权落子：攻方估价+守方估价的八成，越强的点越容易被选中，但并不保证 */
     let near=legalCandidatePoints(p,candidates(1));
     if(!near.length)near=legalCandidatePoints(p,candidates(2));
@@ -1419,6 +1399,7 @@ function aiChooseRaw(p){
   hashFromBoard();
   ttDraft++;
   KILL.fill(-1);
+  searchPly=0;
   qNodes=0;
   let root=orderedMoves(p,cfg.w);
   const staticBest=root[0];                    /* 首层超时时，不把未验证的提示当作最优 */
@@ -1434,7 +1415,7 @@ function aiChooseRaw(p){
   if(!root.length)return null;
   if(root.length===1)return {x:root[0].x,y:root[0].y};
   let best=staticBest||root[0],bestV=-Infinity;
-  /* P1 开局多样性：≤8 子时根节点改用全窗口逐手精确打分，末层分值接近者入池随机——
+  /* P1 开局多样性：不足 8 子（前 8 手）时根节点改用全窗口逐手精确打分，末层分值接近者入池随机——
      老版本的同分随机从未触发过（每层都有严格唯一最优），Expert 开局是一套固定谱。 */
   const OPENING=stonesOnBoard()<8;let openScores=null;
   for(const depth of cfg.d){
@@ -1515,17 +1496,22 @@ function aiChoose(p){
 /*CORE_END*/
 
 /* ================= 主题与配色 ================= */
-const settings=Object.assign({theme:null,accent:'purple',mode:'ai-easy',side:'B',sound:true},LS.get('settings',{}));
+const isPlainObj=v=>!!v&&typeof v==='object'&&!Array.isArray(v);
+const rawSettings=LS.get('settings',null);
+const settings=Object.assign({theme:null,accent:'purple',mode:'ai-easy',side:'B',sound:true},isPlainObj(rawSettings)?rawSettings:null);
+if(typeof settings.sound!=='boolean')settings.sound=true;
 mode=MODES_OK(settings.mode)?settings.mode:'ai-easy';
 function MODES_OK(m){return Object.prototype.hasOwnProperty.call(MODE_LABEL,m);}
 /* 执子：humanP 为玩家执子，aiP 为 AI 执子（aiP=3-humanP） */
 let humanP=settings.side==='W'?WHITE:BLACK,aiP=3-humanP;
 function DEFREC(){return {easy:{w:0,l:0},medium:{w:0,l:0},hard:{w:0,l:0},expert:{w:0,l:0}};}
-const isPlainObj=v=>!!v&&typeof v==='object'&&!Array.isArray(v);
 /* 战绩按玩家执子分桶：b=玩家执黑，w=玩家执白；旧平铺结构视为执黑迁移 */
 function parseRecords(r){
-  if(isPlainObj(r)&&isPlainObj(r.b)&&isPlainObj(r.w))return r;
-  return {b:Object.assign(DEFREC(),isPlainObj(r)?r:null),w:DEFREC()};
+  if(!isPlainObj(r))return {b:DEFREC(),w:DEFREC()};
+  if(Object.prototype.hasOwnProperty.call(r,'b')||Object.prototype.hasOwnProperty.call(r,'w')){
+    return {b:Object.assign(DEFREC(),isPlainObj(r.b)?r.b:null),w:Object.assign(DEFREC(),isPlainObj(r.w)?r.w:null)};
+  }
+  return {b:Object.assign(DEFREC(),r),w:DEFREC()};
 }
 let records=parseRecords(LS.get('records',null));
 /* 多个标签页同开时，各页内存里的战绩副本互不知晓，整体回写会抹掉别页刚记下的胜负：
@@ -1536,7 +1522,7 @@ function recIn(bkt,k){const v=bkt[k];return (isPlainObj(v)&&Number.isInteger(v.w
 function recOf(k){return recIn(humanP===BLACK?records.b:records.w,k);}
 
 /* 与 CSS 中 --acc-deep 保持一致的深色调（浅色主题主按钮/容器用） */
-const ACC_DEEP={purple:'#6a54c8',blue:'#3f63c0',teal:'#0f7a6e',green:'#1e7a3c',yellow:'#7d660d',orange:'#a04d08',pink:'#b02e6e',red:'#c03230'};
+const ACC_DEEP={purple:'#6a54c8',blue:'#3f63c0',teal:'#0d7569',green:'#1e7a3c',yellow:'#7d660d',orange:'#a04d08',pink:'#b02e6e',red:'#c03230'};
 
 function applyTheme(t){document.documentElement.dataset.theme=t;settings.theme=t;LS.set('settings',settings);refreshPalette();}
 function applyAccent(a){if(!isAccent(a))return;document.documentElement.dataset.accent=a;settings.accent=a;LS.set('settings',settings);refreshPalette();}
@@ -1546,7 +1532,7 @@ $('btnTheme').addEventListener('click',()=>{
 /* 多个标签页共用一份 settings：别页改了主题、配色或音效时同步内存副本并即时套用，
    否则本页下次整体回写会把别页的选择改回去。mode / side 跟着各页自己的对局走，不跟随。 */
 function syncExternalSettings(s){
-  if(!s||typeof s!=='object'||Array.isArray(s))return;
+  if(!isPlainObj(s))return;
   const oldAccent=settings.accent;
   if(s.theme==='light'||s.theme==='dark'){settings.theme=s.theme;document.documentElement.dataset.theme=s.theme;}
   if(isAccent(s.accent)){settings.accent=s.accent;document.documentElement.dataset.accent=s.accent;}
@@ -1704,7 +1690,7 @@ function drawBoard(){
   }
   /* 棋子（最后一手带落子动画） */
   const last=history[history.length-1];
-  const animT=last&&!(reducedMotionMQ&&reducedMotionMQ.matches)?Math.min(1,(now-last.at)/150):1;
+  const animT=last&&last.at!=null&&!(reducedMotionMQ&&reducedMotionMQ.matches)?Math.max(0,Math.min(1,(now-last.at)/150)):1;
   for(const mv of history){
     let scale=1;
     if(mv===last&&animT<1){const t=animT;scale=1+0.5*(1-t)*(1-t);}
@@ -1819,8 +1805,8 @@ function announceMove(x,y,p){
 function announceCursor(){
   if(over)return;
   const at=coordLabel(cursor.x,cursor.y),occ=board[cursor.x][cursor.y];
-  if(mode!=='pvp'&&turn!==humanP){announce(`光标 ${at}。`);return;}
   if(occ!==EMPTY){announce(`光标 ${at}，已有${sideName(occ)}。`);return;}
+  if(mode!=='pvp'&&turn!==humanP){announce(`光标 ${at}。`);return;}
   let note='';
   if(turn===BLACK){
     const t=blackLegality(cursor.x,cursor.y);
@@ -2013,7 +1999,7 @@ function initAiWorker(){
     if(a<0||b<0||b<a)return;
     /* 'use strict' 在 CORE_START 之前，切片不含它：补上，引擎在 Worker 里与主线程回退同为严格模式 */
     const wsrc="'use strict';\n"+src.slice(a,b)
-      +'\nself.onmessage=function(e){var d=e.data;if(d&&d.type==="choose"){mode=d.mode;board=d.board;syncCand();self.postMessage({tok:d.tok,mv:aiChoose(d.p)});}};';
+      +'\nself.onmessage=function(e){var d=e.data;if(d&&d.type==="choose"){mode=d.mode;board=d.board;self.postMessage({tok:d.tok,mv:aiChoose(d.p)});}};';
     const url=URL.createObjectURL(new Blob([wsrc],{type:'text/javascript'}));
     aiWorkerUrl=url; /* Worker 构造被 CSP 等拒绝时，catch 里的 dropWorker 也能撤销 URL */
     const w=new Worker(url);
@@ -2462,6 +2448,7 @@ document.addEventListener('keydown',e=>{
     return;
   }
   if(k==='Enter'||k===' '){
+    if(e.repeat)return;
     /* 键盘光标不可见时（刚点过鼠标/触屏、刚聚焦棋盘）第一下只显示并播报光标：
        否则会在看不见的旧光标处盲落一子。 */
     if(!kbdCursor&&!over){kbdCursor=true;hover=null;scheduleDraw();announceCursor();return;}
@@ -2510,7 +2497,7 @@ function init(){
         if(!isLegalMoveAt(turn,m.x,m.y))throw new Error('corrupt session'); /* 重复落点或黑方禁手 */
         setCell(m.x,m.y,turn);
         if(winCellsAt(m.x,m.y,turn))throw new Error('corrupt session'); /* 已分胜负却标为未终局 */
-        history.push({x:m.x,y:m.y,p:turn,at:0});
+        history.push({x:m.x,y:m.y,p:turn,at:null});
         turn=3-turn;
       }
       turn=history.length%2===0?BLACK:WHITE;

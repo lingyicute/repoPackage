@@ -53,7 +53,6 @@ import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -424,7 +423,7 @@ fun GeneratorScreen(
                                 ) {
                                     HorizontalDivider(color = colorScheme.outlineVariant.copy(alpha = 0.5f))
 
-                                    // 1. Password Length: Quick Chips (16/20/24 or 4/6/8 for PIN) + 4..64 Custom Slider
+                                    // 1. Password Length: Quick Chips (12/16/20/24/32 or 4/6/8/12 for PIN) + 4..64 Custom Slider
                                     Column {
                                         Text(
                                             text = stringResource(R.string.policy_length_label, uiState.length),
