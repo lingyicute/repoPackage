@@ -16,7 +16,7 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-orange.svg" alt="License: AGPL-3.0"></a>
-  <a href="./index.html"><img src="https://img.shields.io/badge/Single%20File-197%20KiB-blue" alt="Self-contained HTML, approximately 197 KiB"></a>
+  <a href="./index.html"><img src="https://img.shields.io/badge/Single%20File-196%20KiB-blue" alt="Self-contained HTML, approximately 196 KiB"></a>
   <a href="https://github.com/lingyicute/YiRenju"><img src="https://img.shields.io/badge/Runtime%20Setup-None-brightgreen" alt="No runtime setup"></a>
   <a href="https://github.com/lingyicute/YiRenju"><img src="https://img.shields.io/badge/Network%20Requests-Zero-brightgreen" alt="Zero network requests"></a>
   <a href="https://github.com/lingyicute/YiRenju"><img src="https://img.shields.io/github/stars/lingyicute/YiRenju?style=flat&color=yellow" alt="GitHub Stars"></a>
@@ -54,7 +54,7 @@ It is a **single, self-contained HTML file** with the markup, styles, and game l
   - Two people take turns on the same device. Two-player games are not counted in the stats.
 
 - **↩️ Undo, Restart, and Timer**
-  - Undo with `Z`. Against the AI, undo also takes back the AI's last reply.
+  - Undo with `Z`. Against the AI, undo rewinds to your turn: it usually takes back the AI's reply as well, but right after your winning move it takes back only that move.
   - Restart at any time with `R`. A status panel shows the move number, whose turn it is, and the elapsed time.
 
 - **💾 Resume Unfinished Games**
@@ -213,7 +213,7 @@ node tests/ai-tournament.mjs
 # Browser end-to-end UI tests — 107 assertions (one-time setup required)
 python3 -m http.server 8600     # serve this directory
 npm i --no-save playwright-core # --no-save: keep package.json dependency-free
-npx playwright-core install chromium-headless-shell
+npx playwright-core install chromium-headless-shell  # bare Linux: add --with-deps (sudo) for libnss3 etc.
 node tests/renju-e2e.mjs
 ```
 

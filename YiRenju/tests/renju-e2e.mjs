@@ -245,9 +245,12 @@ await page.evaluate(()=>setMode('ai-easy'));
 
 /* 10. 我执白时真实点击：白棋无禁手（PvP 中白双三点可落） */
 await page.evaluate(()=>{setMode('pvp');newGame();});
-for(const [x,y] of [[0,0],[6,7],[0,1],[8,7],[0,2],[7,6],[0,3],[7,8]])await clickCell(x,y);
+/* 黑子隔一格散落在左边线（互不成形），白子围出 (7,7) 的双三形。共 9 手，第 10 手才轮到白棋；
+   旧序列只有 8 手，(7,7) 实际由黑棋落下（四周全是白子，本就不是禁手），用例形同虚设 */
+for(const [x,y] of [[0,0],[6,7],[0,2],[8,7],[0,4],[7,6],[0,6],[7,8],[0,8]])await clickCell(x,y);
 await clickCell(7,7); /* 白棋在“三三形位”落子——白无禁手 */
-ok('白棋无禁手（双三位可落）',(await histLen())===9,'len='+(await histLen()));
+ok('白棋无禁手（双三位可落）',await page.evaluate(()=>{const m=history[history.length-1];
+  return history.length===10&&m.p===WHITE&&m.x===7&&m.y===7;}),'len='+(await histLen()));
 
 /* 11. 执白且盘上只有 AI 首手：没有玩家的棋可悔，悔棋按钮禁用，悔棋不让 AI 原样重算 */
 await page.evaluate(()=>{setMode('ai-easy');applySide('W');newGame();});
@@ -453,8 +456,9 @@ ok('思考中重开会换新的 Worker',await page.evaluate(()=>{
   const thinking=aiThinking;newGame();   /* 思考中再次重开 */
   return !!w0&&thinking&&aiWorker!==null&&aiWorker!==w0;
 }));
-await page.waitForFunction(()=>history.length===1&&!aiThinking,{timeout:6000});
-ok('换 Worker 后 AI 仍能正常开局',true);
+/* 超时记一条 FAIL 并继续跑后续用例；旧写法 ok(...,true) 恒真，超时则直接抛错中断整个套件 */
+ok('换 Worker 后 AI 仍能正常开局',await page.waitForFunction(()=>history.length===1&&!aiThinking,{timeout:6000})
+  .then(()=>true,()=>false),'len='+(await histLen()));
 await page.evaluate(()=>{newGame();});
 ok('Worker 报错：思考态不卡死，改由主线程落子',await page.evaluate(async()=>{
   const thinking=aiThinking,w=aiWorker;

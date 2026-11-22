@@ -128,7 +128,8 @@
     position: fixed; inset-block-start: 8px; inset-inline-start: 8px; z-index: 100;
     padding: 8px 16px; border-radius: var(--radius-xs);
     background: var(--primary); color: var(--on-primary);
-    transform: translateY(calc(-100% - 8px));
+    /* Park it a full inset above the edge: a fractional height otherwise leaves a hairline. */
+    transform: translateY(calc(-100% - 16px));
   }
   .skip-link:focus { transform: none; }
 
@@ -241,6 +242,10 @@
   /* ---------- Hero ---------- */
   .hero {
     position: relative; padding: 72px 0 40px; overflow: hidden;
+  }
+  /* A vertical clip cuts the blurred blobs along a hard line; clip sideways only where possible. */
+  @supports (overflow: clip) {
+    .hero { overflow-x: clip; overflow-y: visible; }
   }
   .hero-grid {
     display: grid; grid-template-columns: 1.1fr .9fr; gap: 48px; align-items: center;

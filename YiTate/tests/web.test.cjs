@@ -485,6 +485,15 @@ test('the skip link and anchor navigation account for the sticky app bar', () =>
   assert.match(html, /scroll-padding-top:\s*var\(--appbar-height\)/);
 });
 
+test('the unfocused skip link is parked clear of the viewport edge', () => {
+  const rule = html.match(/\.skip-link\s*\{([^}]*)\}/)[1];
+  const inset = +rule.match(/inset-block-start:\s*(\d+)px/)[1];
+  const parked = +rule.match(/transform:\s*translateY\(calc\(-100% - (\d+)px\)\)/)[1];
+  // Its height is fractional (1.6 line-height); moving it by exactly the inset leaves a hairline.
+  assert.ok(parked > inset, 'sub-pixel rounding must not expose the bottom edge');
+  assert.match(html, /\.skip-link:focus\s*\{\s*transform:\s*none/);
+});
+
 test('enabling reduced motion after load disconnects the observer and clears pending reveals', () => {
   const page = boot();
   const [first, second] = page.reveals;
@@ -505,6 +514,15 @@ test('decorative hero motion stops automatically within five seconds', () => {
   const duration = html.match(/\.blob\s*\{[^}]*animation:\s*drift\s+([\d.]+)s\s+ease-in-out\s+both\s*;/);
   assert.ok(duration, 'the drift has a finite duration and one iteration');
   assert.ok(+duration[1] > 0 && +duration[1] <= 5);
+});
+
+test('the hero does not cut its blurred blobs along a hard horizontal edge', () => {
+  const modern = html.match(/@supports \(overflow: clip\)\s*\{\s*\.hero\s*\{([^}]*)\}/);
+  assert.ok(modern, 'browsers with overflow: clip let the glow fade out past the section');
+  assert.match(modern[1], /overflow-x:\s*clip/, 'blobs must still not widen the page');
+  assert.match(modern[1], /overflow-y:\s*visible/);
+  assert.ok(html.indexOf('@supports (overflow: clip)') > html.search(/\n  \.hero\s*\{[^}]*overflow:\s*hidden/),
+    'the override follows the fallback for older browsers');
 });
 
 test('hero drift pauses offscreen and in hidden tabs without restarting its animation', () => {
