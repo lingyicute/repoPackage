@@ -811,7 +811,7 @@ class Registry:
         tok = None
         try:
             req = urllib.request.Request(f"https://{self.host}/v2/")
-            with urllib.request.urlopen(req, timeout=self.timeout):
+            with _OPENER.open(req, timeout=self.timeout):
                 # 2xx: anonymous access is enough, no token needed.
                 self._tok = ""
                 return None
@@ -851,7 +851,7 @@ class Registry:
             merged_q = f"{sp.query}&{extra_q}" if sp.query else extra_q
             url = urllib.parse.urlunsplit((sp.scheme, sp.netloc, sp.path, merged_q, ""))
             try:
-                with urllib.request.urlopen(url, timeout=self.timeout) as r:
+                with _OPENER.open(url, timeout=self.timeout) as r:
                     # The token spec allows either key ("for compatibility
                     # with OAuth 2.0"), and Azure's registry sends only
                     # `access_token` - which read as "no token" and then as 401.
@@ -2688,6 +2688,15 @@ def _reverted_aliases(group: dict) -> list:
         and not a.get("also_matches_target")))
 
 
+def _unowned_chunk_bytes(ldiff: dict) -> int:
+    """Changed bytes outside rpm/ packages, excluding rpmdb.sqlite and initramfs.img."""
+    def _unowned(c):
+        return (not c.startswith("rpm/")
+                and c.rpartition("/")[2] not in (CHUNK_MATCH, "initramfs.img"))
+    return sum(ch["size"] for ch in ldiff.get("changed_chunks") or []
+               if any(_unowned(c) for c in ch.get("components") or []))
+
+
 def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                backlog: list | None = None, bodhi_state: dict | None = None,
                groups: list | None = None) -> dict:
@@ -2860,11 +2869,7 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         # etc/trivalent/filter/trivalent-blocklist, .../selinux/targeted/policy/
         # policy.35 and .../udev/hwdb.bin. Left out: the rpmdb, which was read,
         # and the initramfs, which the image build regenerates from packages.
-        def _unowned(c):
-            return (not c.startswith("rpm/")
-                    and c.rpartition("/")[2] not in (CHUNK_MATCH, "initramfs.img"))
-        loose = sum(ch["size"] for ch in ldiff.get("changed_chunks") or []
-                    if any(_unowned(c) for c in ch.get("components") or []))
+        loose = _unowned_chunk_bytes(ldiff)
         if loose:
             v["headline"] += (f". Not inspected: {human(loose)} of files that no package owns "
                               f"(chunkah/unclaimed and bigfiles/* chunks, secureblue's own "
@@ -3272,15 +3277,15 @@ def group_by_src(changed: list) -> list:
                     g["why"].append(w)
             g["sev_rank"] = max(g["sev_rank"], cls.get("sev_rank") or 0)
             g["sec_sev_rank"] = max(g["sec_sev_rank"], cls.get("sec_sev_rank") or 0)
+            for a in cls.get("not_pushed") or []:
+                if a not in g["unreleased"]:
+                    g["unreleased"].append(a)
+            for a in cls.get("passed_over") or []:
+                if a not in g["passed_over"]:
+                    g["passed_over"].append(a)
         for a in cls.get("already_had") or []:
             if a not in g["already_had"]:
                 g["already_had"].append(a)
-        for a in cls.get("not_pushed") or []:
-            if a not in g["unreleased"]:
-                g["unreleased"].append(a)
-        for a in cls.get("passed_over") or []:
-            if a not in g["passed_over"]:
-                g["passed_over"].append(a)
         # `.get`, like every other consumer of this structure: a change entry
         # built without "dir" crashed here with a KeyError while
         # secureblue_notification() happily accepted the same data.
@@ -3652,9 +3657,9 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             # the first line of a changelog entry lands here verbatim, and a bare
             # `|` in it ends the cell early and shifts every column after it
             ev = _md_cell(ev)
-            cve_str = clip_list(g["cves"], CVE_CELL_CAP, lang=lang) or "—"
-            pkg_col = fmt_pkgs(g, "zh" if is_zh else "en")
-            W(f"| {pkg_col} ({g['src']}) | {g['old_evr']} → **{g['new_evr']}** | {cve_str} | {ev} |")
+            cve_str = _md_cell(clip_list(g["cves"], CVE_CELL_CAP, lang=lang) or "—")
+            pkg_col = _md_cell(fmt_pkgs(g, "zh" if is_zh else "en"))
+            W(f"| {pkg_col} ({_md_cell(g['src'])}) | {_md_cell(g['old_evr'])} → **{_md_cell(g['new_evr'])}** | {cve_str} | {ev} |")
         W("")
         shared = verdict.get("advisory_wide_cves") or []
         if shared:
@@ -3722,7 +3727,7 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W("| source package | binary packages | old → new |")
             W("|---|---|---|")
         for g in g_other:
-            W(f"| {g['src']} | {fmt_pkgs(g, 'zh' if is_zh else 'en')} | {g['old_evr']} → {g['new_evr']} |")
+            W(f"| {_md_cell(g['src'])} | {_md_cell(fmt_pkgs(g, 'zh' if is_zh else 'en'))} | {_md_cell(g['old_evr'])} → {_md_cell(g['new_evr'])} |")
         W("")
 
     g_had = [g for g in groups if not g["downgrade"] and any(
@@ -3782,14 +3787,13 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
     if (not changed and not diff["added"] and not diff["removed"]
             and diff.get("rpmdb_complete", True)
             and (isinstance(diff.get("count_a"), int) or diff.get("same_rpmdb"))):
-        unowned = sum(ch["size"] for ch in ldiff.get("changed_chunks") or []
-                      if "chunkah/unclaimed" in (ch.get("components") or []))
+        unowned = _unowned_chunk_bytes(ldiff)
         if is_zh:
             W("## 没有任何软件包版本发生变化")
             W("")
             if unowned:
                 W(f"两个镜像中所有软件包的 NEVRA 完全一致；但另有 {human(unowned)} "
-                  "不属于任何软件包的文件（`chunkah/unclaimed`，含 secureblue 自身配置）"
+                  "不属于任何软件包的文件（`chunkah/unclaimed` 与 `bigfiles/*`，含 secureblue 自身配置）"
                   "发生了变化，且未在此检查。")
             else:
                 W("两个镜像中所有软件包的 NEVRA 完全一致；文件内容未检查，版本相同不能证明内容相同。")
@@ -3798,7 +3802,7 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W("")
             if unowned:
                 W(f"Every package in both images has the same NEVRA; {human(unowned)} of "
-                  "files no package owns (`chunkah/unclaimed`, including secureblue's own "
+                  "files no package owns (`chunkah/unclaimed` and `bigfiles/*`, including secureblue's own "
                   "configuration) also changed and were not inspected here.")
             else:
                 W("Every package in both images has the same NEVRA; file contents were not inspected. "
@@ -3903,7 +3907,7 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W("| package | in image | newer stable build | max severity | latest build erratum |")
             W("|---|---|---|---|---|")
         for r in backlog[:25]:
-            W(f"| `{r['name']}` | {r['have']} | **{r['want']}** | {r['severity'] or '?'} | {r.get('alias') or '—'} |")
+            W(f"| `{_md_cell(r['name'])}` | {_md_cell(r['have'])} | **{_md_cell(r['want'])}** | {_md_cell(r['severity'] or '?')} | {_md_cell(r.get('alias') or '—')} |")
         if len(backlog) > 25:
             # A fixed display cap: --backlog-candidates changes how many rows exist,
             # never how many fit here, so point at the complete JSON instead.
@@ -4491,7 +4495,15 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
             m = DATED_RE.match(t)
             if m:
                 by_day.setdefault(m.group(1), []).append(t)
-        for day in sorted(by_day)[-days:]:
+        max_day = ""
+        if cur_time:
+            try:
+                max_day = (datetime.date.fromisoformat(cur_time[:10])
+                           + datetime.timedelta(days=1)).strftime("%Y%m%d")
+            except ValueError:
+                max_day = ""
+        eligible_days = [d for d in sorted(by_day) if not max_day or d <= max_day]
+        for day in eligible_days[-days:]:
             for t in sorted(by_day[day]):
                 try:
                     dig = reg.index_digest(t)
@@ -5164,18 +5176,9 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
             if n in pa:
                 src_of[n] = pa[n]["src"]
     xc = crosscheck_chunks(ld, diff, src_of)
-    # Backlog lookups for unchanged packages cannot affect this delta's popup.
-    diff["advisory_coverage_complete"] = bodhi is not None and not (
-        bodhi.failed or bodhi.skipped or getattr(bodhi, "truncated_src", ()))
-    backlog, coverage = [], None
-    if getattr(args, "audit", False) and bodhi is not None:
-        # Same Bodhi object as the diff classification above: one shared
-        # --max-bodhi budget (an earlier revision quietly spent a *second*,
-        # larger one - `--max-bodhi 10 --audit` still made up to 45 calls) and one
-        # shared answer cache, so a source package already looked up for the diff
-        # costs nothing here.
-        backlog, coverage = security_backlog(pb, rel, bodhi,
-                                              limit=getattr(args, "backlog_candidates", None))
+    # Capture diff's own Bodhi state before security_backlog() runs: backlog
+    # lookups for unchanged packages report their own coverage in coverage_line()
+    # and must not contaminate this delta's verdict or popup prediction.
     if bodhi is not None:
         bstate = {"failed": bodhi.failed, "skipped": bodhi.skipped,
                   "truncated": sorted(bodhi.truncated_src),
@@ -5186,6 +5189,17 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
         # Not the same thing as --no-bodhi: the Fedora release could not be
         # derived from the package list, so no erratum could be queried at all.
         bstate = {"unavailable": 1}
+    diff["advisory_coverage_complete"] = bodhi is not None and not (
+        bstate["failed"] or bstate["skipped"] or bstate["truncated"])
+    backlog, coverage = [], None
+    if getattr(args, "audit", False) and bodhi is not None:
+        # Same Bodhi object as the diff classification above: one shared
+        # --max-bodhi budget (an earlier revision quietly spent a *second*,
+        # larger one - `--max-bodhi 10 --audit` still made up to 45 calls) and one
+        # shared answer cache, so a source package already looked up for the diff
+        # costs nothing here.
+        backlog, coverage = security_backlog(pb, rel, bodhi,
+                                              limit=getattr(args, "backlog_candidates", None))
     # One aggregation per run: the verdict and both halves of the report all read
     # the same source-package groups.
     groups = group_by_src(diff["changed"])
