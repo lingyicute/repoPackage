@@ -10,7 +10,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'sha256-iDnhUlyAE+38tXFfALFW8Qzn0vop6N//Oxs1fnhroPQ=' 'sha256-V/Z110wpSR48vjwvUp+2A2HtQ1nxlaY4EvMJubM/PiQ='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+    content="default-src 'none'; script-src 'sha256-iDnhUlyAE+38tXFfALFW8Qzn0vop6N//Oxs1fnhroPQ=' 'sha256-G5Nk1t175YCUECnaUQL+08oxL7FcNImEC1oQxPsK7jI='; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#f7f5fa">
   <title>Hashroom 文件摘要小助手 by lingyicute</title>
@@ -2449,6 +2449,9 @@
       return {algorithm, strayLength: hex.length};
     }
 
+    // Hash、Checksum 这类中性词不是算法名；即使出现在标记位置，也只按长度推断。
+    const NEUTRAL_LABEL = /^(?:(?:hash|digest|checksum)(?: value)?|(?:哈希|散列|摘要)(?:值)?|校验[和值])$/i;
+
     function labelledField(label, value) {
       label = label.replace(/^--/, '');
       const names = [...new Set(findAlgorithmNames(label).map(canonicalAlgorithm))];
@@ -2456,8 +2459,7 @@
       if (foreign) return {unsupported: foreign};
       if (names.length > 1) return {};
       const result = digestField(value, names[0]);
-      // Hash、Checksum 这类中性词不是算法名；即使出现在 BSD 标记或 xxsum 前缀的位置，也只按长度推断。
-      const neutral = /^(?:(?:hash|digest|checksum)(?: value)?|(?:哈希|散列|摘要)(?:值)?|校验[和值])$/i.test(label);
+      const neutral = NEUTRAL_LABEL.test(label);
       if (!names.length && !neutral) return result.hex ? {unsupported: label.slice(0, 80)} : {};
       return result;
     }
@@ -2535,29 +2537,32 @@
       if (name === '-' || name === 'stdin') return {file: '', path: '', invalidFile: false};
       const path = name.replace(/^(?:\.\/)+/, '');
       const file = path.slice(path.lastIndexOf('/') + 1);
-      return {file, path, invalidFile: invalidFile || !file};
+      return {file, path, invalidFile: invalidFile || !file.trim()};
     }
 
     function splitChecksumLine(line, allowPosix = true) {
       const escaped = line.startsWith('\\');
       const text = escaped ? line.slice(1) : line;
-      // OpenSSL 1.x 从标准输入计算时不打印算法名，只有 (stdin)= 摘要。
+      // OpenSSL 1.x 从标准输入计算时不打印算法名，只有 (stdin)= 摘要；避免把十六进制摘要当成算法名。
       const bsd = text.match(/^([A-Za-z][\w/-]*)?\s*\(([\s\S]*)\)\s*=\s*([\s\S]*)$/);
-      if (bsd) return {tag: bsd[1], content: bsd[3], ...checksumFile(bsd[2], escaped)};
+      if (bsd && !(bsd[1] && /^[0-9a-f]{8,}$/i.test(bsd[1]))) {
+        return {tag: bsd[1], content: bsd[3], ...checksumFile(bsd[2], escaped)};
+      }
       // POSIX cksum 的十进制校验和、大小和可选文件名即使恰好都是十六进制字符，也不能按本工具的摘要比对。
       const posix = allowPosix && !escaped && text.match(/^(0|[1-9]\d{0,9}) (?:0|[1-9]\d*)(?: ([\s\S]*))?$/);
       if (posix && Number(posix[1]) <= 0xffffffff) {
         return {tag: 'POSIX cksum', content: posix[1], ...(posix[2] ? checksumFile(posix[2]) : {})};
       }
-      // 算法名后面可以带冒号再接摘要和文件名，如 `SHA256: 摘要  文件`。
-      const prefixed = text.match(/^([a-z][\w/-]*)(?:[:：][ \t]*|[ \t]+)([\s\S]*)$/i);
-      const tag = prefixed && (/sum$/i.test(prefixed[1]) || findAlgorithmNames(prefixed[1]).length ||
-        findAlgorithmNames(prefixed[1], UNSUPPORTED_PATTERN).length) ? prefixed[1] : undefined;
+      // 算法名后面可以带冒号或等号再接摘要和文件名，如 `SHA256: 摘要  文件`、`--sha256 摘要  文件`。
+      const prefixed = text.match(/^((?:--)?[a-z][\w/-]*)(?:[ \t]*[:=：][ \t]*|[ \t]+)([\s\S]+)$/i);
+      const label = prefixed && prefixed[1].replace(/^--/, '');
+      const tag = label && (/sum$/i.test(label) || NEUTRAL_LABEL.test(label) ||
+        findAlgorithmNames(label).length || findAlgorithmNames(label, UNSUPPORTED_PATTERN).length) ? prefixed[1] : undefined;
       const payload = tag ? prefixed[2] : text;
       const looksLikeHex = value => /^(?:0x)?[0-9a-f]+$/i.test(normalizeDigest(value));
       const looksLikeDigest = value => looksLikeHex(value) || (tag && /^[A-Za-z0-9+/_-]+=*$/.test(value));
       const sum = payload.match(/^(\S+)( [ *])([\s\S]+)$/);
-      if (sum && looksLikeDigest(sum[1])) {
+      if (sum && looksLikeDigest(sum[1]) && (sum[2] === ' *' || /\S/.test(sum[3]))) {
         // 优先使用 GNU 的固定标记；只在整行像分组摘要时才考虑合并短的前导组。
         // 完整的短摘要之后只有一个十六进制词时，那个词仍可能是 GNU 文件名。
         const joined = !escaped && sum[2] === '  ' && sum[1].length <= 16 && hexValue(normalizeDigest(payload));
@@ -2571,9 +2576,20 @@
           return {tag, content: sum[1], ...checksumFile(name, escaped)};
         }
       }
+      const isPathLike = name => /[./\\]/.test(name) && !/^[./\\]+[ \t]/.test(name);
+      const isSingleName = name => {
+        const token = name.replace(/[ \t]+$/, '');
+        // 不猜无结构的多词注释，也不把连续十六进制组解释成文件名。
+        return /^[^\s*:=]+$/.test(token) && !hexValue(normalizeDigest(token));
+      };
+      const isValidDigest = value => {
+        const normalized = normalizeDigest(value);
+        return tag ? Boolean(labelledField(tag, normalized).hex) : HASH_LENGTHS.has(hexValue(normalized).length);
+      };
       // 首个双字符分隔符之后是文件名；不要把文件名开头的十六进制词吞进摘要。带算法标签时分组摘要在标签之后。
       const grouped = payload.match(/^([0-9a-fx:：,，_\t \-]*?[0-9a-f])[ \t]{2}([\s\S]+)$/i);
-      if (!escaped && grouped && /^[0-9a-f]{2,16}[ \t:：,，_\-]/i.test(grouped[1]) && /[./\\]/.test(grouped[2])) {
+      if (!escaped && grouped && /^[0-9a-f]{2,16}[ \t:：,，_\-]/i.test(grouped[1]) &&
+        (isPathLike(grouped[2]) || (isSingleName(grouped[2]) && isValidDigest(grouped[1])))) {
         const hex = hexValue(grouped[1]);
         const groups = grouped[1].trim().split(/[\t :：,，_\-]+/);
         if (hex && (HASH_LENGTHS.has(hex.length) || groups.length > 2)) return {tag, content: grouped[1], ...checksumFile(grouped[2])};
@@ -2583,11 +2599,23 @@
       const spaced = payload.match(/^(\S+)[ \t]+(\S[\s\S]*)$/);
       if (spaced && looksLikeDigest(spaced[1])) {
         const [, value, name] = spaced;
-        const pathLike = /[./\\]/.test(name) && !/^[./\\]+[ \t]/.test(name);
-        const token = name.replace(/[ \t]+$/, '');
-        // 不猜无结构的多词注释，也不把连续十六进制组解释成文件名。
-        const singleName = /^[^\s*:=]+$/.test(token) && !hexValue(normalizeDigest(token));
-        if (pathLike || (singleName && (tag ? labelledField(tag, normalizeDigest(value)).hex : HASH_LENGTHS.has(hexValue(normalizeDigest(value)).length)))) {
+        if (value.length <= 16 && /^[0-9a-f]{2,16}[ \t]/i.test(name) && !hexValue(normalizeDigest(name))) {
+          let hex = hexValue(normalizeDigest(value));
+          let pos = value.length;
+          while (pos < payload.length && hex.length < 128) {
+            const next = payload.slice(pos).match(/^([ \t]+)([0-9a-f]{2,16})(?=[ \t]|$)/i);
+            if (!next) break;
+            pos += next[0].length;
+            hex += next[2].toLowerCase();
+            if (isValidDigest(hex)) {
+              const tail = payload.slice(pos).match(/^[ \t]+(\S[\s\S]*)$/);
+              if (tail && (isPathLike(tail[1]) || isSingleName(tail[1]))) {
+                return {tag, content: payload.slice(0, pos), ...checksumFile(tail[1])};
+              }
+            }
+          }
+        }
+        if (isPathLike(name) || (isSingleName(name) && isValidDigest(value))) {
           return {tag, content: value, ...checksumFile(name)};
         }
       }

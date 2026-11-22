@@ -127,6 +127,9 @@ test('excel.pairBlock: 配对不交叉，A / B 两侧的行序都保持原有顺
   const A = [['a', 'b', 'c'], ['x', 'y', 'z']], B = [['x', 'y', 'q'], ['a', 'b', 'd']];
   const out = excel.pairBlock([0, 1], [0, 1], null, null, A, B);
   assert.deepEqual(Array.from(out.filter(e => e.bi != null), e => e.bi), [0, 1]);
+  // 按行排序后原始行号可能逆序，知名度打平时仍按当前行序逐一配对而非按原始行号交叉丢弃
+  const sorted = excel.pairBlock([1, 0], [0, 1], null, null, [['k', 'b', '1'], ['k', 'a', '1']], [['k', 'c', '1'], ['k', 'd', '1']]);
+  assert.deepEqual(Array.from(sorted, e => [e.type, e.ai, e.bi]), [['chg', 1, 0], ['chg', 0, 1]]);
   for (let it = 0; it < 1500; it++) {
     const na = rnd(12), nb = rnd(12), mk = n => Array.from({ length: n }, () => Array.from({ length: 3 }, () => String(rnd(3))));
     const ca = mk(na), cb = mk(nb), da = ca.map((_, i) => i), db = cb.map((_, i) => i);
@@ -328,6 +331,10 @@ test('makeNorm: 忽略规则与正文使用相同的引号 / 小写规范化', (
   assert.equal(plain.nDel + plain.nIns, 0);
   const diff = text.computeDiff('Foo bar', 'baz', { rules: ['Foo '], lower: true });
   assert.equal(diff.nDel + diff.nIns, 2);
+  // 开启按行排序时，按规范化后的键排序而非被前导空白、弯引号或忽略词打乱行序
+  assert.equal(text.computeDiff('  banana\napple', 'apple\nbanana', { sort: true, hideWs: true }).nDel, 0);
+  assert.equal(text.computeDiff('\u201ca\u201d\n"b"', '"a"\n"b"', { sort: true, igQuotes: true }).nDel, 0);
+  assert.equal(text.computeDiff('TAG z\na', 'z\na', { sort: true, rules: ['TAG '] }).nDel, 0);
 });
 
 test('excel.normalize: 只规范化真实存在的日期，非法月末和非闰年不能产生伪相等', () => {
@@ -826,6 +833,7 @@ test('文本语法着色把未闭合的跨行注释或三引号字符串持续�
   for (const [lang, open, close, kind] of [
     ['js', '/*', '*/', 'c'], ['css', '/*', '*/', 'c'], ['sql', '/*', '*/', 'c'],
     ['xml', '<!--', '-->', 'c'], ['py', '"""', '"""', 's'],
+    ['js', '`', '`', 's'], ['sql', "'", "'", 's'],
   ]) {
     const prefix = '  ', closed = open + '\ncomment\n' + close, rest = ' ' + open + '\ncontinued\n';
     const cls = synClasses(prefix + closed + rest, lang);
@@ -923,6 +931,7 @@ test('excel.compare: 新增或删除列含数据时，对应行不能被隐藏�
       assert.deepEqual(Array.from(result.rows, r => r.hasColData), [true, false, true]);
       assert.equal(result.stats.rowsChg, 0); // 新列有独立统计，不计入共有列的修改数
       assert.equal(result.rows[0].cells[1].st, status);
+      assert.equal(result.rows[1].cells[1].st, 'eq');
       assert.equal(result.rows[2].cells[1].st, status);
       assert.ok(result.colChanged.has(1));
       const nodes = { stats: { innerHTML: '' }, modeSeg: { querySelectorAll: () => [] }, valSeg: { querySelectorAll: () => [] }, gridWrap: { dataset: {}, querySelectorAll: () => [] } };
@@ -930,6 +939,7 @@ test('excel.compare: 新增或删除列含数据时，对应行不能被隐藏�
       vm.createContext(ctx);
       vm.runInContext(`const RES=result,opts=options,focusIdx=-1,expanded=new Set(),t=k=>k,esc=String,$=id=>nodes[id];${between(script('excel-compare.html'), 'function renderCell', 'function goChange')}render()`, ctx);
       assert.match(nodes.gridWrap.innerHTML, /also new/);
+      assert.match(nodes.gridWrap.innerHTML, /<td class="colx"><\/td>/);
       assert.doesNotMatch(nodes.gridWrap.innerHTML, /class="collapsed"/);
       assert.match(nodes.gridWrap.innerHTML, /<th[^>]+id="focus-0"/);
       assert.equal(nodes.gridWrap.dataset.changes, 3); // 列标题与两行数据均可定位。
@@ -1124,6 +1134,8 @@ test('CSV：多行字段内部的分隔符不会抢走真实分隔符', () => {
     const notes = Array.from({ length: 8 }, (_, i) => `label${i}${other}detail`).join('\n');
     assert.deepEqual(values(`ID${d}Notes\n1${d}"${notes}"\n2${d}end`), [['ID', 'Notes'], ['1', notes], ['2', 'end']]);
   }
+  // 错误候选分隔符在同一行里既命中局部引号又产生语法错误时，不能算作合法的引号证据
+  assert.deepEqual(values('id;spec\n1;a,"b","c"d\n2;x,"y","z"w'), [['id', 'spec'], ['1', 'a,"b","c"d'], ['2', 'x,"y","z"w']]);
   assert.throws(() => values('a,"b"junk\nc,d', ','), /badCsvQuotes/);
 });
 
@@ -1358,9 +1370,79 @@ test('Excel 行内高亮：整段大小写转换支持词尾西格玛和多码�
         assert.equal(segs.filter(s=>s.t===1).map(s=>s.a).join(''), 'a');
         assert.equal(segs.filter(s=>s.t===2).map(s=>s.b).join(''), 'b');
       }
-      const partial = excel.inlineDiff('İ x','i x');
-      assert.equal(partial.map(s=>s.a).join(''), 'İ x');
-      assert.equal(partial.filter(s=>s.t===1).map(s=>s.a).join(''), 'İ');
+      for (const [l, r, dl, il] of [['İ x', 'i x', 'İ', 'i'], ['i x', 'İ x', 'i', 'İ']]) {
+        const partial = excel.inlineDiff(l, r);
+        assert.equal(partial.map(s => s.a).join(''), l);
+        assert.equal(partial.map(s => s.b).join(''), r);
+        assert.equal(partial.filter(s => s.t === 1).map(s => s.a).join(''), dl);
+        assert.equal(partial.filter(s => s.t === 2).map(s => s.b).join(''), il);
+      }
     }
   } finally { Object.assign(excel.opts, old); }
+});
+
+test('Excel 切换对比模式或显示模式时，即使尚未对比也同步更新按钮的 aria-pressed 状态', () => {
+  const s = script('excel-compare.html');
+  const code = between(s, "$('modeSeg').onclick=", '/* ===================== export');
+  const mkBtns = (attr, vals) => vals.map(v => {
+    const b = { dataset: { [attr]: v }, attrs: { 'aria-pressed': String(v === vals[0]) }, setAttribute(k, val) { this.attrs[k] = val; }, closest() { return b; } };
+    return b;
+  });
+  const modeBtns = mkBtns('mode', ['table', 'rows']);
+  const valBtns = mkBtns('val', ['standard', 'formulas']);
+  const nodes = {
+    modeSeg: { querySelectorAll: () => modeBtns },
+    valSeg: { querySelectorAll: () => valBtns },
+    panel: { classList: { contains: () => false } },
+    panelClose: {},
+    toolsBtn: {},
+  };
+  const ctx = {
+    opts: { mode: 'table', val: 'standard' },
+    WB: { A: null, B: null },
+    RES: null,
+    saveOpts() {},
+    renderDetails() {},
+    run() {},
+    $: id => nodes[id],
+    document: { querySelectorAll: () => [] },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  nodes.modeSeg.onclick({ target: modeBtns[1] });
+  assert.equal(ctx.opts.mode, 'rows');
+  assert.equal(modeBtns[0].attrs['aria-pressed'], 'false');
+  assert.equal(modeBtns[1].attrs['aria-pressed'], 'true');
+  nodes.valSeg.onclick({ target: valBtns[1] });
+  assert.equal(ctx.opts.val, 'formulas');
+  assert.equal(valBtns[0].attrs['aria-pressed'], 'false');
+  assert.equal(valBtns[1].attrs['aria-pressed'], 'true');
+});
+
+test('image.invertAlign 与 maybePromptAlign: 零角度求逆不产生负零，比较失败时不覆盖错误提示', async () => {
+  const zeroInv = img.invertAlign({ dx: 0, dy: 0, rot: 0, scale: 1, fh: false, fv: false }, { w: 100, h: 80 }, { w: 100, h: 80 });
+  assert.ok(Object.is(zeroInv.rot, 0));
+
+  const s = script('image-compare.html');
+  const code = between(s, 'function alignNotice', 'function showPrompt');
+  for (const ok of [false, true]) {
+    let onGo = null;
+    const notices = [];
+    const ctx = {
+      S: { A: { w: 100, h: 80, c: {} }, B: { w: 120, h: 80, c: {} }, align: null },
+      alignJob: 0,
+      t: k => k,
+      notice: m => notices.push(m),
+      showPrompt: (_ti, _ms, _sk, _go, fn) => { onGo = fn; },
+      autoAlign: async () => ({ dx: 1, dy: 2, rot: 0, scale: 1, fh: false, fv: false, conf: 0.9 }),
+      compare: () => (notices.length ? ok : true),
+    };
+    vm.createContext(ctx);
+    vm.runInContext(code, ctx);
+    let call = 0;
+    ctx.compare = () => (++call === 1 ? true : ok);
+    ctx.maybePromptAlign();
+    await onGo();
+    assert.equal(notices.length, ok ? 1 : 0);
+  }
 });

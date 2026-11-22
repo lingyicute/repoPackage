@@ -312,7 +312,7 @@ function maybePromptAlign(){
   showPrompt(t('mismatchTitle'),t('mismatchMsg'),t('skip'),t('autoAlignGo'),async()=>{
     if(!compare())return;const job=++alignJob,current=()=>job===alignJob;
     try{const r=await autoAlign(S.A.c,S.B.c,{rot:true,scale:true,active:current});if(!current())return;
-      if(r){S.align=r;compare();alignNotice(r)}else notice(t('alignFail'));
+      if(r){S.align=r;if(compare())alignNotice(r)}else notice(t('alignFail'));
     }catch(e){if(current()){console.error(e);notice(t('alignFail'))}}
   },()=>compare());
 }
@@ -322,7 +322,7 @@ $('findBtn').onclick=()=>{if(!S.A||!S.B)return notice(t('needTwo'));compare();$(
 // drawAligned 的线性部分是 L = s·R(θ)·F（F 为翻转对角阵），L⁻¹ = (1/s)·F·R(−θ)：
 // 无翻转或同时水平 + 垂直翻转（F = −I，与旋转可交换）时为 R(−θ)·F；只有一个方向翻转时 F·R(−θ) = R(θ)·F，旋转角保持不变。
 function invertAlign(al,a,b){const th=(al.rot%360)*Math.PI/180,c=Math.cos(th),s=Math.sin(th),k=1/al.scale,vx=a.w/2-b.w/2-al.dx,vy=a.h/2-b.h/2-al.dy,ux=k*(c*vx+s*vy)*(al.fh?-1:1),uy=k*(-s*vx+c*vy)*(al.fv?-1:1),one=!!al.fh!==!!al.fv;
-  return {dx:b.w/2+ux-a.w/2,dy:b.h/2+uy-a.h/2,rot:one?al.rot:-al.rot,scale:k,fh:!!al.fh,fv:!!al.fv}}
+  return {dx:b.w/2+ux-a.w/2,dy:b.h/2+uy-a.h/2,rot:one?al.rot:-al.rot||0,scale:k,fh:!!al.fh,fv:!!al.fv}}
 $('swapBtn').onclick=()=>{if(!S.A||!S.B)return;const a=S.A,b=S.B,al=invertAlign(S.align,a,b);try{comparisonFrame(b,a,al)}catch(e){notice(t('alignOutOfRange'));return}cancelLoads();setImage('A',b.c,b.name,true);setImage('B',a.c,a.name,true);S.align=al;compare()};
 $('resetBtn').onclick=()=>{cancelLoads();clearComparison();S.align=defAlign();S.passes=[];S.seeded=false;S.regions=[];S.active=-1;if(S.A&&S.B)compare()};
 
@@ -499,7 +499,7 @@ function scan(keepPasses){clearTimeout(scanTimer);scanTimer=0;const W=S.W,H=S.H;
   }
   const keep=dedupeRegions(all);
   keep.sort((a,b)=>(b.w*b.h)-(a.w*a.h)||a.y-b.y||a.x-b.x);S.regions=keep.slice(0,500);S.truncated=truncated||keep.length>500;S.active=-1;if(keepPasses!==true)renderPasses();renderList();drawOverlay()}
-function renderPasses(){const el=$('passes');$('addPass').disabled=S.passes.length>=MAX_PASSES;/* 重绘会把所有检测卡片换掉：先记下焦点在第几张卡片的哪个控件上，绘完还回去。否则用键盘切换预设或启停检测时，每操作一次焦点就丢一次 */const ae=document.activeElement,fi=el.contains(ae)?[...el.children].indexOf(ae.closest('.pass')):-1,fq=fi<0?'':ae.matches('select')?'select':ae.matches('[data-en]')?'[data-en]':'';el.innerHTML='';S.passes.forEach((p,i)=>{const d=document.createElement('div');d.className='pass';const o=p.options;
+function renderPasses(){const el=$('passes');$('addPass').disabled=S.passes.length>=MAX_PASSES;/* 重绘会把所有检测卡片换掉：先记下焦点在第几张卡片的哪个控件上，绘完还回去。否则用键盘切换预设或启停检测时，每操作一次焦点就丢一次 */const ae=document.activeElement,fi=el.contains(ae)?[...el.children].indexOf(ae.closest('.pass')):-1,fq=fi<0?'':ae.dataset?.k?`[data-k="${ae.dataset.k}"]`:ae.matches('[data-en]')?'[data-en]':'';el.innerHTML='';S.passes.forEach((p,i)=>{const d=document.createElement('div');d.className='pass';const o=p.options;
     d.innerHTML=`<div class="ph"><span>${t('scan',{n:i+1})}</span><span><button class="btn sm ghost" data-en aria-pressed="${p.enabled}" title="${t('toggleScan')}">${p.enabled?'●':'○'}</button><button class="btn sm ghost" data-rm title="${t('removeScan')}">✕</button></span></div>
     <div class="row"><span>${t('preset')}</span><select data-k="preset" aria-label="${t('preset')}"><option value="__custom__" ${p.linked?'':'selected'}>${t('custom')}</option>${Object.keys(PRESETS).map(k=>`<option value="${k}" ${p.linked&&p.presetId===k?'selected':''}>${t({'tiny-specks':'tinySpecks','words-sentences':'wordsSentences','graphics-large-blocks':'graphics'}[k])}</option>`).join('')}</select></div>
     ${[['diffThreshold',0,255,1,t('diffThreshold')],['groupingRadius',0,30,1,t('grouping')],['minBlobArea',1,2000,1,t('minBlob')],['maxBlobAreaFraction',1,100,1,t('maxRegion')]].map(([k,mn,mx,st,lbl])=>`<div class="row"><span title="${k}">${lbl}</span><input type="range" data-k="${k}" aria-label="${lbl}" min="${mn}" max="${mx}" step="${st}" value="${k==='maxBlobAreaFraction'?Math.round(o[k]*100):o[k]}"><span class="val">${k==='maxBlobAreaFraction'?Math.round(o[k]*100)+'%':o[k]}</span></div>`).join('')}`;
@@ -628,7 +628,7 @@ function alignWithOpenCV(A,B){const cv=window.cv,del=[];const keep=x=>(del.push(
 let expFmt='png',expDiff='subtract';
 const stem=(n,d)=>{n=n||d;return n.replace(/\.[^.]+$/,'')||n};
 const baseName=()=>(stem(S.A?.name,'original')+'-vs-'+stem(S.B?.name,'changed')).replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100).replace(/[. ]+$/,'')||'image-comparison';
-$('exportBtn').onclick=()=>$('exportModal').showModal();$('exportCancel').onclick=()=>$('exportModal').close();
+$('exportBtn').onclick=()=>{if(scanTimer)scan(true);$('exportModal').showModal()};$('exportCancel').onclick=()=>$('exportModal').close();
 $('fmtChoices').onclick=e=>{const b=e.target.closest('.choice');if(!b)return;expFmt=b.dataset.fmt;$('fmtChoices').querySelectorAll('.choice').forEach(c=>c.setAttribute('aria-pressed',String(c===b)));$('pngOptions').classList.toggle('hidden',expFmt!=='png');$('pdfOptions').classList.toggle('hidden',expFmt!=='pdf')};
 $('expDiffStyle').onclick=e=>{const b=e.target.closest('button');if(!b)return;expDiff=b.dataset.s;$('expDiffStyle').querySelectorAll('button').forEach(c=>c.setAttribute('aria-pressed',String(c===b)))};
 function download(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1500)}

@@ -425,19 +425,19 @@ function parseSheetRows(body,sst,dateStyles,d1904,compat,richText,limit=MAX_IMPO
 }
 // 检测和实际解析共用同一个引号状态机；是否处于字段开头取决于当前候选分隔符。
 function scanCsv(text,delim,collect,maxRows=Infinity,limit=MAX_IMPORTED_CELLS){
-  const rows=[],freq=new Map();let row=[],cell='',fields=1,n=0,hit=0,top=0,errors=0,state=0,stored=0,quoted=false,quoteEvidence=false;
+  const rows=[],freq=new Map();let row=[],cell='',fields=1,n=0,hit=0,top=0,errors=0,rowErr=false,state=0,stored=0,quoted=false,quoteEvidence=false;
   const pushCell=()=>{if(state===3)quoted=true;if(collect){if(++stored>limit||row.length>=16384)throw new Error(t('importTooLarge'));row.push(cell);cell=''}state=0};
-  const endRow=()=>{pushCell();if(collect){rows.push(row);row=[]}if(fields>1){quoteEvidence||=quoted;hit++;const count=(freq.get(fields)||0)+1;freq.set(fields,count);top=Math.max(top,count)}fields=1;quoted=false;n++};
+  const endRow=()=>{pushCell();if(collect){rows.push(row);row=[]}if(fields>1){if(!rowErr)quoteEvidence||=quoted;hit++;const count=(freq.get(fields)||0)+1;freq.set(fields,count);top=Math.max(top,count)}fields=1;quoted=false;rowErr=false;n++};
   for(let i=0;i<text.length&&n<maxRows;i++){
     const ch=text[i];
     if(state===2){if(ch==='"'&&text[i+1]==='"'){if(collect)cell+='"';i++}else if(ch==='"')state=3;else if(collect)cell+=ch;continue}
     if(ch===delim){pushCell();fields++;continue}
     if(ch==='\r'||ch==='\n'){endRow();if(ch==='\r'&&text[i+1]==='\n')i++;continue}
     if(state===0&&ch==='"'){state=2;continue}
-    if(state===3){if(collect)throw new Error(t('badCsvQuotes'));errors++}
+    if(state===3){if(collect)throw new Error(t('badCsvQuotes'));errors++;rowErr=true}
     state=1;if(collect)cell+=ch;
   }
-  if(state===2){if(collect)throw new Error(t('badCsvQuotes'));errors++}
+  if(state===2){if(collect)throw new Error(t('badCsvQuotes'));errors++;rowErr=true}
   if(n<maxRows&&(fields>1||state!==0))endRow();
   return {rows,hit,top,errors,quoteEvidence};
 }
@@ -495,8 +495,9 @@ function projectedCaseDiff(l,r,ws,big){
   let ops;if(A.length+B.length>INLINE_MAX_TOKENS){let p=0,q=0;while(p<A.length&&p<B.length&&na[p]===nb[p])p++;while(q<A.length-p&&q<B.length-p&&na[A.length-1-q]===nb[B.length-1-q])q++;
     ops=[];for(let i=0;i<p;i++)ops.push([EQ,i,i]);for(let i=p;i<A.length-q;i++)ops.push([DEL,i,-1]);for(let i=p;i<B.length-q;i++)ops.push([INS,-1,i]);for(let i=0;i<q;i++)ops.push([EQ,A.length-q+i,B.length-q+i]);
   }else ops=diffSeq(na,nb);
-  let ap=0,bp=0;const mark=(p,start,token)=>{if(ws&&!token.trim())return;for(let i=start;i<start+token.length;i++)p.marks[p.map[i]]=1};
-  for(const [op,i,j] of ops){if(op!==INS){if(op===DEL)mark(a,ap,A[i]);ap+=A[i].length}if(op!==DEL){if(op===INS)mark(b,bp,B[j]);bp+=B[j].length}}
+  const eqs=[];let ap=0,bp=0;const mark=(p,start,token)=>{if(ws&&!token.trim())return;for(let i=start;i<start+token.length;i++)p.marks[p.map[i]]=1};
+  for(const [op,i,j] of ops){if(op===EQ&&(!ws||A[i].trim()))eqs.push([ap,bp,A[i].length]);if(op!==INS){if(op===DEL)mark(a,ap,A[i]);ap+=A[i].length}if(op!==DEL){if(op===INS)mark(b,bp,B[j]);bp+=B[j].length}}
+  for(let pass=0,chg=true;chg&&pass<4;pass++){chg=false;for(const [x,y,n] of eqs)for(let k=0;k<n;k++){const ai=a.map[x+k],bi=b.map[y+k];if(a.marks[ai]!==b.marks[bi]){a.marks[ai]=b.marks[bi]=1;chg=true}}}
   const out=[],add=(t,x,y)=>{const last=out[out.length-1];if(last&&last.t===t){last.a+=x;last.b+=y}else out.push({t,a:x,b:y})};
   for(const [p,side] of [[a,'a'],[b,'b']])for(let i=0;i<p.raw.length;){const ch=String.fromCodePoint(p.raw.codePointAt(i)),t=p.marks[i]?(side==='a'?DEL:INS):EQ;add(t,side==='a'?ch:'',side==='b'?ch:'');i+=ch.length}
   return out;
@@ -534,15 +535,15 @@ function pairBlock(delIdx,insIdx,rowKeyA,rowKeyB,cellsA,cellsB){// returns order
   const sim=(i,j)=>{const a=cellsA[i],b=cellsB[j];const n=Math.max(a.length,b.length);if(!n)return 1;let eq=0,nonEmpty=0;for(let k=0;k<n;k++){const x=a[k]||'',y=b[k]||'';if(x||y)nonEmpty++;if(x===y&&(x||y))eq++}return nonEmpty?eq/nonEmpty:1};
   // 改动块很大时不做全量相似度配对，退化为按位置配对；但位置相同的两行仍要足够相似才算“修改”，否则分别记为删除与新增
   if(delIdx.length*insIdx.length>2500){const n=Math.max(delIdx.length,insIdx.length);for(let k=0;k<n;k++){if(k<delIdx.length&&k<insIdx.length){if(sim(delIdx[k],insIdx[k])>=.34)out.push({type:'chg',ai:delIdx[k],bi:insIdx[k]});else{out.push({type:'del',ai:delIdx[k]});out.push({type:'ins',bi:insIdx[k]})}}else if(k<delIdx.length)out.push({type:'del',ai:delIdx[k]});else out.push({type:'ins',bi:insIdx[k]})}return out}
-  const cand=[];for(const i of delIdx)for(const j of insIdx){const s=sim(i,j);if(s>=.34)cand.push([s,i,j])}cand.sort((p,q)=>q[0]-p[0]||p[1]-q[1]||p[2]-q[2]);
-  const usedA=new Set(),usedB=new Set(),pairs=new Map();for(const [s,i,j] of cand){if(usedA.has(i)||usedB.has(j))continue;usedA.add(i);usedB.add(j);pairs.set(i,j)}
+  const cand=[];for(let x=0;x<delIdx.length;x++)for(let y=0;y<insIdx.length;y++){const s=sim(delIdx[x],insIdx[y]);if(s>=.34)cand.push([s,x,y])}cand.sort((p,q)=>q[0]-p[0]||p[1]-q[1]||p[2]-q[2]);
+  const usedA=new Set(),usedB=new Set(),pairs=new Map();for(const [s,x,y] of cand){if(usedA.has(x)||usedB.has(y))continue;usedA.add(x);usedB.add(y);pairs.set(x,y)}
   // 只保留 B 侧顺序与 A 侧一致的最长配对子序列：交叉的配对会让 B 行的显示顺序错乱
-  {const pos=new Map(insIdx.map((v,p)=>[v,p])),ps=delIdx.filter(i=>pairs.has(i)),js=ps.map(i=>pos.get(pairs.get(i))),tails=[],tIdx=[],prev=[];
+  {const ps=[...pairs.keys()].sort((a,b)=>a-b),js=ps.map(x=>pairs.get(x)),tails=[],tIdx=[],prev=[];
     for(let k=0;k<js.length;k++){let lo=0,hi=tails.length;while(lo<hi){const m=(lo+hi)>>1;if(tails[m]<js[k])lo=m+1;else hi=m}tails[lo]=js[k];tIdx[lo]=k;prev[k]=lo?tIdx[lo-1]:-1}
     const keepK=new Set();for(let k=tIdx[tails.length-1];k!=null&&k>=0;k=prev[k])keepK.add(k);
-    ps.forEach((i,k)=>{if(!keepK.has(k)){usedB.delete(pairs.get(i));pairs.delete(i)}})}
-  let bp=0;const insSorted=insIdx.slice(),posB=new Map(insIdx.map((v,p)=>[v,p]));for(const i of delIdx){if(pairs.has(i)){const j=pairs.get(i);while(bp<insSorted.length&&posB.get(insSorted[bp])<posB.get(j)){if(!usedB.has(insSorted[bp]))out.push({type:'ins',bi:insSorted[bp]});bp++}out.push({type:'chg',ai:i,bi:j});if(bp<insSorted.length&&insSorted[bp]===j)bp++}else out.push({type:'del',ai:i})}
-  while(bp<insSorted.length){if(!usedB.has(insSorted[bp]))out.push({type:'ins',bi:insSorted[bp]});bp++}return out}
+    ps.forEach((x,k)=>{if(!keepK.has(k)){usedB.delete(pairs.get(x));pairs.delete(x)}})}
+  let bp=0;for(let x=0;x<delIdx.length;x++){if(pairs.has(x)){const y=pairs.get(x);while(bp<y){if(!usedB.has(bp))out.push({type:'ins',bi:insIdx[bp]});bp++}out.push({type:'chg',ai:delIdx[x],bi:insIdx[y]});bp=y+1}else out.push({type:'del',ai:delIdx[x]})}
+  while(bp<insIdx.length){if(!usedB.has(bp))out.push({type:'ins',bi:insIdx[bp]});bp++}return out}
 const MAX_COMPARE_CELLS=500000;
 function compare(gA,gB,hA,hB){
   const rowsA=trimRows(gA.rows),rowsB=trimRows(gB.rows);let columns=[];let dataA,dataB,startA,startB;
@@ -582,7 +583,7 @@ function compare(gA,gB,hA,hB){
   columns.forEach((c,k)=>{if(c.hdrChg){colChanged.add(k);stats.cells++}});
   const result=outRows.map(e=>{const r={type:e.type,ai:e.ai,bi:e.bi,na:e.ai!=null?e.ai+startA:null,nb:e.bi!=null?e.bi+startB:null,cells:[]};let rowChg=false;
     let hasColData=false;for(let k=0;k<columns.length;k++){const c=columns[k];const a=e.ai!=null?cellsA[e.ai][k]:'',b=e.bi!=null?cellsB[e.bi][k]:'';let st='eq',segs=null;
-      if(e.type==='del'||e.type==='ins'){st=e.type==='del'?'rdel':'rins';if(a||b)colChanged.add(k)}/* 整行新增 / 删除的内容也属于改动：所在列不能被“隐藏未修改的列”藏起来 */else if(c.ia<0||c.ib<0){st=c.ia<0?'cins':'cdel';if(a||b){hasColData=true;colChanged.add(k)}}/* 新增 / 删除列的内容单独记下，不增加共有列的行 / 单元格修改数，但不能在“隐藏未修改的行”中折叠 */else{const na=normA[e.ai][k],nb=normB[e.bi][k];if(na!==nb){st=!a?'cins':!b?'cdel':'chg';segs=st==='chg'?inlineDiff(a,b):null;stats.cells++;rowChg=true;colChanged.add(k)}}
+      if(e.type==='del'||e.type==='ins'){st=e.type==='del'?'rdel':'rins';if(a||b)colChanged.add(k)}/* 整行新增 / 删除的内容也属于改动：所在列不能被“隐藏未修改的列”藏起来 */else if(c.ia<0||c.ib<0){if(a||b){st=c.ia<0?'cins':'cdel';hasColData=true;colChanged.add(k)}}/* 新增 / 删除列的内容单独记下，不增加共有列的行 / 单元格修改数，但不能在“隐藏未修改的行”中折叠 */else{const na=normA[e.ai][k],nb=normB[e.bi][k];if(na!==nb){st=!a?'cins':!b?'cdel':'chg';segs=st==='chg'?inlineDiff(a,b):null;stats.cells++;rowChg=true;colChanged.add(k)}}
       r.cells.push({a,b,st,segs})}
     r.hasColData=hasColData;if(e.type==='del')stats.rowsDel++;else if(e.type==='ins')stats.rowsIns++;else if(e.type==='chg'){if(!rowChg)r.type='eq';else stats.rowsChg++}return r});
   for(const r of result)if(r.type==='chg')r.cells.forEach((c,k)=>{if(c.st!=='eq')colChanged.add(k)});
@@ -685,8 +686,8 @@ function focusRow(wrap,i){const row=wrap.querySelector('table')?.rows[i];if(!row
 function rowHtml(r,cols,id){return `<tr class="${r.type}" ${id?`id="${id}"`:''}><td class="num a">${r.na??''}</td><td class="num b">${r.nb??''}</td>${cols.map(c=>{const cell=r.cells[c.k];const cls=r.type==='eq'||r.type==='chg'?(cell.st==='chg'?'chg':cell.st==='cdel'?'cdel':cell.st==='cins'?'cins':(c.st==='ins'||c.st==='del')&&!cell.a&&!cell.b?'colx':''):'';return `<td class="${cls}">${renderCell(cell)}</td>`}).join('')}</tr>`}
 function goChange(dir){const n=+$('gridWrap').dataset.changes||0;if(!n)return;focusIdx=focusIdx<0&&dir<0?n-1:((focusIdx+dir)%n+n)%n;$('gridWrap').querySelectorAll('.focus').forEach(e=>e.classList.remove('focus'));const el=$('focus-'+focusIdx);if(el){el.classList.add('focus');el.scrollIntoView({behavior:'smooth',block:'center'})}}
 $('prevBtn').onclick=()=>goChange(-1);$('nextBtn').onclick=()=>goChange(1);
-$('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.mode=b.dataset.mode;saveOpts();for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)run()};
-$('valSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.val=b.dataset.val;saveOpts();for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)run()};
+$('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.mode=b.dataset.mode;saveOpts();syncUI();for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)run()};
+$('valSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.val=b.dataset.val;saveOpts();syncUI();for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)run()};
 function setPanel(open){const panel=$('panel');panel.inert=!open;panel.classList.toggle('open',open);$('toolsBtn').setAttribute('aria-expanded',String(open));$(open?'panelClose':'toolsBtn').focus()}
 $('toolsBtn').onclick=()=>setPanel(!$('panel').classList.contains('open'));$('panelClose').onclick=()=>setPanel(false);
 document.querySelectorAll('.switch[data-opt]').forEach(sw=>sw.onclick=()=>{const k=sw.dataset.opt;opts[k]=!opts[k];saveOpts();syncUI();if(!RES)return;if(k==='hideRows'){expanded=new Set();render()}else if(k==='hideCols'||k==='showOld')render();else run()});
