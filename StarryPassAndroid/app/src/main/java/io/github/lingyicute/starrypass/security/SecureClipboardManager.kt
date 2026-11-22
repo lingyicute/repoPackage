@@ -36,9 +36,14 @@ class SecureClipboardManager(context: Context) {
     // Changes this manager makes itself are expected to echo through the listener once each.
     private var ownChangesPending = 0
 
-    // Android 10+ hides the clipboard from a background app, but change callbacks still arrive.
-    // They tell us the user copied something else even when the content cannot be read.
+    // Set when a change callback finds the clip unreadable, i.e. someone else cleared it.
+    // Android 10+ delivers change callbacks, like reads, only while this app has focus, so a
+    // replacement made while the app is in the background goes unnoticed.
     private var replacedByOther = false
+
+    // Declared before the listener is registered in init: properties initialise in source order.
+    private val _remainingSeconds = MutableStateFlow(0)
+    val remainingSeconds: StateFlow<Int> = _remainingSeconds.asStateFlow()
 
     private val clipChangedListener = ClipboardManager.OnPrimaryClipChangedListener {
         if (ownChangesPending > 0) {
@@ -64,9 +69,6 @@ class SecureClipboardManager(context: Context) {
     init {
         clipboard.addPrimaryClipChangedListener(clipChangedListener)
     }
-
-    private val _remainingSeconds = MutableStateFlow(0)
-    val remainingSeconds: StateFlow<Int> = _remainingSeconds.asStateFlow()
 
     /**
      * Copies [secret] marked as sensitive (`ClipDescription.EXTRA_IS_SENSITIVE`) so Android 13+
