@@ -75,14 +75,12 @@ html{
   color-scheme:light;                /* 滚动条等原生控件跟随所选主题，而非系统偏好 */
   --bg:#F5F3F8; --bg2:#EDEAF3;
   --surface:#FFFFFF; --surface2:#EAE5F2; --surface3:#E1DAF1;
-  --board:#DED8EE; --cell:#EDE9F6; --cell-hi:#FFFFFF;
+  --board:#DED8EE; --cell:#EDE9F6;
   --text:#1D1A2B; --text2:#655F78; --text3:#948EA8;
   --line:#DFD9EE;
   --accent:hsl(var(--ah) var(--asl) var(--al));
-  --accent-hi:hsl(var(--ah) var(--asl) calc(var(--al) - 6%));
   --accent-on:#FFFFFF;
   --accent-soft:hsl(var(--ah) calc(var(--asl) + 14%) 94%);
-  --accent-softer:hsl(var(--ah) calc(var(--asl) + 10%) 97%);
   --accent-text:hsl(var(--ah) calc(var(--asl) - 4%) 33%);
   --asv:var(--asl);                  /* 装饰性用色随主题取浅/深饱和度 */
   --glow1:hsl(var(--ah) calc(var(--asl) + 10%) 78% / .17);
@@ -101,14 +99,12 @@ html{
   color-scheme:dark;
   --bg:#17131F; --bg2:#100D16;
   --surface:#251F31; --surface2:#2E2740; --surface3:#3A3151;
-  --board:#1F1930; --cell:#2A2340; --cell-hi:#352C4E;
+  --board:#1F1930; --cell:#2A2340;
   --text:#F1EDF9; --text2:#A69EBB; --text3:#7B7395;
   --line:#393051;
   --accent:hsl(var(--ah) var(--as) 72%);
-  --accent-hi:hsl(var(--ah) var(--as) 78%);
   --accent-on:hsl(var(--ah) 50% 13%);
   --accent-soft:hsl(var(--ah) 34% 30%);
-  --accent-softer:hsl(var(--ah) 28% 23%);
   --accent-text:hsl(var(--ah) 72% 82%);
   --asv:var(--as);
   --glow1:hsl(var(--ah) var(--as) 64% / .16);
@@ -202,9 +198,10 @@ header{
 @keyframes popin{from{opacity:0; transform:translateY(-6px)}to{opacity:1; transform:none}}
 .pop-title{font-size:13.5px; font-weight:800; color:var(--text2); margin:0 0 12px 4px}
 .swatches{display:grid; grid-template-columns:repeat(4,1fr); gap:12px}
+/* 每个色块自带 data-accent：这里的 --sw 解析为该配色自己的色块色，而非当前所选配色 */
 .swatch{
   width:52px; height:52px; border-radius:50%; border:0; cursor:pointer; position:relative;
-  background:var(--sw-c); display:grid; place-items:center; padding:0;
+  background:var(--sw); display:grid; place-items:center; padding:0;
   transition:transform .12s;
 }
 .swatch:hover{transform:scale(1.06)}
@@ -347,7 +344,6 @@ header{
 .pill .ck{width:15px; height:15px; display:none; flex:none}
 .pill.on{background:var(--accent-soft); border-color:transparent; color:var(--accent-text)}
 .pill.on .ck{display:block}
-.pill[hidden]{display:none}
 
 /* ---------------- 侧栏 ---------------- */
 .col-side{width:min(100%,648px); margin:22px auto 0; display:flex; flex-direction:column; gap:16px}
@@ -736,7 +732,7 @@ const AI_LINE_CAND = true, AI_KILLER = true, AI_TT_DEPTH = true;
 /* ⑳ VCT（连续威胁搜索，见 vctRoot 处说明）。VCF 的超集：允许攻方造活三，
       因此「三 → 活四 → 五」这类最常见的中盘强制胜也能直接证明，而不是靠深度撞见。 */
 const AI_VCT = true;
-/* ㉑ 
+/* ㉑
    AI_LEAF_S3    叶节点单活三准胜：轮走方持有严格活三、且对方在盘上没有连五点时，
                  「三→活四→五」是可证明的强制胜（与 evalForcedLine 的既有 ⑬ 判据对齐）。
                  要求 AI_OPENTHREE_STRICT 同时开启——非严格活三转不成活四，准胜不成立。
@@ -1180,7 +1176,7 @@ function opponentThreesForced(b, side) {
       if (v === side) cs++; else if (v === opp) co++;
     }
     for (let st = 0; ; st++) {
-      if (cs === 3 && co === 0) return false; // a counter-four, not a loss proof
+      if (cs >= 3 && co === 0) return false; // a five or counter-four, not a loss proof
       if (co === 3 && cs === 0) has3O = 1;
       if (st + 5 >= len) break;
       const vo = b[line[st]], vn = b[line[st + 5]];
@@ -1401,14 +1397,14 @@ function evalBoard(b, ai) {
    语义：攻方每一手必须成五、或成四（在盘上留下 ≥1 个"下一手即连五"的点）；
          防方只有三种抵抗——自己立刻成五、把挡点下成自己的五、挡。
          留下 ≥2 个互异连五点即判胜（挡一漏一）。
-   这里的写法刻意选择"朴素但显然正确"：每个节点都用全局扫描 fivePts() 重算双方威胁，
-   不跨层传递任何增量威胁表。上一版我用了跨层复用的威胁列表，出现过错报（假杀），
-   对棋类引擎来说"误报必胜"比"漏杀"严重得多，所以宁可每层多花 ~100µs。
+   威胁点一律在当前节点现算：pointTierEx 评估候选手时顺带给出该手落下后的全部连五点
+   （THR_BUF），随即在同一节点使用，不跨层传递任何增量威胁表。早期版本跨层复用威胁
+   列表，出现过错报（假杀）——对棋类引擎来说"误报必胜"比"漏杀"严重得多。
    保守性：
      · 只有逐手验证到"成五"才返回胜；任何分支防不住就整条作废；
      · 节点上限 VCF_CAP + 时间闸门，超限立即放弃 → 上层照旧走 α-β，不会因此下错手。
-   攻方候选用 pointTier 过滤（tier ≥ FOUR 才是逼迫手），它顺带填的 THR_BUF 只用于
-   快速判"是否成四"，胜负结论一律由 fivePts 的全盘扫描给出。
+   攻方候选用 pointTierEx 过滤（tier ≥ FOUR 才是逼迫手）。防方的连五点同样逐手跟踪：
+   根节点先确认防方没有连五点，此后防方挡四时造出的反冲四一律作为 forced 交回攻方。
    ============================================================ */
 const VCF_CAP = 900;                           // 每次决策允许的 VCF 节点上限
 const VCF_MAXLEN = { hard: 6, expert: 9 };     // 攻方最多连续冲几手（专家看得更远）
@@ -1419,21 +1415,10 @@ function vcfStopped() {
   if (vcfBudget <= 0 || now() - vcfT0 >= vcfDeadline) { vcfBudget = 0; return true; }
   return false;
 }
-/* p 的全部"下一手即连五"的点（全局扫描，不去重方向，天然去重格子） */
-function fivePts(b, p) {
-  const out = [];
-  const cl = candidateList(b, 1);
-  for (let q = 0; q < cl.length; q++) {
-    const i = cl[q];
-    b[i] = p; const w = makesFive(b, i % N, (i / N) | 0); b[i] = EMPTY;
-    if (w) out.push(i);
-  }
-  return out;
-}
 function makesFiveNow(b, i, p) { b[i] = p; const w = makesFive(b, i % N, (i / N) | 0); b[i] = EMPTY; return w; }
 /* 递归 VCF 的次序化候选：先看直接成五，再优先探索双威胁（OFOUR），
    最后是单威胁（FOUR，内部按伴生威胁 sub = hi*4+mid 降序优先搜冲四活三）。
-   直接复用 pointTierEx 产出的 THR_BUF，省去 vcfAnswer 里每次全盘扫描 fivePts。 */
+   直接复用 pointTierEx 产出的 THR_BUF，vcfAnswer 不必再全盘扫描连五点。 */
 function vcfCandidates(b, atk) {
   const clLen = candidateBuf(b, 2), out = [];
   for (let q = 0; q < clLen; q++) {
@@ -1449,7 +1434,7 @@ function vcfCandidates(b, atk) {
 /* 轮 atk 走（盘上已是当前状态）：返回攻方所需手数，0 = 未发现强制杀
    ⑭ 修复：
      · c.tier === T.FIVE 时攻方当场连五即胜（返回 1）；旧版误将其送入 vcfAnswer，
-       当五连两端被封死时 fivePts(b, atk) 为空，会被误判为 0（杀失败）。
+       当五连两端被封死时盘上已无后续连五点，会被误判为 0（杀失败）。
      · 若防方上一手挡四时顺带形成了自己的反冲四（forced >= 0），atk 本手唯有
        挡住 forced 同时反冲四（反先）一条路可走，无需遍历全盘候选。 */
 function vcfStep(b, atk, maxLen, forced) {
@@ -1477,15 +1462,12 @@ function vcfStep(b, atk, maxLen, forced) {
   }
   return 0;
 }
-/* 攻方刚落子（盘上含其新子），轮到防方：返回攻方还需的手数，0 = 被防住 */
+/* 攻方刚落子（盘上含其新子），轮到防方：返回攻方还需的手数，0 = 被防住。
+   m0/m1/mn = 这一手造出的连五点及其个数（调用方落子前由 pointTierEx 的 THR_BUF 给出）；
+   前提：防方此刻没有连五点（根节点已查，此后每个反冲四都经 forced 交回攻方）。 */
 function vcfAnswer(b, atk, maxLen, m0, m1, mn) {
   if (maxLen <= 0 || vcfStopped()) return 0;
   const def = other(atk);
-  if (mn === undefined) {
-    if (fiveThreatCount(b, def, 1) > 0) return 0;     // 防方随时可成五，这条线不成立
-    const mine = fivePts(b, atk);
-    mn = mine.length; m0 = mine[0]; m1 = mine[1];
-  }
   if (!mn) return 0;
   if (mn >= 2) {
     /* 双威胁：防方任选一个挡；只要有一种挡法能顺手成五，杀就不成立。 */
@@ -1604,43 +1586,11 @@ function vctStopped() {
   if (vctNodes <= 0 || now() - vctT0 >= vctDeadline) { vctNodes = 0; return true; }
   return false;
 }
-/* 独立 stamp：不要和 fiveThreatCount / evalLeaf 共用的 thrMark 互相踩踏 */
-const vctMark = new Int32Array(N * N);
-let vctStamp = 0;
-const VCT_FIVE = new Int32Array(8);
 const VCT_DEF = new Int32Array(64);
 const VCT_MAX_PLY = 32;                       // includes counter-four exchanges, not just threat length
 const VCT_DEF_STACK = new Int32Array(VCT_MAX_PLY * 64); // one frame per attacker turn; never alias frames
 const OT_L = new Int32Array(64), OT_S = new Int32Array(64), OT_K = new Int32Array(64);
 
-/* 收集 side 的全部「下一手即连五」的点，返回个数（至多 cap 个） */
-function vctFives(b, side, out, cap) {
-  if (vctStamp >= 0x7fffffff) { vctMark.fill(0); vctStamp = 0; }
-  const st = ++vctStamp;
-  let n = 0;
-  for (let li = 0; li < LINES.length; li++) {
-    const line = LINES[li], len = line.length;
-    let cs = 0, ce = 0;
-    for (let k = 0; k < 5; k++) { const v = b[line[k]]; if (v === side) cs++; else if (v === EMPTY) ce++; }
-    for (let s2 = 0; ; s2++) {
-      if (cs === 4 && ce === 1) {
-        for (let k = 0; k < 5; k++) {
-          const c = line[s2 + k];
-          if (b[c] === EMPTY) {
-            if (vctMark[c] !== st) { vctMark[c] = st; out[n++] = c; }
-            break;
-          }
-        }
-        if (n >= cap) return n;                // 已够用：cap>=2 时必为必胜，cap==1 时也是"有"
-      }
-      if (s2 + 5 >= len) break;
-      const vo = b[line[s2]], vn = b[line[s2 + 5]];
-      if (vo === side) cs--; else if (vo === EMPTY) ce--;
-      if (vn === side) cs++; else if (vn === EMPTY) ce++;
-    }
-  }
-  return n;
-}
 /* 收集 side 的全部活三（与 openThreeOnLine 判据一致），返回个数 */
 function vctOpenThrees(b, side) {
   let n = 0;
@@ -2358,13 +2308,14 @@ function topKPacked(b, side, k, radius, plyBase) {
   const isB = side === BLACK;
   const C_TOT = isB ? C_SB9 : C_SW9;
   const mShift = isB ? 0 : 8, oShift = isB ? 8 : 0, hShift = isB ? 4 : 12;
-  let m = 0, blkI = -1, blkM = 0, blkS = -Infinity, blkH = 0, worstS = -Infinity, worstI = 1e9;
+  let m = 0, winI = 1e9, blkI = -1, blkM = 0, blkS = -Infinity, blkH = 0, worstS = -Infinity, worstI = 1e9;
   for (let q = 0; q < clLen; q++) {
     const i = buf[q];
     if (b[i]) continue;
     const meta = C_META[i];
     const mm = (meta >> mShift) & 15;
-    if (mm === T.FIVE) { AB_CAND[plyBase] = i | (T.FIVE << 8); return 1; }
+    if (mm === T.FIVE) { if (i < winI) winI = i; continue; }
+    if (winI < 1e9) continue;
     const oo = (meta >> oShift) & 15;
     if (oo === T.FIVE) {
       const sv = C_TOT[i] + HIST[i];
@@ -2383,6 +2334,7 @@ function topKPacked(b, side, k, radius, plyBase) {
       worstS = KS[m - 1]; worstI = KI[m - 1];
     }
   }
+  if (winI < 1e9) { AB_CAND[plyBase] = winI | (T.FIVE << 8); return 1; }
   if (blkI >= 0) { AB_CAND[plyBase] = blkI | (blkM << 8) | (blkH << 12); return 1; }
   for (let j = 0; j < m; j++) {
     AB_CAND[plyBase + j] = KI[j] | (KM[j] << 8) | (KH[j] << 12);
@@ -3004,8 +2956,7 @@ function guardAgainstVcf(b, ai, pick, ordered, t0, budget) {
 const store = {
   get(k, d) { try { const v = localStorage.getItem('yimoku:' + k); return v === null ? d : v; } catch (e) { return d; } },
   set(k, v) { try { localStorage.setItem('yimoku:' + k, v); return true; } catch (e) { return false; } },
-  getJSON(k, d) { try { const v = localStorage.getItem('yimoku:' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
-  setJSON(k, v) { try { localStorage.setItem('yimoku:' + k, JSON.stringify(v)); } catch (e) {} }
+  getJSON(k, d) { try { const v = localStorage.getItem('yimoku:' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
 };
 
 /* localStorage 可能含有任意 JSON：避免对象强制转换抛错，也不要把原型属性当成难度。 */
@@ -3053,6 +3004,10 @@ function clearWinTimer() {
 function ensureAudio() {
   const AudioCtor = window.AudioContext || window.webkitAudioContext;
   if (!AudioCtor) return null;
+  /* 还没有过用户手势（AI 执黑的开局手、读档后的自动应手）时不建上下文：自动播放策略会让它
+     停在 suspended，排进去的音效要攒到首次手势 resume 时才与那一手的落子声叠在一起响。 */
+  const ua = navigator.userActivation;
+  if (!audioCtx && ua && !ua.hasBeenActive) return null;
   if (!audioCtx) audioCtx = new AudioCtor();
   if (audioCtx.state === 'suspended') {
     const p = audioCtx.resume();
@@ -3209,8 +3164,8 @@ function saveSession(onlyIfUnchanged = false) {
     v: 1, mode: S.mode, diff: S.diff, side: S.side,
     moves: S.moves.map(m => [m.x, m.y]), acc: Math.round(elapsedMs())
   };
-  lastSessionJSON = JSON.stringify(session);
-  store.set('session', lastSessionJSON);
+  const raw = JSON.stringify(session);
+  if (store.set('session', raw)) lastSessionJSON = raw;
 }
 function saveSessionClock() {
   /* 仅补写本页最后一次保存的局面；另一标签页已更新或删除时不要覆盖它。 */
@@ -3246,7 +3201,6 @@ function restoreSession() {
     S.mode = s.mode; S.diff = s.diff; S.side = s.side;
     saveSettings(); syncPills();
     restartGame(true);                                // 清空棋盘/计时/在途 AI 任务（不动存档）
-    cancelAI();                                       // 作废 restartGame 可能投出的开局任务
     for (let k = 0; k < s.moves.length; k++) {
       const [x, y] = s.moves[k], i = idx(x, y), p = k % 2 === 0 ? BLACK : WHITE;
       S.board[i] = p;
@@ -3359,7 +3313,6 @@ function syncBoardState() {
   boardEl.classList.toggle('t1', t === BLACK);
   boardEl.classList.toggle('t2', t === WHITE);
   boardEl.classList.toggle('human', !S.over && !S.aiThinking && isHuman(t));
-  boardEl.classList.toggle('over', S.over);
   boardEl.classList.toggle('showcur', S.cursorVisible && !S.over && !S.aiThinking && isHuman(t));
   const curIdx = S.cursorVisible && !S.over && !S.aiThinking && isHuman(t) ? idx(S.cursor.x, S.cursor.y) : -1;
   if (S.prevCursor !== curIdx) {
@@ -3756,8 +3709,10 @@ function restartGame(keepSave = false) {
   S.prevLast = -1; S.prevCursor = -1; S.lastRecordSnapshot = null;
   resultBar.classList.remove('show');
   updateStats(); renderMoveList(); updateStatus();
-  if (!keepSave) saveSession();
-  if (S.mode === 'ai' && !isHuman(BLACK)) scheduleAI();   // AI 执黑则自动开局
+  if (!keepSave) {
+    saveSession();
+    if (S.mode === 'ai' && !isHuman(BLACK)) scheduleAI(); // AI 执黑则自动开局
+  }
 }
 
 /* ---------- 设置切换 ---------- */
@@ -3851,7 +3806,6 @@ function buildSwatches() {
     b.className = 'swatch'; b.dataset.accent = a;
     b.title = NAMES[a] || a;
     b.setAttribute('aria-label', NAMES[a] || a);
-    b.style.setProperty('--sw-c', swatchColor(a));
     b.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>';
     b.addEventListener('click', () => {
       document.documentElement.dataset.accent = a;
@@ -3862,10 +3816,6 @@ function buildSwatches() {
     wrap.appendChild(b);
   });
   syncSwatches();
-}
-function swatchColor(a) {
-  return ({ purple: '#A78BFA', blue: '#6E9BE8', teal: '#5FD6C8', green: '#78E08F',
-    yellow: '#EFD46B', orange: '#F0A868', pink: '#F472A0', red: '#F0716B' })[a];
 }
 function syncSwatches() {
   const cur = document.documentElement.dataset.accent || 'purple';
@@ -3929,8 +3879,8 @@ function onKey(e) {
     return;
   }
   if (k === ' ' || k === 'enter') {
-    /* 焦点在按钮（含棋盘格）上时交给原生激活，避免拦截；回车对链接同理 */
-    if (e.target && e.target.closest && e.target.closest(k === 'enter' ? 'button, a[href]' : 'button')) return;
+    /* 焦点在棋盘外的按钮或链接上时交给原生激活，避免拦截 */
+    if (e.target && e.target.closest && e.target.closest('button:not(.cell), a[href]')) return;
     e.preventDefault();
     if (e.repeat || S.over || S.aiThinking) return;
     S.cursorVisible = true;

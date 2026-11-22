@@ -239,3 +239,122 @@ for (const failure of ['quota', 'denied']) {
     assert.equal(await page.locator('#best').getAttribute('aria-label'), '0');
   });
 }
+
+for (const outside of [false, true]) {
+  test(`a second finger ${outside ? 'outside' : 'inside'} the board cancels the swipe`, async t => {
+    const { context, page } = await open(t, '/h5-demo/', {
+      options: { hasTouch: true, viewport: { width: 480, height: 900 } },
+      records: { 'yp.state.4': { g: board([2, 2]), score: 8 } },
+      setup: () => { Math.random = () => 0; }
+    });
+    const before = await archive(page);
+    const box = await page.locator('#board').boundingBox();
+    const first = { id: 0, x: Math.round(box.x + 150), y: Math.round(box.y + 100) };
+    const second = outside ? { id: 1, x: 8, y: 8 } : { ...first, id: 1, x: first.x + 70 };
+    const session = await context.newCDPSession(page);
+    const touch = (type, touchPoints) => session.send('Input.dispatchTouchEvent', { type, touchPoints });
+    await touch('touchStart', [first]);
+    first.x -= 60;
+    await touch('touchMove', [first]);
+    await touch('touchStart', [first, second]);
+    await touch('touchMove', [second]);
+    await touch('touchEnd', []);
+    assert.deepEqual(await archive(page), before, 'multi-touch must not change the saved round');
+
+    first.id = 2;
+    first.x += 60;
+    await touch('touchStart', [first]);
+    first.x -= 60;
+    await touch('touchMove', [first]);
+    await touch('touchEnd', []);
+    const after = await archive(page);
+    assert.equal(after.score, 12, 'the next single-finger swipe still works');
+    assert.equal(after.undo.length, 1);
+  });
+}
+
+test('site theme text stays readable across presets and the random hue range', async t => {
+  const { page } = await open(t, '/website/');
+  const failures = await page.evaluate(() => {
+    const failures = [];
+    const root = document.documentElement;
+    const value = name => root.style.getPropertyValue('--' + name).trim();
+    const luminance = hex => hex.slice(1).match(/../g)
+      .map(v => parseInt(v, 16) / 255)
+      .map(v => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+      .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const check = (seed, foreground, background) => {
+      const a = luminance(value(foreground)), b = luminance(value(background));
+      const ratio = (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+      if (ratio < 4.5 && failures.length < 20) {
+        failures.push(`${root.dataset.theme} ${seed}: ${foreground}/${background} = ${ratio.toFixed(3)}`);
+      }
+    };
+    const checkScheme = seed => {
+      for (const role of ['primary', 'secondary', 'tertiary']) {
+        check(seed, 'on-' + role, role);
+        check(seed, 'on-' + role + '-container', role + '-container');
+        check(seed, role, 'surface-container-highest');
+      }
+      check(seed, 'on-primary', 'tertiary'); // The 2048 tile uses a two-color gradient.
+      check(seed, 'on-surface', 'outline-variant');
+      check(seed, 'on-surface-variant', 'surface-container-highest');
+      check(seed, 'inverse-on-surface', 'inverse-surface');
+    };
+    const random = Math.random;
+    try {
+      for (const theme of ['light', 'dark']) {
+        if (root.dataset.theme !== theme) document.querySelector('#themeToggle').click();
+        for (const swatch of document.querySelectorAll('[data-seed]')) {
+          swatch.click();
+          checkScheme(swatch.dataset.seed);
+        }
+        for (let hue = 0; hue < 360; hue++) {
+          let index = 0;
+          const samples = [hue / 360, (hue % 3) / 2, (hue % 5) / 4];
+          Math.random = () => samples[index++ % samples.length];
+          document.querySelector('.swatch.dice').click();
+          checkScheme('hue ' + hue);
+        }
+      }
+    } finally {
+      Math.random = random;
+    }
+    return failures;
+  });
+  assert.deepEqual(failures, [], 'normal-size theme text must have at least 4.5:1 contrast');
+});
+
+for (const inactive of [false, true]) {
+  test(`cross-tab records replace stale fallback scores for ${inactive ? 'inactive' : 'active'} boards`, async t => {
+    const { context, page } = await open(t, '/h5-demo/', {
+      records: { 'yp.best.4': 8, 'yp.state.4': { g: board([2, 2, 4]), score: 8 } },
+      setup: () => {
+        Math.random = () => 0;
+        const write = Storage.prototype.setItem;
+        window.restoreWrites = () => { Storage.prototype.setItem = write; };
+        Storage.prototype.setItem = () => { throw new DOMException('Full', 'QuotaExceededError'); };
+        window.addEventListener('storage', e => {
+          if (e.key === 'yp.best.4') window.observedBest = e.newValue;
+        });
+      }
+    });
+    await page.locator('#board').press('ArrowLeft');
+    assert.equal(await page.locator('#best').getAttribute('aria-label'), '12');
+    if (inactive) await page.getByRole('radio', { name: '5×5' }).click();
+    const other = await context.newPage();
+    await other.goto(origin + '/h5-demo/');
+    await other.evaluate(() => localStorage.setItem('yp.best.4', '132'));
+    await page.waitForFunction(() => window.observedBest === '132');
+    if (!inactive) await page.getByRole('radio', { name: '5×5' }).click();
+    await page.getByRole('radio', { name: '4×4' }).click();
+    assert.equal(await page.locator('#best').getAttribute('aria-label'), '132',
+      'a rejected local write must not shadow a newer durable record');
+    assert.equal(await page.locator('#score').getAttribute('aria-label'), '12');
+
+    await page.evaluate(() => window.restoreWrites());
+    await page.locator('#board').press('ArrowLeft');
+    assert.equal(await page.locator('#score').getAttribute('aria-label'), '20');
+    assert.equal(await page.evaluate(() => localStorage.getItem('yp.best.4')), '132');
+  });
+}
