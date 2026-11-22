@@ -1,15 +1,18 @@
 package com.lingyicute.orientationlock;
 
 import android.app.AppOpsManager;
+import android.app.Notification;
 import android.app.Service;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.os.Build;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.Process;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 
 import com.lingyicute.orientationlock.preference.PreferenceManager;
@@ -25,6 +28,11 @@ import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.android.controller.ServiceController;
 import org.robolectric.annotation.Config;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.Implements;
+import org.robolectric.shadow.api.Shadow;
+import org.robolectric.shadows.ShadowService;
+import org.robolectric.shadows.ShadowWindowManagerImpl;
 import org.robolectric.shadows.ShadowNotification;
 import org.robolectric.shadows.ShadowSettings;
 import org.robolectric.util.ReflectionHelpers;
@@ -48,7 +56,15 @@ public class YiTateServiceTest {
         ReflectionHelpers.setStaticField(PreferenceManager.class, "sManager", null);
         preferences = PreferenceManager.getInstance(context);
         context.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit();
-        ShadowSettings.setCanDrawOverlays(true);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(
+                    android.Manifest.permission.SYSTEM_ALERT_WINDOW);
+            AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+            shadowOf(appOps).setMode(24, Process.myUid(), context.getPackageName(),
+                    AppOpsManager.MODE_ALLOWED);
+        } else {
+            ShadowSettings.setCanDrawOverlays(true);
+        }
         shadowOf((PowerManager) context.getSystemService(Context.POWER_SERVICE)).setIsInteractive(true);
         controller = Robolectric.buildService(YiTateService.class).create();
         service = controller.get();
@@ -102,6 +118,29 @@ public class YiTateServiceTest {
         preferences.setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         assertNull(overlay());
         assertTrue(shadowOf(service).isStoppedBySelf());
+    }
+
+    @Implements(Service.class)
+    public static class RejectableForeground extends ShadowService {
+        boolean reject;
+
+        @Override
+        @Implementation
+        protected void startForeground(int id, Notification notification) {
+            if (reject) throw new SecurityException("Foreground promotion rejected");
+            super.startForeground(id, notification);
+        }
+    }
+
+    @Test
+    @Config(shadows = RejectableForeground.class)
+    public void rejectedForegroundRefreshDoesNotRequestAStickyRestart() {
+        RejectableForeground foreground = Shadow.extract(service);
+        foreground.reject = true; // onCreate succeeded; fail the command's refresh.
+        assertEquals(Service.START_NOT_STICKY, select(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT));
+        assertNull(overlay());
+        assertTrue(shadowOf(service).isStoppedBySelf());
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
     }
 
     @Test
@@ -195,12 +234,8 @@ public class YiTateServiceTest {
     @Test
     @Config(sdk = {21, 22})
     public void legacyAppOpRevocationClearsAnAttachedLockOnTheNextPoll() {
-        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(
-                android.Manifest.permission.SYSTEM_ALERT_WINDOW);
         AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
         int op = 24; // SYSTEM_ALERT_WINDOW before its public integer constants.
-        shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(),
-                AppOpsManager.MODE_ALLOWED);
         select(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         assertNotNull(overlay());
 
@@ -218,12 +253,8 @@ public class YiTateServiceTest {
     @Test
     @Config(sdk = {21, 22})
     public void legacyPollingStopsWhileScreenIsOffAndWakeRechecksPermission() {
-        shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(
-                android.Manifest.permission.SYSTEM_ALERT_WINDOW);
         AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
         int op = 24;
-        shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(),
-                AppOpsManager.MODE_ALLOWED);
         assertEquals(Service.START_STICKY, select(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE));
         screen(false);
         assertNull(overlay());
@@ -234,6 +265,24 @@ public class YiTateServiceTest {
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE, preferences.getOrientation());
 
         screen(true);
+        assertNull(overlay());
+        assertTrue(shadowOf(service).isStoppedBySelf());
+        assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
+    }
+
+    @Implements(className = "android.view.WindowManagerImpl", isInAndroidSdk = false)
+    public static class RemovedDisplay extends ShadowWindowManagerImpl {
+        @Override
+        @Implementation
+        public void addView(View view, ViewGroup.LayoutParams params) {
+            throw new WindowManager.InvalidDisplayException("Display removed");
+        }
+    }
+
+    @Test
+    @Config(shadows = RemovedDisplay.class)
+    public void losingTheDisplayDuringAttachmentClearsTheLock() {
+        assertEquals(Service.START_NOT_STICKY, select(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE));
         assertNull(overlay());
         assertTrue(shadowOf(service).isStoppedBySelf());
         assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
@@ -326,6 +375,15 @@ public class YiTateServiceTest {
     }
 
     @Test
+    public void refreshingThePersistentNotificationDoesNotRepeatItsAlert() {
+        select(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+        select(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        Notification notification = shadowOf(service).getLastForegroundNotification();
+        assertEquals("Locked: Portrait", notificationText());
+        assertNotEquals(0, notification.flags & Notification.FLAG_ONLY_ALERT_ONCE);
+    }
+
+    @Test
     public void notificationReportsTheLockedMode() {
         select(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         assertEquals("Locked: Portrait", notificationText());
@@ -357,7 +415,7 @@ public class YiTateServiceTest {
     @Test
     @Config(sdk = {21, 25})
     public void unchangedConfigurationDoesNotRepostTheNotificationWithoutAChannel() {
-        select(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+        assertEquals(Service.START_STICKY, select(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT));
         android.app.Notification initial = shadowOf(service).getLastForegroundNotification();
         // Sensor modes still rotate; each rotation reaches the service as a configuration change.
         service.onConfigurationChanged(service.getResources().getConfiguration());

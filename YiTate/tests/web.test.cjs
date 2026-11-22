@@ -128,13 +128,14 @@ function boot({
     unobserve(target) { this.unobserved = target; }
     disconnect() { this.disconnected = true; }
   };
+  const localStorage = {
+    getItem: key => storage.has(key) ? storage.get(key) : null,
+    setItem: (key, value) => storage.set(key, String(value))
+  };
   Object.defineProperty(sandbox, 'localStorage', {
     get() {
       if (blocked) throw new Error('SecurityError: storage is blocked');
-      return {
-        getItem: key => storage.has(key) ? storage.get(key) : null,
-        setItem: (key, value) => storage.set(key, String(value))
-      };
+      return localStorage;
     }
   });
   sandbox.window = sandbox;
@@ -660,4 +661,48 @@ test('duplicate and stale reveal observer entries do not register extra cleanups
   page.observers[0].fn([{ target: second, isIntersecting: true }]);
   assert.equal(second.classList.contains('in'), false, 'a queued entry after disconnect is ignored');
   assert.equal(page.timeouts.filter(t => t.delay === 1200).length, 1);
+});
+
+
+test('theme changes in another tab update this tab without writing back', () => {
+  const page = boot({ schemeDark: true });
+  const area = page.window.localStorage;
+  page.storage.set('yt-dark', '0');
+  page.window.listeners.storage({ key: 'yt-dark', storageArea: {} });
+  assert.equal(page.root.dataset.theme, 'dark', 'ignore session storage');
+  page.window.listeners.storage({ key: 'yt-dark', storageArea: area, newValue: '1' });
+  assert.equal(page.root.dataset.theme, 'light', 'read the latest stored choice');
+  assert.equal(page.get('#themeBtn').getAttribute('aria-pressed'), 'false');
+  page.storage.clear();
+  page.window.listeners.storage({ key: null, storageArea: area });
+  assert.equal(page.root.dataset.theme, 'dark');
+  page.fireMedia(false);
+  assert.equal(page.root.dataset.theme, 'light');
+  assert.equal(page.storage.has('yt-dark'), false);
+});
+
+
+test('external hue changes reconcile swatches without cancelling a local drag', () => {
+  const page = boot();
+  const range = page.get('#hueRange');
+  const change = key => page.window.listeners.storage({ key, storageArea: page.window.localStorage });
+  page.storage.set('yt-hue', '0');
+  change('yt-hue');
+  assert.equal(page.root.style.getPropertyValue('--hue'), '0');
+  page.storage.set('yt-hue', 'bad');
+  change('yt-hue');
+  assert.equal(Number(range.value), 290);
+  assert.equal(page.get('#swatches').children[0].getAttribute('aria-pressed'), 'true');
+  range.value = 123;
+  range.listeners.input({ target: range });
+  page.storage.set('yt-hue', '350');
+  change('yt-hue');
+  page.flushFrames();
+  assert.equal(page.root.style.getPropertyValue('--hue'), '123');
+  range.listeners.change({ target: range });
+  assert.equal(page.storage.get('yt-hue'), '123');
+  page.storage.clear();
+  change(null);
+  assert.equal(page.root.style.getPropertyValue('--hue'), '290');
+  assert.equal(page.storage.has('yt-hue'), false);
 });
