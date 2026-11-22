@@ -340,7 +340,7 @@ KERNEL_MACHINE_SPECIFIC_NOTE = ("Tips：root、rootflags、rw、rhgb、quiet、v
 
 # ---------------------------------------------------------------------------
 # 推荐 sysctl
-# cmp: "eq" 精确匹配（默认）； "ge" 实际值 >= 期望值即可
+# cmp: "eq" 精确匹配（默认）； "ge" 实际值 >= 期望值即可； "le" 0 < 实际值 <= 期望值即可（0 表示关闭）
 # ---------------------------------------------------------------------------
 SYSCTL_GROUPS = [
     ("网络安全加固", [
@@ -375,8 +375,8 @@ SYSCTL_GROUPS = [
         dict(key="kernel.perf_event_paranoid", value="3", cmp="ge", desc="禁止非特权用户使用 perf（侧信道与信息泄漏）。"),
         dict(key="kernel.kptr_restrict", value="2", desc="对所有用户隐藏内核指针。"),
         dict(key="kernel.dmesg_restrict", value="1", desc="只允许 root 读取内核日志。"),
-        dict(key="kernel.oops_limit", value="100", desc="oops 超过 100 次即 panic，阻止靠反复 oops 进行的利用（内核 ≥ 6.2）。"),
-        dict(key="kernel.warn_limit", value="100", desc="WARN 超过 100 次即 panic（内核 ≥ 6.2）。"),
+        dict(key="kernel.oops_limit", value="100", cmp="le", desc="oops 超过 100 次即 panic，阻止靠反复 oops 进行的利用（内核 ≥ 6.2）。"),
+        dict(key="kernel.warn_limit", value="100", cmp="le", desc="WARN 超过 100 次即 panic（内核 ≥ 6.2）。"),
         dict(key="kernel.panic", value="-1", desc="panic 后立即重启。"),
         dict(key="kernel.printk", value="3 3 3 3", desc="限制控制台日志级别，减少信息泄漏。"),
         dict(key="kernel.kexec_load_disabled", value="1", desc="禁止 kexec 加载新内核（一旦设为 1 不可撤销）。"),
@@ -521,12 +521,15 @@ VENDORS = [
          incidents=[("说明", "VideoCore GPU 的启动固件闭源，且缺少安全启动/TPM 等硬件安全特性（Pi 4/5 可选安全启动）。")],
          advice="适合学习与低敏感场景；不建议用于高安全性计算。"),
     dict(match=["qemu", "kvm", "vmware", "virtualbox", "innotek", "hyper-v", "virtual machine", "parallels", "bochs", "xen"], name="虚拟机", rating="neutral",
+         virtual=True,
          incidents=[("说明", "您正在虚拟机中运行。虚拟机的安全性完全取决于宿主机与虚拟化平台。")],
          advice="请在宿主机上运行本工具，对真实硬件进行安全评估。"),
     dict(match=["intel"], name="Intel (NUC / 参考设计)", rating="neutral",
          incidents=[("说明", "Intel 平台存在 ME 等闭源子系统，历史上多次曝出 ME 漏洞 (CVE-2017-5689 等)，但更新较为及时。")],
          advice="可以使用，请继续保持固件更新。"),
 ]
+# 虚拟机条目单独拿出来：checks.get_hardware 要在按厂商匹配之前先判断是否在虚拟机里。
+VM_VENDOR = next(v for v in VENDORS if v.get("virtual"))
 DEFAULT_VENDOR = dict(name="未收录厂商", rating="neutral",
                       incidents=[("说明", "本工具的知识库中没有该厂商的重大安全/隐私事故记录。这绝不代表安全，仅表示梨没有对该品牌进行研究。")],
                       advice="请自行检索该厂商的固件更新政策与安全公告，并保持固件更新。")

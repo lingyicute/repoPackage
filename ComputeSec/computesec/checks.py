@@ -427,6 +427,9 @@ _CMDLINE_BOOL_KEYS = {
 # （包括 false、n、OFF）都算真，所以 rd.shell=false 并没有关掉 initramfs 的 shell。
 _CMDLINE_DRACUT_BOOL_KEYS = {"rd.shell"}
 _DRACUT_FALSE = {"0", "no", "off"}
+# dracut-lib.sh emergency_shell()：rd.emergency 的 case 分支里 halt 与 poweroff 都是
+# 关机不进 shell，只差后者额外断电；推荐 halt 时用户写 poweroff 不能判成"错误"。
+_RD_EMERGENCY_NO_SHELL = {"halt", "poweroff"}
 # module_param(bool) 型布尔参数：同样经 kstrtobool 解析 on/1/y 与 off/0/n，
 # 但 cmdline 上省略 = 的裸 token 会被内核置为真（param_set_bool(val=NULL) → 1）。
 _CMDLINE_MODULE_BOOL_KEYS = {
@@ -614,6 +617,8 @@ def _cmdline_value_ok(key, actual, expected):
         return _cmdline_bool_norm(actual) == "1"
     if nk in _CMDLINE_DRACUT_BOOL_KEYS:
         return (actual in _DRACUT_FALSE) == (expected in _DRACUT_FALSE)
+    if nk == "rd.emergency" and expected in _RD_EMERGENCY_NO_SHELL:
+        return actual in _RD_EMERGENCY_NO_SHELL
     # l1tf= 由内核在固定选项列表（off/flush/flush,nosmt/flush,nowarn/full/full,force）
     # 中做精确匹配，任何改写顺序的值都会被忽略，因此不做集合比较，仅精确匹配。
     if nk in _CMDLINE_BOOL_KEYS or nk in _CMDLINE_MODULE_BOOL_KEYS:
@@ -803,6 +808,13 @@ def _sysctl_value_ok(actual, expected, cmp):
             return int(a) >= int(e)
         except ValueError:
             return a == e
+    if cmp == "le":
+        # 上限型阈值（kernel.oops_limit / warn_limit）：越小越早 panic、越严格；
+        # 但 0 表示关闭计数，不是"最严格"，必须单独排除。
+        try:
+            return 0 < int(a) <= int(e)
+        except ValueError:
+            return a == e
     return a == e
 
 
@@ -953,25 +965,41 @@ def get_hardware() -> HardwareReport:
     sv, pn, bv, biosv, biosver = dmi("sys_vendor"), dmi("product_name"), dmi("board_vendor"), dmi("bios_vendor"), dmi("bios_version")
     model = read("/proc/device-tree/model").strip("\x00\n ")
     # D-Bus hostname1 也提供厂商/型号/固件版本（宿主机视角），用于补全沙箱内读不到的字段
+    chassis = ""
     try:
         ident = hostinfo.get_identity()
         sv = sv or ident.hw_vendor
         pn = pn or ident.hw_model
         biosver = biosver or ident.firmware_version
+        chassis = ident.chassis
     except Exception:
         pass
     candidates = [("系统厂商", sv), ("产品名称", pn), ("主板厂商", bv), ("设备型号", model)]
     vendor, matched = data.DEFAULT_VENDOR, ""
-    for label, text in candidates:
-        t = (text or "").lower()
-        if not t:
-            continue
-        for v in data.VENDORS:
-            if any(_vendor_kw_match(m, t) for m in v["match"]):
-                vendor, matched = v, f"{label}: {text}"
+    # 先判断是不是虚拟机，再按厂商匹配。Hyper-V 的 sys_vendor 是 "Microsoft Corporation"、
+    # product_name 才是 "Virtual Machine"；VMware / Parallels 的 Mac 虚拟机 product_name 里
+    # 也可能带 "Apple"。按字段顺序逐个匹配会先命中 Surface / Apple 条目，把虚拟机当成
+    # 真机评估并给出"可以使用"的建议。hostname1 的 Chassis=vm 来自 systemd 的
+    # detect_virt()，比 DMI 字符串更可靠，命中即视为虚拟机。
+    if chassis == "vm":
+        vendor, matched = data.VM_VENDOR, "机箱类型: vm"
+    else:
+        for label, text in candidates:
+            t = (text or "").lower()
+            if t and any(_vendor_kw_match(m, t) for m in data.VM_VENDOR["match"]):
+                vendor, matched = data.VM_VENDOR, f"{label}: {text}"
                 break
-        if matched:
-            break
+    if not matched:
+        for label, text in candidates:
+            t = (text or "").lower()
+            if not t:
+                continue
+            for v in data.VENDORS:
+                if any(_vendor_kw_match(m, t) for m in v["match"]):
+                    vendor, matched = v, f"{label}: {text}"
+                    break
+            if matched:
+                break
     return HardwareReport(sys_vendor=sv, product=pn, board_vendor=bv, bios_vendor=biosv, bios_version=biosver,
                           model=model, vendor=vendor, matched_on=matched)
 

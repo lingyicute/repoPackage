@@ -33,6 +33,17 @@ def test_cmdline_accepts_legacy_slub_nomerge(monkeypatch, token):
     assert item.status == "ok"
 
 
+@pytest.mark.parametrize("value, status", [("halt", "ok"), ("poweroff", "ok"), ("reboot", "wrong"), ("", "wrong")])
+def test_cmdline_rd_emergency_accepts_poweroff(monkeypatch, value, status):
+    """dracut 的 rd.emergency=halt 与 poweroff 都是关机不进紧急 shell，不能把 poweroff 判成错误。"""
+    monkeypatch.setattr(checks, "read", lambda path, default="": (
+        f"quiet rd.emergency={value} rw" if path == "/proc/cmdline" else default))
+    monkeypatch.setattr(checks, "arch", lambda: "x86_64")
+    monkeypatch.setattr(checks, "cpu_vendor", lambda: "intel")
+    item = next(i for i in checks.get_cmdline_report().items if i.key == "rd.emergency")
+    assert item.status == status
+
+
 def test_sysctl_norm():
     assert checks._sysctl_norm("  1  ") == "1"
     assert checks._sysctl_norm("a   b\tc") == "a b c"
@@ -53,6 +64,10 @@ def test_sysctl_norm():
     ("32", "32", "ge", True),
     ("on", "on", "ge", True),        # 非数字回退到字符串比较
     ("on", "off", "ge", False),
+    ("50", "100", "le", True),       # 上限型：更小更严格
+    ("100", "100", "le", True),
+    ("200", "100", "le", False),
+    ("0", "100", "le", False),       # 0 = 关闭计数，不是"最严格"
 ])
 def test_sysctl_value_ok(actual, expected, cmp, want):
     assert checks._sysctl_value_ok(actual, expected, cmp) is want
@@ -419,6 +434,42 @@ def test_vendor_kw_match_word_boundary():
     assert checks._vendor_kw_match("hp", "touchpad controller") is False
     assert checks._vendor_kw_match("msi", "msi gaming") is True
     assert checks._vendor_kw_match("lenovo", "lenovo thinkpad") is True
+
+
+def _patch_dmi(monkeypatch, fields, chassis=""):
+    def fake_read(path, default=""):
+        prefix = "/sys/class/dmi/id/"
+        if path.startswith(prefix):
+            return fields.get(path[len(prefix):], "")
+        return default
+
+    monkeypatch.setattr(checks, "read", fake_read)
+    monkeypatch.setattr(checks.hostinfo, "get_identity",
+                        lambda refresh=False: checks.hostinfo.HostIdentity(chassis=chassis))
+
+
+def test_get_hardware_hyperv_is_a_vm_not_a_surface(monkeypatch):
+    """Hyper-V 的 sys_vendor 是 Microsoft Corporation，product_name 才写 Virtual Machine。
+    按字段顺序先匹配会命中 Surface 条目，把虚拟机当成真机给出"可以使用"的建议。"""
+    _patch_dmi(monkeypatch, {"sys_vendor": "Microsoft Corporation", "product_name": "Virtual Machine"})
+    hw = checks.get_hardware()
+    assert hw.vendor is data.VM_VENDOR
+    assert hw.matched_on == "产品名称: Virtual Machine"
+
+
+def test_get_hardware_trusts_hostname1_chassis_vm(monkeypatch):
+    """hostname1 的 Chassis=vm 来自 systemd detect_virt()，DMI 字符串再像真机也按虚拟机处理。"""
+    _patch_dmi(monkeypatch, {"sys_vendor": "LENOVO", "product_name": "20XW"}, chassis="vm")
+    hw = checks.get_hardware()
+    assert hw.vendor is data.VM_VENDOR
+    assert hw.matched_on == "机箱类型: vm"
+
+
+def test_get_hardware_real_machine_still_matches_vendor(monkeypatch):
+    _patch_dmi(monkeypatch, {"sys_vendor": "LENOVO", "product_name": "20XW"}, chassis="laptop")
+    hw = checks.get_hardware()
+    assert hw.vendor["name"] == "联想 Lenovo"
+    assert hw.matched_on == "系统厂商: LENOVO"
 
 
 def test_check_usb_avoids_false_positives(monkeypatch):
