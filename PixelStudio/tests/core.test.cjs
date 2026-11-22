@@ -98,6 +98,34 @@ test('JPEG skips a bad EXIF header, but never reads past a truncated segment', a
   assert.equal((await parse(exif.processJpegBytes(good, true))).hasExif, false);
 });
 
+test('JPEG and WebP prefer complete EXIF over an earlier truncated directory', async () => {
+  const app1 = (tiff) => {
+    const header = Buffer.from('ffe10000457869660000', 'hex');
+    header.writeUInt16BE(tiff.length + 8, 2);
+    return Buffer.concat([header, tiff]);
+  };
+  const partial = Buffer.from(exif.buildTiffBuffer({ make: 'A' })).subarray(0, 22);
+  const complete = Buffer.from(exif.buildTiffBuffer({ artist: 'Complete' }));
+  const jpegResult = await parse(jpeg(app1(partial), app1(complete)));
+  assert.equal(jpegResult.artist, 'Complete');
+  assert.equal(jpegResult.make, ''); // Do not mix fields from two different EXIF segments.
+  const fallback = await parse(jpeg(app1(partial)));
+  assert.equal(fallback.make, 'A'); // Preserve readable fields if no complete block exists.
+
+  const brokenPointer = Buffer.from(exif.buildTiffBuffer({ make: 'B', iso: '100' }));
+  brokenPointer.writeUInt32LE(0xffffffff, ifdEntry(brokenPointer, 8, 0x8769) + 8);
+  assert.equal((await parse(jpeg(app1(brokenPointer), app1(complete)))).artist, 'Complete');
+  const brokenValue = Buffer.from(exif.buildTiffBuffer({ make: 'Camera' }));
+  brokenValue.writeUInt32LE(0xffffffff, ifdEntry(brokenValue, 8, 0x010f) + 8);
+  assert.equal((await parse(jpeg(app1(brokenValue), app1(complete)))).artist, 'Complete');
+
+  const image = riffChunk('VP8L', Buffer.from([0x2f, 0, 0, 0, 0]));
+  const webpResult = await parse(webp(image, riffChunk('EXIF', partial), riffChunk('EXIF', complete)));
+  assert.equal(webpResult.artist, 'Complete');
+  assert.equal(webpResult.make, '');
+  assert.equal((await parse(webp(image, riffChunk('EXIF', partial)))).make, 'A');
+});
+
 test('JPEG stripping keeps scan bytes and requires a complete end marker', async () => {
   const scan = Buffer.from('ffda0008010100003f0040ff0020ffd041', 'hex');
   const tagged = exif.processJpegBytes(jpeg(), false, { artist: 'Test artist' });
@@ -175,6 +203,22 @@ test('TIFF text reads only a bounded, complete field', async () => {
   assert.equal(result.description, metadata.description);
 });
 
+test('EXIF text is preserved within its limit and never silently truncated', async () => {
+  const longText = '像'.repeat(10922); // 32766 UTF-8 bytes, safely below the TIFF read limit.
+  const asciiLimit = 'A'.repeat(32767);
+  for (const text of [longText, asciiLimit]) {
+    const tiff = exif.buildTiffBuffer({ artist: text });
+    assert.equal((await parse(png(pngChunk('eXIf', tiff)))).artist, text);
+    const encoded = exif.processJpegBytes(jpeg(), false, { artist: text }, { w: 1, h: 1 });
+    assert.equal((await parse(encoded)).artist, text);
+  }
+  assert.throws(() => exif.buildTiffBuffer({ artist: '像'.repeat(10923) }), /32767/);
+  assert.throws(() => exif.buildTiffBuffer({ artist: 'A'.repeat(32768) }), /32767/);
+  assert.throws(() => exif.buildTiffBuffer({ description: 'first\0second' }), /空字符/);
+  assert.throws(() => exif.processJpegBytes(jpeg(), false,
+    { make: asciiLimit, artist: asciiLimit }, { w: 1, h: 1 }), /64KB/);
+});
+
 test('DateTimeDigitized outranks modification time if DateTimeOriginal is absent', async () => {
   const tiff = Buffer.from(exif.buildTiffBuffer({ dateTime: '2021:03:04 05:06:07' }));
   const sub = ifdPointer(tiff, 8, 0x8769);
@@ -207,6 +251,20 @@ test('EXIF sensitivity and fixed-point fields round trip at their declared limit
   assert.equal(result.fNumber, '0.01');
   assert.equal(result.focalLength, '42949672.95');
   assert.equal(exif.parsePositiveFixed('42949672.96'), 0);
+});
+
+test('EXIF fixed-point values round decimal halves consistently', async () => {
+  for (const [raw, expected] of [
+    ['1.005', '1.01'], ['1.015', '1.02'], ['0.145', '0.15'], ['0.285', '0.29'],
+    ['1.005e0', '1.01'], ['1.0049999999999999', '1'], ['42949672.95', '42949672.95']
+  ]) {
+    assert.equal(String(exif.parsePositiveFixed(raw)), expected);
+    const tiff = exif.buildTiffBuffer({ fNumber: raw, focalLength: raw });
+    const result = await parse(png(pngChunk('eXIf', tiff)));
+    assert.equal(result.fNumber, expected);
+    assert.equal(result.focalLength, expected);
+  }
+  assert.equal(exif.parsePositiveFixed('42949672.955'), 0);
 });
 
 test('EXIF component order matches RGB and YCbCr image encodings', () => {

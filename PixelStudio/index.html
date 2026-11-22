@@ -2317,6 +2317,7 @@
               </div>
 
               <div id="exifFormFields" style="display:flex;flex-direction:column;gap:10px;">
+                <p class="card-subtitle">每项文本最多 32767 个 UTF-8 字节，JPEG 的 EXIF 总量最多 64KB。超限时请缩短文本或清除 EXIF。</p>
                 <div style="display:flex;gap:8px;">
                   <button class="btn btn-tonal btn-sm" style="flex:1;" id="btnFillSampleExif">填入示例相机参数</button>
                   <button class="btn btn-outlined btn-sm" style="flex:1;" id="btnClearGpsOnly">仅清除 GPS 定位</button>
@@ -2564,37 +2565,47 @@
           const result = this.emptyMetadata();
           const format = this.detectFormat(view);
 
-          // Check JPEG SOI: 0xFFD8
+          // A damaged first block must not hide a later, complete EXIF block.
           if (format === "image/jpeg") {
-            try {
-              for (const part of this._jpegParts(new Uint8Array(arrayBuffer))) {
-                const { type, data, end } = part;
-                if (type !== 0xe1 || end - data < 6) continue;
-                if (view.getUint32(data) === 0x45786966 && view.getUint16(data + 4) === 0) {
-                  this._parseTiff(view, data + 6, end - data - 6, result);
-                  if (result.hasExif) break; // Skip a bad APP1 if a valid EXIF segment follows it.
+            const parts = this._jpegParts(new Uint8Array(arrayBuffer));
+            const candidates = function* () {
+              for (const { type, data, end } of parts) {
+                if (type === 0xe1 && end - data >= 6 &&
+                    view.getUint32(data) === 0x45786966 && view.getUint16(data + 4) === 0) {
+                  yield [data + 6, end - data - 6];
                 }
               }
-            } catch { /* ignore damaged framing when importing optional metadata */ }
-          }
-          // Check PNG Signature: 89 50 4E 47 0D 0A 1A 0A
-          else if (format === "image/png") {
+            };
+            this._readTiffCandidates(view, candidates(), result);
+          } else if (format === "image/png") {
             await this._readPngMetadata(view, result);
-          }
-          // Check WebP: RIFF....WEBP, EXIF chunk
-          else if (format === "image/webp") {
+          } else if (format === "image/webp") {
             try {
               const { chunks } = this._webpChunks(view);
-              const exif = chunks.find(({ fourcc }) => fourcc === "EXIF");
-              if (exif) {
-                const { start, payload } = exif;
+              const candidates = chunks.filter(({ fourcc }) => fourcc === "EXIF").map(({ start, payload }) => {
                 // Some writers prefix the TIFF payload with "Exif\0\0".
                 const prefix = payload.length >= 6 && view.getUint32(start) === 0x45786966 && view.getUint16(start + 4) === 0 ? 6 : 0;
-                this._parseTiff(view, start + prefix, payload.length - prefix, result);
-              }
+                return [start + prefix, payload.length - prefix];
+              });
+              this._readTiffCandidates(view, candidates, result);
             } catch { /* invalid RIFF framing: do not read optional metadata */ }
           }
           return result;
+        },
+
+        _readTiffCandidates(view, candidates, result) {
+          let partial = null;
+          try {
+            for (const [start, length] of candidates) {
+              const candidate = this.emptyMetadata();
+              if (this._parseTiff(view, start, length, candidate)) {
+                Object.assign(result, candidate);
+                return;
+              }
+              if (!partial && candidate.hasExif) partial = candidate;
+            }
+          } catch { /* damaged JPEG framing: keep any fields already recovered */ }
+          if (partial) Object.assign(result, partial);
         },
 
         async _readPngMetadata(view, result) {
@@ -2689,12 +2700,14 @@
           return text;
         },
 
-        // A corrupt entry must not throw away what was already read from the same block
+        // A corrupt entry must not throw away what was already read from the same block.
+        // The return value distinguishes a complete directory tree from best-effort recovery.
         _parseTiff(view, tiffStart, maxLen, out) {
           try {
-            this._parseTiffUnsafe(view, tiffStart, maxLen, out);
+            return this._parseTiffUnsafe(view, tiffStart, maxLen, out);
           } catch (err) {
             console.warn("EXIF 数据部分损坏，已保留可读取的字段", err);
+            return false;
           }
         },
 
@@ -2702,23 +2715,42 @@
           // Never read past the end of this EXIF block (JPEG APP1 segment / PNG chunk / WebP chunk):
           // the bytes after it belong to other segments and would be decoded as garbage tags
           const limit = Math.min(view.byteLength, tiffStart + Math.max(0, maxLen));
-          if (tiffStart + 8 > limit) return;
+          if (tiffStart + 8 > limit) return false;
           const endian = view.getUint16(tiffStart, false);
           const little = endian === 0x4949; // 'II'
-          if (!little && endian !== 0x4d4d) return;
-          if (view.getUint16(tiffStart + 2, little) !== 0x002a) return;
+          if (!little && endian !== 0x4d4d) return false;
+          if (view.getUint16(tiffStart + 2, little) !== 0x002a) return false;
 
           const ifd0Offset = view.getUint32(tiffStart + 4, little);
-          if (ifd0Offset < 8 || tiffStart + ifd0Offset + 2 > limit) return;
+          if (ifd0Offset < 8 || tiffStart + ifd0Offset + 2 > limit) return false;
+          const completeIfd = (offset) => {
+            if (offset < tiffStart + 8 || offset + 2 > limit) return false;
+            const count = view.getUint16(offset, little);
+            if (offset + 2 + count * 12 + 4 > limit) return false;
+            const typeSizes = [0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4];
+            for (let i = 0; i < count; i++) {
+              const entry = offset + 2 + i * 12;
+              const size = typeSizes[view.getUint16(entry + 2, little)] || 0;
+              const byteCount = size * view.getUint32(entry + 4, little);
+              if (byteCount > 4 && tiffStart + view.getUint32(entry + 8, little) + byteCount > limit) return false;
+            }
+            return true;
+          };
+          let complete = completeIfd(tiffStart + ifd0Offset);
           out.hasExif = true;
           const pointers = this._readIfd(view, tiffStart, tiffStart + ifd0Offset, little, out, "IFD0", limit);
 
           if (pointers.exifIfd) {
-            this._readIfd(view, tiffStart, tiffStart + pointers.exifIfd, little, out, "EXIF", limit);
+            const offset = tiffStart + pointers.exifIfd;
+            complete = completeIfd(offset) && complete;
+            this._readIfd(view, tiffStart, offset, little, out, "EXIF", limit);
           }
           if (pointers.gpsIfd) {
-            this._readIfd(view, tiffStart, tiffStart + pointers.gpsIfd, little, out, "GPS", limit);
+            const offset = tiffStart + pointers.gpsIfd;
+            complete = completeIfd(offset) && complete;
+            this._readIfd(view, tiffStart, offset, little, out, "GPS", limit);
           }
+          return complete;
         },
 
         _readIfd(view, tiffStart, dirOffset, little, out, group, limit = view.byteLength) {
@@ -2943,7 +2975,11 @@
           if (!s) return 0;
           const v = Number(s);
           if (!Number.isFinite(v)) return 0;
-          const hundredths = Math.round(v * 100);
+          // Shift the decimal exponent before conversion: binary multiplication can turn
+          // an exact decimal half such as 1.005 into 100.49999999999999.
+          const decimal = s.match(/^([+-]?(?:\d+\.?\d*|\.\d+))(?:e([+-]?\d+))?$/i);
+          if (!decimal) return 0;
+          const hundredths = Math.round(Number(`${decimal[1]}e${Number(decimal[2] || 0) + 2}`));
           return hundredths >= 1 && hundredths <= 0xffffffff ? hundredths / 100 : 0;
         },
 
@@ -2958,7 +2994,8 @@
         // RGB is the default for uncompressed PNG; JPEG and lossy WebP use YCbCr.
         buildTiffBuffer(meta, dims, forJpeg = false, rgb = !forJpeg) {
           const encoder = new TextEncoder();
-          const MAX_TEXT_BYTES = 8000;
+          // Leave room for the NUL terminator within the bounded TIFF text reader.
+          const MAX_TEXT_BYTES = MAX_METADATA_TEXT_BYTES - 1;
           const makeStr = (meta.make || "").trim();
           const modelStr = (meta.model || "").trim();
           const artistStr = (meta.artist || "").trim();
@@ -2983,13 +3020,10 @@
           const ifd0 = [];
           const addAscii = (list, tag, str) => {
             if (!str) return;
-            let raw = encoder.encode(str);
+            if (str.includes("\0")) throw new Error("EXIF 文本不能包含空字符，请删除后重试");
+            const raw = encoder.encode(str);
             if (raw.length > MAX_TEXT_BYTES) {
-              // Cut on a UTF-8 character boundary so one oversized field cannot push the
-              // whole JPEG APP1 segment past 64 KB (which used to drop ALL metadata)
-              let end = MAX_TEXT_BYTES;
-              while (end > 0 && (raw[end] & 0xc0) === 0x80) end--;
-              raw = raw.subarray(0, end);
+              throw new Error(`EXIF 单项文本超过 ${MAX_TEXT_BYTES} UTF-8 字节，请缩短后重试`);
             }
             const buf = new Uint8Array(raw.length + 1);
             buf.set(raw);
@@ -4996,7 +5030,7 @@
           if (seq !== encodeSeq) return;
           // A download must match the requested edits, not the unverified encoder output.
           const message = state.stripExif ? "无法确认 EXIF 已清除，未导出图片" : "无法写入 EXIF，未导出图片";
-          throw new Error(message, { cause: err });
+          throw new Error(err?.message ? `${message}：${err.message}` : message, { cause: err });
         }
 
         if (seq !== encodeSeq) return;
