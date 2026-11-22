@@ -38,10 +38,5 @@ module.exports = [
   { name: 'WebCodecs API', scope: 'window', property: 'VideoDecoder' },
   { name: 'Prioritized Task Scheduling（scheduler.postTask）', scope: 'window', property: 'scheduler', methods: ['postTask'] },
   { name: 'Web Serial API', scope: 'navigator', property: 'serial', methods: ['requestPort'] },
-  { name: 'WebHID API', scope: 'navigator', property: 'hid', methods: ['requestDevice'] },
-  { name: 'CSS 级联层 @layer', scope: 'window', property: 'CSSLayerBlockRule' },
-  { name: 'CSS 跨文档视图过渡（@view-transition）', scope: 'window', property: 'CSSViewTransitionRule' },
-  { name: 'Trusted Types', scope: 'window', property: 'trustedTypes', methods: ['createPolicy', 'isHTML'] },
-  { name: 'CloseWatcher', scope: 'window', property: 'CloseWatcher' },
-  { name: '源私有文件系统（OPFS）', scope: 'navigator', property: 'storage', methods: ['getDirectory', 'estimate'] }
+  { name: 'WebHID API', scope: 'navigator', property: 'hid', methods: ['requestDevice'] }
 ];
