@@ -228,11 +228,17 @@ def supervise(command, seconds, grace=STOP_GRACE_SECONDS, env=None, cancel_signa
             if rc is not None:
                 result = 'completed' if rc == 0 else f'failed:{rc}'
             else:
-                signalled = True
+                proc_dir = Path('/proc', str(p.pid))
                 try:
-                    os.killpg(p.pid, signal.SIGINT)
-                except ProcessLookupError:
-                    signalled = False
+                    already_dead = not _is_live_proc(proc_dir, _proc_fields(proc_dir))
+                except (OSError, ValueError):
+                    already_dead = False
+                signalled = not already_dead
+                if signalled:
+                    try:
+                        os.killpg(p.pid, signal.SIGINT)
+                    except ProcessLookupError:
+                        signalled = False
                 try:
                     rc = wait_for_ninja(p, grace if signalled else min(grace, 1), cancel_signal)
                 except subprocess.TimeoutExpired:
@@ -395,7 +401,13 @@ def main():
     if not re.fullmatch(r'[1-9][0-9]*', run_attempt):
         raise SystemExit('Invalid GITHUB_RUN_ATTEMPT')
     jobs = compute_jobs()
-    os.chdir(root / 'src')
+    if root.is_symlink() or not root.is_dir():
+        raise SystemExit('Build root must be a real directory')
+    root = root.resolve(strict=True)
+    src_dir = root / 'src'
+    if src_dir.is_symlink() or not src_dir.is_dir():
+        raise SystemExit('Chromium source directory must be a real directory')
+    os.chdir(src_dir)
     env = dict(os.environ)
     env.setdefault('NINJA_STATUS', '[%f/%t %es] ')
     log_status(f'Building locally, jobs={jobs}, budget={remaining/60:.0f} minutes, final={final_stage}')

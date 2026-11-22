@@ -45,7 +45,7 @@ unset GIT_CACHE_PATH CCACHE_DIR CCACHE_PREFIX GOOGLE_APPLICATION_CREDENTIALS \
   GIT_SSH GIT_SSH_COMMAND GIT_ASKPASS SSH_ASKPASS GIT_EXEC_PATH \
   GIT_TEMPLATE_DIR GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE \
   GIT_NAMESPACE GIT_EXTERNAL_DIFF \
-  GLOBIGNORE TAR_OPTIONS ZSTD_CLEVEL ZSTD_NBTHREADS
+  BASH_ENV ENV CDPATH GLOBIGNORE TAR_OPTIONS ZSTD_CLEVEL ZSTD_NBTHREADS
 mkdir -p "$CR_LOGS" "$TMPDIR"
 trap 'echo "::error::Interrupted (signal INT), aborting" >&2; exit 130' INT
 trap 'echo "::error::Terminated (signal TERM), aborting" >&2; exit 143' TERM
@@ -58,6 +58,7 @@ make_dirs_removable() {
   [[ -n "$root" ]] || fail 'make_dirs_removable requires a directory path'
   [[ "$root" == /* || "$root" == . || "$root" == ./* || "$root" == .. || "$root" == ../* ]] \
     || root="./$root"
+  [[ -d "$root" && ! -L "$root" ]] || fail "make_dirs_removable requires a real directory: $1"
   failed_dir=$(find -P "$root" -type d ! -perm -u+rwx ! -exec chmod u+rwx -- {} \; -printf 'failed:%p' -quit) \
     || fail "Could not traverse removable directories under $1"
   [[ -z "$failed_dir" ]] || fail "Could not grant owner access to ${failed_dir#failed:}"

@@ -61,15 +61,19 @@ done
 # The image ships its own swap file on /mnt; reclaim that space for the tree.
 # /proc/swaps uses the same fixed 3-digit octal escapes as /proc/self/mountinfo.
 [[ -r /proc/swaps ]] || runner_fail 'Cannot inspect active runner swaps'
-exec 3< /proc/swaps
-IFS= read -r -u 3 _ || runner_fail 'Malformed /proc/swaps header'
-while IFS=$' \t' read -r -u 3 encoded_dev swap_type _; do
+# Snapshot the table before any swapoff: /proc/swaps is regenerated on every
+# read, so reading it incrementally while entries disappear can skip the next one.
+mapfile swap_lines < /proc/swaps || runner_fail 'Cannot inspect active runner swaps'
+[[ ${#swap_lines[@]} -ge 1 && "${swap_lines[0]}" == *$'\n' ]] || runner_fail 'Malformed /proc/swaps header'
+for swap_line in "${swap_lines[@]:1}"; do
+  [[ "$swap_line" == *$'\n' ]] || runner_fail 'Malformed /proc/swaps'
+  IFS=$' \t' read -r encoded_dev swap_type _ <<< "${swap_line%$'\n'}" || continue
   [[ -n "$encoded_dev" && "$swap_type" == file ]] || continue
   decode_mount_path dev "$encoded_dev"
   [[ "$dev" == /mnt/* ]] || continue
   # Do not disable or remove a device, symlink, bind mount, or foreign file.
   [[ -f "$dev" && ! -L "$dev" ]] || continue
-  real_dev=$(realpath -e -- "$dev") || continue
+  realpath_exact real_dev "$dev" || continue
   [[ "$real_dev" == /mnt/* && -f "$real_dev" && "$(stat -c '%d' -- "$real_dev")" == "$relay_device" ]] || continue
   swap_checks=("$real_dev")
   swap_parent=${real_dev%/*}
@@ -81,7 +85,6 @@ while IFS=$' \t' read -r -u 3 encoded_dev swap_type _; do
   sudo -n swapoff -- "$real_dev" < /dev/null
   sudo -n rm -f -- "$real_dev" < /dev/null
 done
-exec 3<&-
 # Reap every background deletion before failing so none keep running on error.
 cleanup_failed=0
 for pid in "${cleanup[@]}"; do

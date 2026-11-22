@@ -21,9 +21,9 @@ class WorkflowConfigTest {
         val workflow = workflowFile.readText()
         assertTrue(workflow.contains("contents: read"))
         assertTrue(workflow.contains("contents: write"))
-        assertTrue(workflow.contains("uses: actions/checkout@v4"))
+        assertTrue(Regex("uses: actions/checkout@[0-9a-f]{40}").containsMatchIn(workflow))
         assertFalse(workflow.contains("fetch-depth: 0"))
-        assertTrue(workflow.contains("bash gradlew --no-daemon testDebugUnitTest assembleRelease"))
+        assertTrue(workflow.contains("bash gradlew --no-daemon testDebugUnitTest assembleRelease lintDebug"))
         assertTrue(workflow.contains("path: app/build/outputs/apk/release/app-release-unsigned.apk"))
         assertTrue(workflow.contains("""git tag --force nightly "${'$'}GITHUB_SHA""""))
         assertTrue(workflow.contains("git push --force origin refs/tags/nightly"))
@@ -47,5 +47,22 @@ class WorkflowConfigTest {
             .filter { it.isFile && (it.extension == "jks" || it.extension == "keystore") }
             .toList()
         assertTrue("Repository must not contain keystore files: $strayKeystores", strayKeystores.isEmpty())
+    }
+    @Test
+    fun `every third party action is pinned to an immutable commit`() {
+        val workflow = File("../.github/workflows/create-release.yml").readText()
+        val actions = Regex("""uses: \S+@(\S+)""").findAll(workflow).toList()
+        assertTrue(actions.isNotEmpty())
+        actions.forEach { assertTrue(it.value, Regex("[0-9a-f]{40}").matches(it.groupValues[1])) }
+    }
+    @Test
+    fun `stale main reruns are rejected before release or tag mutation`() {
+        val workflow = File("../.github/workflows/create-release.yml").readText()
+        val guard = workflow.indexOf("git ls-remote --exit-code origin refs/heads/main")
+        assertTrue(guard >= 0)
+        assertTrue(guard < workflow.indexOf("gh release upload"))
+        assertTrue(guard < workflow.indexOf("git tag --force"))
+        assertTrue(workflow.contains("""if [[ "${'$'}latest_sha" != "${'$'}GITHUB_SHA" ]]; then"""))
+        assertTrue(workflow.contains("shell: bash"))
     }
 }
