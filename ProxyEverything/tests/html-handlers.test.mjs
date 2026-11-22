@@ -32,6 +32,7 @@ function element(tag, attrs) {
 	const writes = [];
 	return {
 		tagName: tag,
+		namespaceURI: 'http://www.w3.org/1999/xhtml',
 		writes,
 		get attributes() { return map.entries(); },
 		getAttribute: name => (map.has(name) ? map.get(name) : null),
@@ -135,4 +136,10 @@ test('XHTML attribute writes keep tab and newline references from XML normalizat
 	const html = Object.assign(element('div', { style: "background:url('a.png')" }), { before() {} });
 	for (const h of collectHandlers()['*']) h.element(html);
 	assert.equal(html.getAttribute('style'), `background:url(&quot;${proxy('/dir/a.png')}&quot;)`);
+});
+
+test('HTML ping lists split on ASCII whitespace and preserve a non-ASCII path space', () => {
+	const link = element('a', { ping: ' /a\u00a0b\t/next  ' });
+	collectHandlers().a[0].element(link);
+	assert.equal(link.getAttribute('ping'), ` ${proxy('/a%C2%A0b')}\t${proxy('/next')}  `);
 });

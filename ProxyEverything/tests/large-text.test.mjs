@@ -3,8 +3,9 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const source = await readFile(new URL('../worker.js', import.meta.url), 'utf8');
-const { default: worker, readTransformText } = await import(
-	'data:text/javascript;base64,' + Buffer.from(source + '\nexport { readTransformText };').toString('base64')
+const { default: worker, readTransformText, rewriteCss, rewriteJsModuleSpecifiers, rewriteSrcset,
+	rewriteImportMap, rewriteSpeculationRules, rewriteSvg, rewriteJsonUrls } = await import(
+	'data:text/javascript;base64,' + Buffer.from(source + '\nexport { readTransformText, rewriteCss, rewriteJsModuleSpecifiers, rewriteSrcset, rewriteImportMap, rewriteSpeculationRules, rewriteSvg, rewriteJsonUrls };').toString('base64')
 );
 const origin = 'https://proxy.example';
 const limit = 2 * 1024 * 1024;
@@ -136,4 +137,31 @@ test('CSS only sniffs the exact @charset byte signature within the first 1024 by
 	assert.equal(prefix.length, 1024);
 	const r = await proxyResponse(Buffer.from(prefix + 'a{content:"é"}', 'latin1'), 'text/css', '/sheet.css');
 	assert.equal(await r.text(), '@charset "UTF-8";a{content:"é"}');
+});
+
+test('CSS, JavaScript and srcset keep their full source when rewrite expansion hits the budget', () => {
+	const base = 'https://site.example/' + 'folder/'.repeat(1100) + 'page';
+	for (const [rewrite, unit] of [
+		[rewriteCss, '.tile{background:url(tile.png)}'],
+		[rewriteJsModuleSpecifiers, 'import "./part.js";'],
+		[rewriteSrcset, 'tile.png 1x, '],
+	]) {
+		assert.ok(rewrite(unit, base, origin).includes(origin + '/~'));
+		const source = unit.repeat(650);
+		assert.equal(rewrite(source, base, origin), source);
+	}
+});
+
+test('XML and JSON documents stop accumulating rewritten URLs across members', () => {
+	const base = 'https://site.example/' + 'folder/'.repeat(1100) + 'doc';
+	for (const [rewrite, make] of [
+		[rewriteSvg, n => '<svg>' + '<image href="tile.png"/>'.repeat(n) + '</svg>'],
+		[rewriteImportMap, n => JSON.stringify({ imports: Object.fromEntries(Array.from({ length: n }, (_, i) => ['part-' + i, './part.js'])) })],
+		[rewriteSpeculationRules, n => JSON.stringify({ prefetch: [{ urls: Array(n).fill('page.html') }] })],
+		[rewriteJsonUrls, n => JSON.stringify({ icons: Array(n).fill({ src: 'tile.png' }) })],
+	]) {
+		assert.ok(rewrite(make(1), base, origin).includes(origin + '/~'));
+		const source = make(650);
+		assert.equal(rewrite(source, base, origin), source);
+	}
 });

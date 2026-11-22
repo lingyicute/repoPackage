@@ -174,6 +174,8 @@ test('document.cookie shares protected cookie names without accepting HTTP-only 
 	assert.equal(ctx.document.cookie, '__Host-pref=one');
 	ctx.document.cookie = '__Http-server=2; HttpOnly; Secure';
 	assert.equal(last, '');
+	ctx.document.cookie = 'pref=two; SameSite=None';
+	assert.equal(last, '');
 	ctx.document.cookie = '__Host-pref=two; Secure; Path=/';
 	assert.equal(last, `__Host-${ns}pref=two; Secure; Path=/`);
 });
@@ -242,4 +244,34 @@ test('shim: wrapped constructors keep subclass prototypes and native call semant
 	assert.equal(run(`new window.Audio().argc`), 0, 'Audio() without a source stays argument-free');
 	assert.equal(run(`new window.Audio('clip.mp3').src`), 'https://proxy.example/~https%3A%2F%2Fexample.com/dir/clip.mp3');
 	assert.ok(run(`new window.Audio() instanceof window.Audio`));
+});
+
+test('navigation property setters follow the same base and empty URL rules as attributes', () => {
+	class HTMLAnchorElement { set href(value) { this.value = String(value); } }
+	class HTMLAreaElement { set href(value) { this.value = String(value); } }
+	class HTMLFormElement { set action(value) { this.value = String(value); } }
+	class HTMLButtonElement { set formAction(value) { this.value = String(value); } }
+	const { ctx } = createBrowser({ HTMLAnchorElement, HTMLAreaElement, HTMLFormElement, HTMLButtonElement });
+	ctx.document.querySelectorAll = () => [{ getAttribute: () => 'https://example.com/other/' }];
+	for (const Link of [ctx.HTMLAnchorElement, ctx.HTMLAreaElement]) {
+		const link = new Link();
+		link.href = '';
+		assert.equal(link.value, proxy('/other/'));
+		link.href = '#section';
+		assert.equal(link.value, proxy('/other/#section'));
+	}
+	for (const [Control, prop] of [[ctx.HTMLFormElement, 'action'], [ctx.HTMLButtonElement, 'formAction']]) {
+		const control = new Control();
+		control[prop] = '';
+		assert.equal(control.value, '');
+		control[prop] = '#section';
+		assert.equal(control.value, proxy('/other/#section'));
+	}
+});
+
+test('DOM ping lists retain Unicode URL characters and ASCII separators', () => {
+	const { ctx } = createBrowser();
+	const a = new ctx.Element('a');
+	a.setAttribute('ping', ' /a\u00a0b\t/next ');
+	assert.equal(a.getAttribute('ping'), ` ${proxy('/a%C2%A0b')}\t${proxy('/next')} `);
 });

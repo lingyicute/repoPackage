@@ -98,6 +98,7 @@ MAX_JSON_BYTES = 16 * 1024 * 1024           # 16 MiB for a document parsed in on
                                             # and json.loads() of one at the blob cap
                                             # takes several times that cap in memory
 MAX_TAR_MEMBERS = 10_000
+MAX_RPM_HEADERS = 100_000  # live inventories have ~2,200; bound parsed-table expansion
 MAX_TAR_FILE_SIZE = 256 * 1024 * 1024       # 256 MiB single file inside tar
 BODHI_PAGE_SIZE = 100                       # Bodhi's max rows_per_page
 MAX_BODHI_PAGES = 10                        # 1000 errata/src is far beyond any real case
@@ -1485,10 +1486,21 @@ def package_list(reg: Registry, resolved: dict) -> dict:
             con = sqlite3.connect(uri, uri=True)
             # Iterated, not fetchall()ed: the blobs add up to most of the ~92 MiB
             # database, and only the one being parsed has to be in memory.
-            rows = con.execute("select blob from Packages")
+            schema = con.execute(
+                "SELECT type, sql FROM sqlite_master WHERE name = 'Packages' COLLATE NOCASE").fetchone()
+            if (schema is None or schema[0] != "table"
+                    or re.match(r"CREATE\s+VIRTUAL\b", schema[1] or "", re.I)):
+                # A tiny view can generate infinitely many rows or run a costly
+                # recursive query before yielding even one. RPM uses a real table.
+                raise SystemExit(T("rpmdb Packages must be an ordinary table",
+                                   "rpmdb Packages 必须是普通数据表"))
+            rows = con.execute("SELECT blob FROM Packages LIMIT ?", (MAX_RPM_HEADERS + 1,))
             pkgs = PackageTable()
             stats: dict = {}
-            for (blob,) in rows:
+            for row_number, (blob,) in enumerate(rows):
+                if row_number >= MAX_RPM_HEADERS:
+                    raise SystemExit(T(f"rpmdb header count exceeds {MAX_RPM_HEADERS} limit",
+                                       f"rpmdb 包头数量超过 {MAX_RPM_HEADERS} 上限"))
                 before = stats.get("headers_rejected", 0)
                 h = read_header(blob, stats)
                 name = h.get("name")
@@ -1928,7 +1940,7 @@ def nvr_candidates_split(pkg: dict) -> tuple:
       `kernel-7.2.5-200.secureblue.1.fc44` can be matched against Fedora's
       `kernel-7.2.5-200.fc44`. That hit is genuinely informative - secureblue's
       kernel *is* a rebuild of that Fedora build (secureblue/kernel's
-      copr_script.sh clones Fedora's kernel dist-git and only sets
+      srpm_script.sh clones Fedora's kernel dist-git and only sets
       `%define buildid .secureblue.N`) - but rpm-ostree never attaches the
       advisory to this package, so it must not feed the notification prediction.
 
@@ -2080,6 +2092,8 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None,
             # security errata of builds the update passes over (old < build <=
             # new): in neither image, yet their fixes arrive with the new build
             "passed_over": [],
+            # The reverse interval: stable security builds a rollback crosses.
+            "reverted_errata": [],
             "changelog_scan": {"new_total": 0, "new_scanned": 0,
                                "dropped_total": 0, "dropped_scanned": 0,
                                "retained_total": 0, "retained_scanned": 0}}
@@ -2180,6 +2194,17 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None,
                 # update that passes over this build (curl 8.9.0 -> 8.9.3, past
                 # the security erratum of 8.9.1) gains its fix all the same, and
                 # only a CVE id in the rpm changelog could say so before.
+                reverted = (_passed_build(new, old, u["nvrs"], epochs)
+                            if (old and evr_cmp(old, new) > 0
+                                and (baseline_release is None or baseline_release == rel)
+                                and (not third_party or norm_new)
+                                and (not old_third_party or old_norm)) else None)
+                if reverted and u.get("type") == "security" and status in PUSHED_STATUSES:
+                    source_cves, shared_cves = _advisory_cve_scope(u)
+                    info["reverted_errata"].append({
+                        "alias": u.get("alias"), "type": "security", "status": status,
+                        "severity": u.get("severity"), "nvr": reverted,
+                        "cves": sorted(source_cves), "advisory_wide_cves": sorted(shared_cves)})
                 passed = (_passed_build(old, new, u["nvrs"], epochs)
                           if (old and (baseline_release is None or baseline_release == rel)
                               and (not third_party or norm_new)
@@ -2430,10 +2455,16 @@ def crosscheck_chunks(ldiff: dict, diff: dict, src_of: dict | None = None,
 def fedora_release(pkgs: dict, image_version: str = "") -> str:
     """Bodhi release id ("F44") for this image.
 
-    Read from the packages themselves; the image version annotation
-    ("44.20260917.0") is only a fallback, so this stops silently going stale at
-    the next Fedora release instead of being pinned to one hard-coded value.
+    The Fedora release RPM declares the installed OS version. A rebase can
+    retain more old .fcNN builds than new ones, so their plurality is only a
+    fallback, followed by the image version annotation.
     """
+    declared = {str(p.get("version")) for p in pkgs.values()
+                if (p.get("src") == "fedora-release" or p.get("name") == "fedora-release")
+                and not _is_third_party(p)
+                and re.fullmatch(r"[1-9][0-9]*", str(p.get("version") or ""))}
+    if len(declared) == 1:
+        return "F" + next(iter(declared))
     fed_counts: dict = {}
     all_counts: dict = {}
     for p in pkgs.values():
@@ -2679,10 +2710,11 @@ def secureblue_notification(diff: dict, groups: list | None = None) -> dict:
 
 
 def _reverted_aliases(group: dict) -> list:
-    """Only a downgraded member's old-only stable advisory can be reverted."""
+    """Old-only and intermediate stable security builds lost by a rollback."""
     return list(dict.fromkeys(
         a["alias"] for c in group["pkgs"] if c.get("dir") == "downgrade"
-        for a in (c.get("cls") or {}).get("already_had") or ()
+        for a in (((c.get("cls") or {}).get("already_had") or [])
+                  + ((c.get("cls") or {}).get("reverted_errata") or []))
         if a.get("alias") and a.get("type") == "security"
         and (a.get("status") or "").lower() in PUSHED_STATUSES
         and not a.get("also_matches_target")))
@@ -2936,14 +2968,14 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                     f"(initramfs / ostree metadata)")
             tail_zh = (f"；下载中有 {human(v['non_package_bytes'])} 属于非软件包内容"
                        f"（initramfs / ostree 元数据）")
-        up_groups = [g for g in groups if not g["downgrade"]]
-        up_bin = sum(len(g["pkgs"]) for g in up_groups)
+        up_groups = [g for g in groups if any(p.get("dir") != "downgrade" for p in g["pkgs"])]
+        up_bin = sum(p.get("dir") != "downgrade" for g in up_groups for p in g["pkgs"])
         v["level"] = "skip"
         # A rollback is not "routine churn": that lead headed the report of a tag
         # that had moved back three builds (eight source packages downgraded).
         lead = lead_zh = ""
         if down:
-            down_bin = sum(len(g["pkgs"]) for g in down)
+            down_bin = sum(p.get("dir") == "downgrade" for g in down for p in g["pkgs"])
             lead = f"{plural(len(down), 'source package')} ({down_bin} binary) downgraded, "
             lead_zh = f"{len(down)} 个源码包（{down_bin} 个二进制包）被降级，"
         v["headline"] = ((lead or "routine churn: ")
@@ -2965,8 +2997,8 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
     # the popup the user will see.  A MAJOR popup (urgency=critical, Reboot
     # action) means the vendor considers this update urgent, so it must not sit
     # in `consider` or below - notably, every Trivalent bump lands here even when
-    # it carries no CVE and no Fedora erratum at all (Trivalent has no Fedora
-    # counterpart, so no Bodhi match is possible by construction).
+    # it carries no CVE and no Fedora erratum at all (Trivalent is a secureblue
+    # build, not a Fedora source build published through Bodhi).
     # Not for the bootc branch's unconditional popup: it fires for every staged
     # update whatever it contains, so it says nothing about THIS one.
     # A critical advisory attached only to a rollback destination is not a
@@ -3021,11 +3053,15 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         v["headline_zh"] += (f" ｜ 注意：两个镜像的 rpmostree.inputhash 相同，却有 {n_moved} 个"
                              "软件包发生了变化——不要拿 inputhash 当作「无变化」的证据")
     if down:
-        def _dl(g):
-            return f"{g['src']} ({g['old_evr']} → {g['new_evr']})"
+        def _dl(g, lang="en"):
+            def binary_label(p):
+                old, new = _evr_pair(p["old"], p["new"])
+                return f"{p['name']} ({old} → {new})"
+            return clip_list((p for p in g["pkgs"] if p.get("dir") == "downgrade"),
+                             2, render=binary_label, lang=lang)
 
         dl_txt = clip_list(down, 3, render=_dl)
-        dl_txt_zh = clip_list(down, 3, render=_dl, lang="zh", joiner="，")
+        dl_txt_zh = clip_list(down, 3, render=lambda g: _dl(g, "zh"), lang="zh", joiner="，")
         v["headline"] += (" | WARNING: this update downgrades " + dl_txt)
         v["headline_zh"] += (" ｜ 警告：此次更新会降级 " + dl_txt_zh)
         # The security errata of the builds being left, by the report's own rule
@@ -3147,7 +3183,8 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
             if v["silent_important"]:
                 bits.append("the chunks of security-relevant packages changed at the same version")
             if v["downgrades"]:
-                bits.append(f"{len(v['downgrades'])} package(s) were downgraded")
+                count = sum(c.get("dir") == "downgrade" for c in diff["changed"])
+                bits.append(f"{count} binary package(s) were downgraded")
             if coverage_gap:
                 bits.append("errata coverage is incomplete, so 'no security fixes' is "
                             "not proven")
@@ -3159,6 +3196,16 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         elif v["level"] == "skip":
             bits.append("packages changed, but no CVE, erratum or sensitive package moved")
         v["level_basis"] = "; ".join(bits)
+    scan_gaps = diff.get("changelog_scan_incomplete") or []
+    v["changelog_coverage_complete"] = None if diff.get("count_a") == "?" else not bool(scan_gaps)
+    if scan_gaps:
+        v["level"] = "unknown"
+        v["level_basis"] = "changelog coverage is incomplete; unread entries may change CVE attribution"
+        v["headline"] = (f"Changelog scans were truncated for {len(scan_gaps)} package(s). "
+                         "Unread new, dropped or retained entries may change CVE attribution; "
+                         "the partial findings do not establish an upgrade recommendation.")
+        v["headline_zh"] = (f"{len(scan_gaps)} 个软件包的更新日志扫描被截断。未读取的新增、丢失或保留"
+                            "条目可能改变 CVE 归属；部分结果不足以给出可靠升级建议。")
     v["package_data_complete"] = diff.get("rpmdb_complete", versions_known)
     if diff.get("rpmdb_complete") is False:
         v["level"] = "unknown"
@@ -3206,7 +3253,7 @@ def _build_evr(p: dict) -> str:
     3.131.0 and sorts first, so an nss update was reported under nspr's numbers
     (likewise device-mapper for lvm2, brlapi for brltty and libdhash for
     ding-libs on the live F45 image). `srpm` is "<src>-<version>-<release>";
-    package_list() strips `.src.rpm`, but not the `.nosrc.rpm` of a NoSource build.
+    package_list() strips both `.src.rpm` and `.nosrc.rpm` suffixes.
     """
     src, srpm = p.get("src") or "", p.get("srpm") or ""
     if src and srpm.startswith(src + "-"):
@@ -3594,7 +3641,8 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
             W(f"## Downgrades in this update ({len(g_down)}) — read first")
         W("")
         for g in g_down:
-            pkgs_label = f"{len(g['pkgs'])} 个包" if is_zh else f"{len(g['pkgs'])} package(s)"
+            downgraded = [p for p in g["pkgs"] if p.get("dir") == "downgrade"]
+            pkgs_label = f"{len(downgraded)} 个包" if is_zh else f"{len(downgraded)} package(s)"
             # What a downgrade reverts is the erratum of the build it moves AWAY
             # from, i.e. one that matched the old build (`already_had`). `aliases`
             # are the errata of the older build it moves back to, and naming
@@ -3607,7 +3655,10 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
                             f"{clip_list(reverted, 2)}")
             else:
                 rev = ""
-            W(f"- **{g['src']}**: {g['old_evr']} → {g['new_evr']} ({pkgs_label}){rev}")
+            W(f"- **{g['src']}**: ({pkgs_label}){rev}")
+            for package in downgraded:
+                old, new = _evr_pair(package["old"], package["new"])
+                W(f"  - `{package['name']}`: {old} → {new}")
         W("")
 
     if g_lost:
@@ -5157,6 +5208,7 @@ def do_diff(args, ref_a: str, ref_b: str, images: tuple | None = None,
         if any(s.get(f"{kind}_total", 0) > s.get(f"{kind}_scanned", 0)
                for kind in ("new", "dropped", "retained")):
             trunc.append(c["name"])
+    diff["changelog_scan_incomplete"] = trunc
     if trunc:
         notes.append(T(
             f"changelog scan capped at {NEW_LOG_CAP} new / {OLD_LOG_CAP} dropped / "
@@ -5269,9 +5321,11 @@ def _comparison_json(res: dict, from_label=None, to_label=None) -> dict:
                         "dir": c["dir"], "security": False if is_down else bool(cls.get("security")),
                         "cves": [] if is_down else cls.get("cves", []),
                         "cves_dropped": cls.get("cves_dropped", []),
+                        "changelog_scan": cls.get("changelog_scan", {}),
                         "advisory_wide_cves": [] if is_down else cls.get("advisory_wide_cves", []),
                         "aliases": [] if is_down else cls.get("aliases", []),
                         "already_had": cls.get("already_had", []),
+                        "reverted_errata": cls.get("reverted_errata", []),
                         "not_pushed": [] if is_down else cls.get("not_pushed", []),
                         "passed_over": [] if is_down else cls.get("passed_over", []),
                         "why": [] if is_down else cls.get("why", [])})
@@ -5285,6 +5339,7 @@ def _comparison_json(res: dict, from_label=None, to_label=None) -> dict:
             "download_bytes_is_upper_bound": True,
             "versions_known": xc.get("versions_known", d.get("count_a") != "?"),
             "rpmdb_issues": d.get("rpmdb_issues"),
+            "changelog_scan_incomplete": d.get("changelog_scan_incomplete", []),
             "changed": changed, "added": d.get("added", []), "removed": d.get("removed", []),
             "silent_rebuilds": xc.get("silent_rebuilds", []),
             "behind_stable_security": res.get("backlog") or [],
@@ -5465,7 +5520,15 @@ def cmd_check(args):
     if not ref_a:
         pending = state.get("last_verdict") == "unknown"
         previous = state.get("prev_digest")
-        if pending or (state.get("digest") == cur["digest"] and previous != cur["digest"]):
+        if (pending and not previous and state.get("baseline_missing") is True
+                and state.get("digest") and state["digest"] != cur["digest"]):
+            # No comparison existed on the first observation. It is still a
+            # valid observed image to compare with a later, distinct target;
+            # unlike an incomplete comparison it has no older usable baseline.
+            state_base_dig = state["digest"]
+            state_base_index = state.get("index_digest")
+            state_base_lbl = _state_label(state)
+        elif pending or (state.get("digest") == cur["digest"] and previous != cur["digest"]):
             # An inconclusive target is not a checkpoint. If the tag returned to
             # the last usable baseline, compare it to itself, not to the failure.
             state_base_dig = previous
@@ -5585,7 +5648,7 @@ def cmd_check(args):
                     "download_bytes": 0, "report": report, "version": ver, **watched})
         # Remember the checkpoint for a future build, not a successful analysis.
         # An unchanged digest must retry the missing baseline on the next run.
-        save_state({"last_verdict": "unknown"})
+        save_state({"last_verdict": "unknown", "baseline_missing": True})
         return 0
 
     # Resolve the baseline exactly once and hand it to do_diff. Resolving the same
