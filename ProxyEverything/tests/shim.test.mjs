@@ -275,3 +275,70 @@ test('DOM ping lists retain Unicode URL characters and ASCII separators', () => 
 	a.setAttribute('ping', ' /a\u00a0b\t/next ');
 	assert.equal(a.getAttribute('ping'), ` ${proxy('/a%C2%A0b')}\t${proxy('/next')} `);
 });
+
+test('history state updates resolve empty URLs against base and block dot-segment escapes', () => {
+	const calls = [];
+	const save = (...args) => calls.push(args[2]);
+	const { ctx } = createBrowser({ DOMException, history: { pushState: save, replaceState: save } });
+	ctx.document.querySelectorAll = () => [{ getAttribute: name => name === 'data-pe-base' ? 'https://example.com/sub/index.html' : null }];
+	ctx.history.pushState(null, '', '');
+	assert.equal(calls[0], proxy('/sub/index.html'));
+	ctx.history.replaceState(null, '', '/~https%3A%2F%2Fexample.com./sub/next');
+	assert.equal(calls[1], '/~https%3A%2F%2Fexample.com./sub/next');
+	ctx.history.pushState(null, '', '/~https%3A%2F%2Fexample.com/../other.example/inside');
+	assert.equal(calls[2], '/~https%3A%2F%2Fexample.com/other.example/inside');
+	assert.throws(() => ctx.history.pushState(null, '', '/~https%3A%2F%2Fother.example/x'), { name: 'SecurityError' });
+});
+
+test('shim ignores foreign base elements and freezes at the first HTML base with href', () => {
+	const { ctx } = createBrowser();
+	const svgBase = Object.assign(new ctx.Element('base'), { namespaceURI: 'http://www.w3.org/2000/svg' });
+	svgBase.setAttribute('href', '/foreign/');
+	assert.equal(svgBase.getAttribute('href'), '/foreign/');
+	assert.equal(svgBase.getAttribute('data-pe-base'), null);
+
+	const firstBase = Object.assign(new ctx.Element('base'), { namespaceURI: 'http://www.w3.org/1999/xhtml' });
+	firstBase.setAttribute('href', 'javascript:void(0)');
+	const secondBase = Object.assign(new ctx.Element('base'), { namespaceURI: 'http://www.w3.org/1999/xhtml' });
+	secondBase.setAttribute('href', 'https://other.example/sub/');
+	ctx.document.querySelectorAll = () => [svgBase, firstBase, secondBase];
+	assert.equal(ctx.window.__PE__.rp('rel.js'), proxy('/dir/rel.js'));
+	firstBase.removeAttribute('href');
+	assert.equal(ctx.window.__PE__.rp('rel.js'), origin + '/~' + encodeURIComponent('https://other.example') + '/sub/rel.js');
+});
+
+test('shim coerces non-string URL objects, WebSocket empty base, and null attribute values', () => {
+	let beaconUrl = null, assignedUrl = null;
+	class WebSocket { constructor(u) { this.url = u; } }
+	class XMLHttpRequest { open(m, u) { this.url = u; } }
+	const { ctx } = createBrowser({
+		WebSocket,
+		XMLHttpRequest,
+		navigator: { sendBeacon(u) { beaconUrl = u; return true; } },
+		location: {
+			href: proxy('/dir/page'), origin, protocol: 'https:', hostname: 'proxy.example', port: '',
+			pathname: '/~' + encodeURIComponent('https://example.com') + '/dir/page', search: '',
+			assign(u) { assignedUrl = u; },
+			replace() {},
+		},
+	});
+	ctx.document.querySelectorAll = () => [{ getAttribute: name => name === 'data-pe-base' ? 'https://example.com/sub/' : null }];
+
+	assert.equal(new ctx.WebSocket('').url, 'wss://proxy.example/~https%3A%2F%2Fexample.com/sub/');
+	const urlLike = { toString: () => '/api/v1' };
+	const xhr = new ctx.XMLHttpRequest();
+	xhr.open('GET', urlLike);
+	assert.equal(xhr.url, proxy('/api/v1'));
+	ctx.navigator.sendBeacon(urlLike);
+	assert.equal(beaconUrl, proxy('/api/v1'));
+	ctx.location.assign(urlLike);
+	assert.equal(assignedUrl, proxy('/api/v1'));
+
+	const script = new ctx.Element('script');
+	script.setAttribute('integrity', 'sha256-x');
+	script.setAttribute('integrity', null);
+	assert.equal(script.getAttribute('integrity'), null);
+	const img = new ctx.Element('img');
+	img.setAttribute('src', null);
+	assert.equal(img.getAttribute('src'), proxy('/sub/null'));
+});

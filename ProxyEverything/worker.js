@@ -235,6 +235,28 @@ function isWorkerHost(u, workerOrigin) {
 	}
 }
 
+/** 已代理 URL 中的 .. 不能越过 /~来源 段逃逸成其它目标主机。 */
+function normalizeProxiedUrl(raw, workerOrigin, keepOrigin) {
+	const u = new URL(raw, workerOrigin);
+	const prefix = keepOrigin
+		? (u.protocol === 'ws:' || u.protocol === 'wss:' ? `${u.protocol}//${new URL(workerOrigin).host}` : workerOrigin)
+		: '';
+	if (isProxiedPath(u.pathname)) return `${prefix}${u.pathname}${urlSuffix(u)}`;
+	const cut = raw.search(/[?#]/);
+	const rawPath = (cut < 0 ? raw : raw.slice(0, cut)).replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/?#]*/i, '');
+	const suffix = cut < 0 ? '' : raw.slice(cut);
+	const decoded = decodeProxyPath(rawPath);
+	if (!decoded) return `${prefix}${u.pathname}${urlSuffix(u)}`;
+	const hashCut = suffix.indexOf('#');
+	const query = hashCut < 0 ? suffix : suffix.slice(0, hashCut);
+	const hash = hashCut < 0 ? '' : suffix.slice(hashCut);
+	const baseTarget = decoded.split('#', 1)[0];
+	const target = new URL(baseTarget + (query ? (baseTarget.includes('?') ? '&' : '?') + query.slice(1) : '') + hash);
+	const host = normalizeHostname(target.hostname);
+	if (host) target.hostname = host;
+	return prefix + encodeProxyPath(target);
+}
+
 function rewriteUrl(value, baseUrl, workerOrigin, resolveEmptyOrFragment = false) {
 	if (value == null) return value;
 	const v = trimUrlSpace(String(value));
@@ -242,15 +264,10 @@ function rewriteUrl(value, baseUrl, workerOrigin, resolveEmptyOrFragment = false
 	if (!resolveEmptyOrFragment && (!v || v.startsWith('#'))) return v;
 	// 已经是本站代理 URL：经 URL 规范化以编码裸 <、> 等字符，避免透传进内联 raw-text
 	if (isProxiedPath(v)) {
-		try {
-			const u = new URL(v, workerOrigin);
-			return u.pathname + urlSuffix(u);
-		} catch {
-			return v;
-		}
+		try { return normalizeProxiedUrl(v, workerOrigin, false); } catch { return v; }
 	}
 	if (v.startsWith(workerOrigin + '/') && isProxiedPath(v.slice(workerOrigin.length))) {
-		try { return new URL(v).href; } catch { return v; }
+		try { return normalizeProxiedUrl(v, workerOrigin, true); } catch { return v; }
 	}
 	try {
 		const abs = new URL(v, baseUrl);
@@ -259,15 +276,11 @@ function rewriteUrl(value, baseUrl, workerOrigin, resolveEmptyOrFragment = false
 			return v;
 		}
 		if (isWorkerHost(abs, workerOrigin)) {
+			const hasOrigin = /^([a-z][a-z0-9+.-]*:)?\/\//i.test(v);
+			const rawSelfPath = hasOrigin ? v.replace(/^(?:[a-z][a-z0-9+.-]*:)?\/\/[^/?#]*/i, '') : '';
 			// 已代理（同源主机且路径是编码后的目标 URL）
-			if (isProxiedPath(abs.pathname)) {
-				if (!/^([a-z][a-z0-9+.-]*:)?\/\//i.test(v)) {
-					return abs.pathname + urlSuffix(abs);
-				}
-				const origin = abs.protocol === 'ws:' || abs.protocol === 'wss:'
-					? `${abs.protocol}//${new URL(workerOrigin).host}`
-					: workerOrigin;
-				return `${origin}${abs.pathname}${urlSuffix(abs)}`;
+			if (isProxiedPath(abs.pathname) || isProxiedPath(rawSelfPath)) {
+				return hasOrigin ? normalizeProxiedUrl(v, workerOrigin, true) : abs.pathname + urlSuffix(abs);
 			}
 			// 落到代理域自身的非代理路径：回退按目标基地址解析，避免触发自代理拦截
 			const rebound = new URL(new URL(baseUrl).origin + abs.pathname + urlSuffix(abs));
@@ -775,9 +788,32 @@ function getCharset(contentType, fromMeta = false) {
 	return null;
 }
 
+/** HTML 规范「从 meta 元素提取编码」：不要求前置分号，引号未闭合时放弃。 */
+function extractMetaCharset(content) {
+	const s = String(content || '');
+	const re = /charset/gi;
+	for (let m; (m = re.exec(s));) {
+		let i = m.index + 7;
+		while (i < s.length && isSrcsetSpace(s[i])) i++;
+		if (s[i] !== '=') { re.lastIndex = i; continue; }
+		i++;
+		while (i < s.length && isSrcsetSpace(s[i])) i++;
+		const quote = s[i];
+		if (quote === '"' || quote === "'") {
+			const end = s.indexOf(quote, i + 1);
+			return end < 0 ? null : normalizeCharsetLabel(s.slice(i + 1, end), true);
+		}
+		let end = i;
+		while (end < s.length && !isSrcsetSpace(s[end]) && s[end] !== ';') end++;
+		return normalizeCharsetLabel(s.slice(i, end), true);
+	}
+	return null;
+}
+
 function scanHtmlPrescanAttrs(text, start, collect) {
 	let i = start;
-	const attrs = collect ? Object.create(null) : null;
+	const attrs = collect ? [] : null;
+	const seen = collect ? new Set() : null;
 	while (i < text.length) {
 		while (isSrcsetSpace(text[i]) || text[i] === '/') i++;
 		if (text[i] === '>') return { end: i + 1, attrs };
@@ -801,7 +837,10 @@ function scanHtmlPrescanAttrs(text, start, collect) {
 				if (collect) value = text.slice(valueStart, i);
 			}
 		}
-		if (collect && !Object.hasOwn(attrs, name)) attrs[name] = value;
+		if (collect && name && !seen.has(name)) {
+			seen.add(name);
+			attrs.push([name, value]);
+		}
 	}
 	return null;
 }
@@ -834,11 +873,18 @@ function prescanHtmlCharset(text) {
 		if (!scanned) return null;
 		start = scanned.end;
 		if (!meta) continue;
-		const attrs = scanned.attrs;
-		const encoding = Object.hasOwn(attrs, 'charset')
-			? normalizeCharsetLabel(attrs.charset, true)
-			: attrs['http-equiv']?.toLowerCase() === 'content-type' ? getCharset(attrs.content, true) : null;
-		if (encoding) return encoding;
+		let gotPragma = false, needPragma = null, charset = null;
+		for (const [name, value] of scanned.attrs) {
+			if (name === 'http-equiv' && value.toLowerCase() === 'content-type') gotPragma = true;
+			else if (name === 'content' && charset === null) {
+				const candidate = extractMetaCharset(value);
+				if (candidate) { charset = candidate; needPragma = true; }
+			} else if (name === 'charset' && charset === null) {
+				const candidate = normalizeCharsetLabel(value, true);
+				if (candidate) { charset = candidate; needPragma = false; }
+			}
+		}
+		if (needPragma !== null && (!needPragma || gotPragma)) return charset;
 	}
 	return null;
 }
@@ -1068,10 +1114,11 @@ function applyCachePolicy(response, request, ck) {
 // 让 JS 动态发起的请求（fetch/XHR/WebSocket/img.src 等）也走代理
 // ============================================================
 
-function getShimScript(workerOrigin, cookieNs) {
+function getShimScript(workerOrigin, cookieNs, isXml = false) {
 	// application/xhtml+xml 按 XML 解析，脚本里的 && 与 < 会让整页解析失败；
 	// CDATA 守卫在 HTML 中只是行注释，在 XHTML 中则保护脚本正文。
-	return `<script>//<![CDATA[
+	const openTag = isXml ? '<script xmlns="http://www.w3.org/1999/xhtml">' : '<script>';
+	return `${openTag}//<![CDATA[
 (function(){
 try{
 /* XHR/pjax 拉回的 HTML 片段同样注入了 shim，被 jQuery/Turbo 等再次执行时不能层层重复包裹原生 API */
@@ -1081,7 +1128,9 @@ var WOU=new URL(WO);
 var WOH=WOU.hostname.toLowerCase().replace(/\\.+$/,'');
 var WOP=WOU.port||'';
 var CK=${JSON.stringify(cookieNs || '')};
+var HTML_NS='http://www.w3.org/1999/xhtml';
 ${browserPathHelpers()}
+function isHtmlEl(el){var ns=el&&el.namespaceURI;return !ns||ns===HTML_NS;}
 function isSelfHost(u){
   var h=(u&&u.hostname||'').toLowerCase().replace(/\\.+$/,'');
   if(!h)return false;
@@ -1105,34 +1154,56 @@ function base(){
   if(!list.length&&document.querySelector){var b0=document.querySelector('base[data-pe-base],base[href]');if(b0)list=[b0];}
   for(var i=0;i<list.length;i++){
     var b=list[i];
-    var h=b.getAttribute('data-pe-base')||b.getAttribute('href');
+    if(!isHtmlEl(b))continue;
+    var pe=b.getAttribute('data-pe-base');
+    var h=pe!==null?pe:b.getAttribute('href');
+    if(h===null)continue;
     if(h){try{var u=new URL(h,target);if(u.protocol==='http:'||u.protocol==='https:')return u.href;}catch(e){}}
+    return target;
   }
   return target;
 }
-function rp(v){
-  if(v==null)return v;
-  if(typeof v==='object'){
-    if(v instanceof URL)return rp(v.href);
-    return v;
+function normProxied(raw,keepOrigin){
+  var pu=new URL(raw,WO);
+  var isWs=pu.protocol==='ws:'||pu.protocol==='wss:';
+  if(isProxiedPath(pu.pathname)){
+    if(!keepOrigin)return raw.indexOf('..')<0?raw:pu.pathname+urlSuffix(pu);
+    if(isWs){
+      var canonH=location.hostname||WOU.hostname;
+      if(canonH&&pu.hostname!==canonH)pu.hostname=canonH;
+      return pu.href;
+    }
+    return WO+pu.pathname+urlSuffix(pu);
   }
+  var cut=raw.search(/[?#]/);
+  var rawPath=(cut<0?raw:raw.slice(0,cut)).replace(/^(?:[a-z][a-z0-9+.-]*:)?\\/\\/[^/?#]*/i,'');
+  var suffix=cut<0?'':raw.slice(cut);
+  var dec=decodeProxyPath(rawPath);
+  if(!dec)return keepOrigin?WO+pu.pathname+urlSuffix(pu):pu.pathname+urlSuffix(pu);
+  var hCut=suffix.indexOf('#');
+  var q=hCut<0?suffix:suffix.slice(0,hCut);
+  var h=hCut<0?'':suffix.slice(hCut);
+  var baseDec=dec.split('#',1)[0];
+  var tu=new URL(baseDec+(q?(baseDec.indexOf('?')>=0?'&':'?')+q.slice(1):'')+h);
+  var th=tu.hostname.toLowerCase().replace(/\\.+$/,'');
+  if(th){try{tu.hostname=th;}catch(e){}}
+  var prefix=keepOrigin?(isWs?pu.protocol+'//'+(location.host||WOU.host):WO):'';
+  return prefix+encodeProxyPath(tu);
+}
+function rp(v){
+  if(v==null||typeof v==='symbol')return v;
+  if(v instanceof URL)return rp(v.href);
   var s=trimUrlSpace(String(v));
   if(!s||SKIP_RE.test(s))return s;
-  if(isProxiedPath(s))return s;
+  if(isProxiedPath(s)){try{return normProxied(s,false);}catch(e){return s;}}
   var forcedWs='';
   try{
     if(s===WO)s='/';
     else if(ABS_RE.test(s)||s.indexOf('//')===0){
       var pu=new URL(s,WO);
       if(isSelfHost(pu)){
-        if(isProxiedPath(pu.pathname)){
-          if(pu.protocol==='ws:'||pu.protocol==='wss:'){
-            var canonH=location.hostname||WOU.hostname;
-            if(canonH&&pu.hostname!==canonH)pu.hostname=canonH;
-            return pu.href;
-          }
-          return WO+pu.pathname+urlSuffix(pu);
-        }
+        var rawSelf=s.replace(/^(?:[a-z][a-z0-9+.-]*:)?\\/\\/[^/?#]*/i,'');
+        if(isProxiedPath(pu.pathname)||isProxiedPath(rawSelf))return normProxied(s,true);
         if(pu.protocol==='ws:'||pu.protocol==='wss:')forcedWs=pu.protocol;
         // 用完整来源拼接：已解析路径开头的双斜线不是新的主机名。
         s=new URL(base()).origin+pu.pathname+urlSuffix(pu);
@@ -1150,11 +1221,16 @@ function rp(v){
 function rwUrlArg(a){
   if(typeof a==='string')return rp(a);
   if(a instanceof URL)return new URL(rp(a.href),location.href||WO);
+  if(a!=null&&typeof a!=='symbol')return rp(String(a));
   return a;
 }
 function rpBase(a){
-  if(typeof a==='string'&&!trimUrlSpace(a))return rp(base());
-  return rwUrlArg(a);
+  if(a instanceof URL)return new URL(rp(a.href),location.href||WO);
+  if(a!=null&&typeof a!=='symbol'){
+    var s=String(a);
+    return !trimUrlSpace(s)?rp(base()):rp(s);
+  }
+  return a;
 }
 function isProxyRequestUrl(value){
   try{var u=new URL(value,WO);return u.origin===WO&&isProxiedPath(u.pathname);}catch(e){return false;}
@@ -1241,17 +1317,16 @@ function wrapCtor(name,rewrite){
   return W;
 }
 wrapCtor('EventSource',rpBase);
-if(navigator.sendBeacon){var oSB=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,d){try{u=typeof u==='string'&&!trimUrlSpace(u)?rp(base()):rp(u);}catch(e){}return arguments.length>1?oSB(u,d):oSB(u);};}
+if(navigator.sendBeacon){var oSB=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,d){try{if(u!==undefined&&typeof u!=='symbol')u=rpBase(String(u));}catch(e){}return arguments.length>1?oSB(u,d):oSB(u);};}
 wrapCtor('Worker',rpBase);
 try{wrapCtor('SharedWorker',rpBase);}catch(e){}
-try{wrapCtor('Audio',rp);}catch(e){}
+try{wrapCtor('Audio',function(u){return u===undefined?u:rwUrlArg(u);});}catch(e){}
 /* Service Worker 无法在代理路径下正确工作，直接禁用注册以免站点异常 */
 try{if(navigator.serviceWorker)navigator.serviceWorker.register=function(){return Promise.reject(new Error('[ProxyEverything] service worker disabled'));};}catch(e){}
 /* ---- WebSocket：目标地址已在路径内，无需污染目标查询串 ---- */
 function rwWsUrl(u){
-  var nu=u;
-  if(typeof u==='string')nu=rp(u);
-  else if(u instanceof URL)nu=rp(u.href);
+  if(u==null||typeof u==='symbol')return u;
+  var nu=u instanceof URL?rp(u.href):rpBase(String(u));
   if(typeof nu==='string'){
     var au=new URL(nu,location.href||WO);
     if(au.origin===WO||au.origin===location.origin||isSelfHost(au)){
@@ -1265,12 +1340,14 @@ var WS=wrapCtor('WebSocket',rwWsUrl);
 if(WS)['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k,i){try{WS[k]=i;}catch(e){}});
 /* ---- history / window.open / location.assign ---- */
 function wrapHistory(fn){return function(st,t,u){
-  if(u!=null&&u!==''){
+  if(u!=null){
     var next=rwNavigation(String(u),true);
     var link=new URL(next,location.href);
-    if(isSelfHost(link)&&isProxiedPath(link.pathname)){
-      var dest=new URL(decodeProxyPath(link.pathname));
-      if(dest.origin!==new URL(currentTarget()).origin)throw new DOMException('History URL has a different target origin','SecurityError');
+    if(isSelfHost(link)){
+      var dec=isProxiedPath(link.pathname)?decodeProxyPath(link.pathname):'';
+      var dest=null;
+      if(dec){try{dest=new URL(dec);var dh=dest.hostname.toLowerCase().replace(/\\.+$/,'');if(dh)dest.hostname=dh;}catch(e){dest=null;}}
+      if(!dest||dest.origin!==new URL(currentTarget()).origin)throw new DOMException('History URL has a different target origin','SecurityError');
     }
     arguments[2]=next;
   }
@@ -1279,14 +1356,14 @@ function wrapHistory(fn){return function(st,t,u){
 if(history.pushState)history.pushState=wrapHistory(history.pushState);
 if(history.replaceState)history.replaceState=wrapHistory(history.replaceState);
 var oWo=window.open;
-if(oWo)window.open=function(u){try{if(arguments.length&&u!=null)arguments[0]=rwUrlArg(u);}catch(e){}return oWo.apply(this,arguments);};
-try{var oAs=location.assign.bind(location);location.assign=function(u){return oAs(typeof u==='string'&&!trimUrlSpace(u)?rp(base()):rp(u));};}catch(e){}
-try{var oRe=location.replace.bind(location);location.replace=function(u){return oRe(typeof u==='string'&&!trimUrlSpace(u)?rp(base()):rp(u));};}catch(e){}
+if(oWo)window.open=function(u){try{if(arguments.length&&u!==undefined&&typeof u!=='symbol')arguments[0]=rwUrlArg(String(u));}catch(e){}return oWo.apply(this,arguments);};
+try{var oAs=location.assign.bind(location);location.assign=function(u){return oAs(u!==undefined&&typeof u!=='symbol'?rpBase(String(u)):u);};}catch(e){}
+try{var oRe=location.replace.bind(location);location.replace=function(u){return oRe(u!==undefined&&typeof u!=='symbol'?rpBase(String(u)):u);};}catch(e){}
 /* ---- DOM 属性 setter 拦截：img.src = "..." 等动态赋值 ---- */
 ${mapPingUrls.toString()}
-function rwPing(v){return typeof v==='string'?mapPingUrls(v,rp):v;}
-function rwAnchorArg(v){return typeof v==='string'||v instanceof URL?rwNavigation(String(v),true):v;}
-function rwFormArg(v){return typeof v==='string'||v instanceof URL?rwNavigation(String(v),false):v;}
+function rwPing(v){return v!=null&&typeof v!=='symbol'?mapPingUrls(String(v),rp):v;}
+function rwAnchorArg(v){return v!=null&&typeof v!=='symbol'?rwNavigation(String(v),true):v;}
+function rwFormArg(v){return v!=null&&typeof v!=='symbol'?rwNavigation(String(v),false):v;}
 function patchSetter(ctor,prop,rewrite=rwUrlArg){
   try{
     if(!ctor||!ctor.prototype)return;
@@ -1302,7 +1379,7 @@ function patchSetter(ctor,prop,rewrite=rwUrlArg){
 /* 与服务端共享同一解析器，保留候选 URL 内部的逗号。 */
 ${isSrcsetSpace.toString()}
 ${mapSrcset.toString()}
-function rwSrcset(v){return typeof v==='string'?mapSrcset(v,rp):v;}
+function rwSrcset(v){return v!=null&&typeof v!=='symbol'?mapSrcset(String(v),rp):v;}
 var I=window.HTMLImageElement;
 patchSetter(I,'src');patchSetter(I,'srcset',rwSrcset);
 patchSetter(window.HTMLScriptElement,'src');
@@ -1339,8 +1416,12 @@ try{
       Object.defineProperty(HTMLBaseElement.prototype,'href',{
         configurable:true,enumerable:bd.enumerable,
         get:function(){
-          var h=this.getAttribute('data-pe-base')||this.getAttribute('href');
-          if(h){try{var u=new URL(h,currentTarget());if(u.protocol==='http:'||u.protocol==='https:')return u.href;}catch(e){}}
+          var pe=this.getAttribute('data-pe-base');
+          var h=pe!==null?pe:this.getAttribute('href');
+          if(h!==null){
+            if(h){try{var u=new URL(h,currentTarget());if(u.protocol==='http:'||u.protocol==='https:')return u.href;}catch(e){}}
+            return currentTarget();
+          }
           return base();
         },
         set:function(v){this.setAttribute('href',v);}
@@ -1386,7 +1467,7 @@ if(window.Element){
   var oRANS=Element.prototype.removeAttributeNS;
   Element.prototype.setAttribute=function(n,v){
     try{
-      if(typeof n==='string'&&v!=null){
+      if(arguments.length>=2&&typeof n==='string'&&typeof v!=='symbol'){
         var ln=n.toLowerCase();
         var sv=v instanceof URL?v.href:String(v);
         var tag=normTag(this);
@@ -1394,16 +1475,13 @@ if(window.Element){
           if(oRA)oRA.call(this,'integrity');
           return;
         }
-        if(ln==='href'&&tag==='BASE'){
-          var bOk=false;
+        if(ln==='href'&&tag==='BASE'&&isHtmlEl(this)){
+          var nextBase='';
           try{
             var bUrl=new URL(sv,currentTarget());
-            if(bUrl.protocol==='http:'||bUrl.protocol==='https:'){
-              oSA.call(this,'data-pe-base',bUrl.href);
-              bOk=true;
-            }
+            if(bUrl.protocol==='http:'||bUrl.protocol==='https:')nextBase=bUrl.href;
           }catch(e){}
-          if(!bOk&&oRA)oRA.call(this,'data-pe-base');
+          oSA.call(this,'data-pe-base',nextBase);
           if(oRA)oRA.call(this,'href');
           return;
         }
@@ -1420,7 +1498,7 @@ if(window.Element){
       if(n.slice(n.lastIndexOf(':')+1)!=='href')return oSANS.apply(this,arguments);
     }else if((ns!=null&&ns!=='')||n.indexOf(':')>=0)return oSANS.apply(this,arguments);
     try{
-      if(v!=null){
+      if(arguments.length>=3&&typeof v!=='symbol'){
         var local=ns===XLINK_NS?'xlink:href':n;
         var sv=v instanceof URL?v.href:String(v);
         var tag=normTag(this);
@@ -1428,16 +1506,13 @@ if(window.Element){
           if(oRA)oRA.call(this,'integrity');
           return;
         }
-        if(local==='href'&&tag==='BASE'){
-          var bOk=false;
+        if(local==='href'&&tag==='BASE'&&isHtmlEl(this)){
+          var nextBase='';
           try{
             var bUrl=new URL(sv,currentTarget());
-            if(bUrl.protocol==='http:'||bUrl.protocol==='https:'){
-              oSA.call(this,'data-pe-base',bUrl.href);
-              bOk=true;
-            }
+            if(bUrl.protocol==='http:'||bUrl.protocol==='https:')nextBase=bUrl.href;
           }catch(e){}
-          if(!bOk&&oRA)oRA.call(this,'data-pe-base');
+          oSA.call(this,'data-pe-base',nextBase);
           if(oRA)oRA.call(this,'href');
           return;
         }
@@ -1449,7 +1524,7 @@ if(window.Element){
   };
   if(oRA)Element.prototype.removeAttribute=function(n){
     try{
-      if(typeof n==='string'&&n.toLowerCase()==='href'&&normTag(this)==='BASE'){
+      if(typeof n==='string'&&n.toLowerCase()==='href'&&normTag(this)==='BASE'&&isHtmlEl(this)){
         oRA.call(this,'data-pe-base');
       }
     }catch(e){}
@@ -1457,7 +1532,7 @@ if(window.Element){
   };
   if(oRANS)Element.prototype.removeAttributeNS=function(ns,n){
     try{
-      if((ns==null||ns==='')&&n==='href'&&normTag(this)==='BASE'&&oRA){
+      if((ns==null||ns==='')&&n==='href'&&normTag(this)==='BASE'&&isHtmlEl(this)&&oRA){
         oRA.call(this,'data-pe-base');
       }
     }catch(e){}
@@ -2031,22 +2106,30 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 	const isXml = mimeType(response.headers.get('Content-Type')) === 'application/xhtml+xml';
 	const rawText = (text, transform) => isXml ? rewriteXmlText(text, transform) : transform(text);
 	let baseHref = baseUrl;
+	let sawBaseHref = false;
 	let hasBaseHref = false;
+	let sawRoot = false;
 	let templateDepth = 0;
 	const htmlNamespace = 'http://www.w3.org/1999/xhtml';
 	let injected = false;
-	const shim = getShimScript(workerOrigin, ck ? ck.ns : '');
+	const shim = getShimScript(workerOrigin, ck ? ck.ns : '', isXml);
 	const rw = (v) => rewriteUrl(v, baseHref, workerOrigin);
 
 	// 注入运行时 shim（head 优先，无 head 则 body 兜底）
 	rewriter.on('head', {
 		element(el) {
-			if (!injected) { injected = true; el.prepend(shim, { html: true }); }
+			if (!injected && !templateDepth && el.namespaceURI === htmlNamespace) {
+				injected = true;
+				el.prepend(shim, { html: true });
+			}
 		},
 	});
 	rewriter.on('body', {
 		element(el) {
-			if (!injected) { injected = true; el.prepend(shim, { html: true }); }
+			if (!injected && !templateDepth && el.namespaceURI === htmlNamespace) {
+				injected = true;
+				el.prepend(shim, { html: true });
+			}
 		},
 	});
 
@@ -2059,28 +2142,31 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 		},
 	});
 
-	// 只采纳活动文档内第一个合法 HTTP(S) href，保留 target 与原始基地址供 shim 使用。
+	// HTML 规范以活动文档内第一个带 href 的 base 冻结基地址；无效或非 HTTP(S) 回退文档原地址，不顺延后续 base。
 	rewriter.on('base', {
 		element(el) {
 			if (templateDepth || el.namespaceURI !== htmlNamespace) return;
-			const h = getHtmlAttribute(el, 'href', isXml);
-			if (h != null && !hasBaseHref) {
-				try {
-					const u = new URL(h, baseUrl);
-					if (u.protocol === 'http:' || u.protocol === 'https:') {
-						hasBaseHref = true;
-						baseHref = u.href;
-						setHtmlAttribute(el, 'data-pe-base', baseHref, isXml);
-					} else {
-						el.removeAttribute('data-pe-base');
-					}
-				} catch {
-					el.removeAttribute('data-pe-base');
+			if (el.hasAttribute('href')) {
+				const h = getHtmlAttribute(el, 'href', isXml);
+				let nextBase = '';
+				if (h != null) {
+					try {
+						const u = new URL(h, baseUrl);
+						if (u.protocol === 'http:' || u.protocol === 'https:') nextBase = u.href;
+					} catch {}
 				}
+				if (!sawBaseHref) {
+					sawBaseHref = true;
+					if (nextBase) {
+						hasBaseHref = true;
+						baseHref = nextBase;
+					}
+				}
+				setHtmlAttribute(el, 'data-pe-base', nextBase, isXml);
+				el.removeAttribute('href');
 			} else {
 				el.removeAttribute('data-pe-base');
 			}
-			el.removeAttribute('href');
 		},
 	});
 
@@ -2100,7 +2186,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 			}
 			if (he === 'content-type') {
 				const c = getHtmlAttribute(el, 'content', isXml);
-				if (c) setHtmlAttribute(el, 'content', c.replace(/charset\s*=\s*[^;]*/i, 'charset=UTF-8'), isXml);
+				if (c) setHtmlAttribute(el, 'content', c.replace(/charset\s*=\s*[^;]*/gi, 'charset=UTF-8'), isXml);
 			}
 			if (getHtmlAttribute(el, 'charset', isXml) != null) {
 				setHtmlAttribute(el, 'charset', 'UTF-8', isXml);
@@ -2168,8 +2254,10 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 			// （XHR 拉回的 HTML 片段、<frameset> 老页面等），上面的两个 handler
 			// 都不会触发，shim 就丢了。这里插到文档第一个非容器元素之前，
 			// 保证它仍然先于页面自身脚本执行。
+			const isRoot = !sawRoot;
+			sawRoot = true;
 			const tag = (el.tagName || '').toLowerCase();
-			if (!injected && tag !== 'html' && tag !== 'head' && tag !== 'body') {
+			if (!injected && !templateDepth && !(isXml && isRoot) && tag !== 'html' && tag !== 'head' && tag !== 'body') {
 				injected = true;
 				el.before(shim, { html: true });
 			}
@@ -2223,7 +2311,7 @@ const CSS_CHARSET_SIGNATURE = /^@charset "([\x00-\x21\x23-\x7f]{0,1012})";/;
  * 超过 2 MiB 上限时把已读分片与剩余流无缝拼接，原样透传正文及其表示元数据。
  */
 function sniffTextCharset(bytes, kind, declaredCharset = null) {
-	const head = bytes.subarray(0, kind === 'css' ? 1024 : 256);
+	const head = bytes.subarray(0, kind === 'css' ? 1024 : kind === 'svg' ? 4096 : 256);
 	if (head[0] === 0xff && head[1] === 0xfe) return 'utf-16le';
 	if (head[0] === 0xfe && head[1] === 0xff) return 'utf-16be';
 	if (head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) return 'utf-8';
@@ -2446,7 +2534,7 @@ const rewriteSpeculationRules = capRewriteGrowth((account, text, baseUrl, worker
 		for (const rule of rules) {
 			if (rule && Array.isArray(rule.urls)) {
 				const ruleBase = rule.relative_to === 'document' ? docUrl : baseUrl;
-				rule.urls = rule.urls.map(u => typeof u === 'string' ? account(u.length, rewriteUrl(u, ruleBase, workerOrigin)) : u);
+				rule.urls = rule.urls.map(u => typeof u === 'string' ? account(u.length, rewriteUrl(u, ruleBase, workerOrigin, true)) : u);
 			}
 		}
 	}
@@ -2469,7 +2557,7 @@ function decodeXmlEntities(s) {
 }
 
 function hasCustomXmlEntity(s) {
-	return /&(?!(?:amp|lt|gt|quot|apos);)[^\s&#;<>]+;/.test(s);
+	return /&(?!(?:amp|lt|gt|quot|apos);)[A-Za-z_:\u00c0-\ud7ff\uf900-\ufdcf\ufdf0-\ufffd\u{10000}-\u{effff}][\w.:\u00b7-\ud7ff\uf900-\ufdcf\ufdf0-\ufffd\u{10000}-\u{effff}-]*;/u.test(s);
 }
 
 function escapeXmlAttr(s) {
@@ -2538,27 +2626,60 @@ function readXmlTextEnd(source, start, qualifiedName) {
 }
 
 const rewriteXmlText = capRewriteGrowth((account, body, transform) => {
-	const rewritePart = (part) => {
-		if (hasCustomXmlEntity(part)) return part;
-		const decoded = decodeXmlEntities(part);
-		const out = transform(decoded);
-		return out === decoded ? part : out.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/]]>/g, ']]&gt;');
-	};
+	const escapeXmlText = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/]]>/g, ']]&gt;');
 	let out = '';
 	let last = 0;
+	let sawCustom = false;
+	let hasCdata = false;
+	const decodedParts = [];
+	const transformedParts = [];
+	const pushText = (part) => {
+		if (!part && decodedParts.length) return '';
+		if (hasCustomXmlEntity(part)) { sawCustom = true; return part; }
+		const decoded = decodeXmlEntities(part);
+		const next = transform(decoded);
+		if (part) {
+			decodedParts.push(decoded);
+			transformedParts.push(next);
+		}
+		return next === decoded ? part : escapeXmlText(next);
+	};
 	const opener = /<!\[CDATA\[|<!--/g;
 	let match;
 	while ((match = opener.exec(body))) {
 		const cdata = match[0] === '<![CDATA[';
 		const end = body.indexOf(cdata ? ']]>' : '-->', opener.lastIndex);
 		if (end < 0) return body;
-		out += account(match.index - last, rewritePart(body.slice(last, match.index)));
-		out += cdata
-			? account(end + 3 - match.index, `<![CDATA[${transform(body.slice(opener.lastIndex, end)).replace(/]]>/g, ']]]]><![CDATA[>')}]]>`)
-			: body.slice(match.index, end + 3);
+		const before = body.slice(last, match.index);
+		if (before) out += account(before.length, pushText(before));
+		if (cdata) {
+			hasCdata = true;
+			const inner = body.slice(opener.lastIndex, end);
+			const next = transform(inner);
+			if (inner) {
+				decodedParts.push(inner);
+				transformedParts.push(next);
+			}
+			out += account(end + 3 - match.index, `<![CDATA[${next.replace(/]]>/g, ']]]]><![CDATA[>')}]]>`);
+		} else {
+			out += body.slice(match.index, end + 3);
+		}
 		last = opener.lastIndex = end + 3;
 	}
-	return out + account(body.length - last, rewritePart(body.slice(last)));
+	const tail = body.slice(last);
+	if (tail || !out) out += account(tail.length, pushText(tail));
+	// /*<![CDATA[*/ ... /*]]>*/ 等写法把同一段源码拆在多段文本间；逐段改写失配时按拼接后的 XML 字符数据改写。
+	if (!sawCustom && decodedParts.length > 1) {
+		const combined = decodedParts.join('');
+		const combinedOut = transform(combined);
+		if (combinedOut !== transformedParts.join('')) {
+			const serialized = hasCdata
+				? `<![CDATA[${combinedOut.replace(/]]>/g, ']]]]><![CDATA[>')}]]>`
+				: escapeXmlText(combinedOut);
+			return account(body.length, serialized);
+		}
+	}
+	return out;
 });
 
 /** 独立 SVG 文档：重写引用属性和样式，保留不理解的 XML 声明与实体。 */
@@ -2635,7 +2756,7 @@ const rewriteSvg = capRewriteGrowth((account, source, baseUrl, workerOrigin) => 
 			let next;
 			// 保留原生片段引用的含义，但让浏览器解析片段时也留在代理基地址内。
 			if (name === 'xml:base' && localName) next = rewriteUrl(elementBase, baseUrl, workerOrigin);
-			else if (XML_REFERENCE_ATTRS.has(name) || xlinkHref) next = rw(decoded);
+			else if (XML_REFERENCE_ATTRS.has(name) || xlinkHref || (name === 'data' && localName === 'object')) next = rw(decoded);
 			else if (name === 'srcset' || name === 'imagesrcset') next = rewriteSrcset(decoded, elementBase, workerOrigin);
 			else if (name === 'ping') next = rewritePing(decoded, elementBase, workerOrigin);
 			else if (SVG_CSS_ATTRS.has(name)) next = rewriteStyleAttr(decoded, elementBase, workerOrigin);

@@ -17,13 +17,14 @@ const {
 	rewriteSvg, rewriteXmlText,
 	rewriteUrl,
 	sniffHtmlCharset,
+	sniffTextCharset,
 	stringifyInlineJson,
 } = await import(
 	'data:text/javascript;base64,' + Buffer.from(source + `
 export {
 	getRootHtml, getShimScript, MD3_JS, quoteCssString, rewriteCss,
 	rewriteJsModuleSpecifiers, rewriteRefreshContent, rewriteStyleAttr,
-	rewriteSvg, rewriteXmlText, rewriteUrl, sniffHtmlCharset, stringifyInlineJson
+	rewriteSvg, rewriteXmlText, rewriteUrl, sniffHtmlCharset, sniffTextCharset, stringifyInlineJson
 };`).toString('base64')
 );
 
@@ -488,4 +489,49 @@ test('homepage hue radios have one tab stop and wrap on arrow keys', () => {
 	assert.deepEqual(buttons.filter(b => b.tabIndex === 0), [focused]);
 	assert.deepEqual(buttons.filter(b => b.attrs.get('aria-checked') === 'true'), [focused]);
 	assert.equal(storage.get('pe-hue'), '330');
+});
+
+test('dot segments in already-proxied URLs stay clamped within their target origin', () => {
+	assert.equal(
+		rewriteUrl('/~https%3A%2F%2Fexample.com/../other.example/secret?q=1#h', base, origin),
+		'/~https%3A%2F%2Fexample.com/other.example/secret?q=1#h'
+	);
+	assert.equal(
+		rewriteUrl('https://proxy.example/~https%3A%2F%2Fexample.com/../../other.example/secret', base, origin),
+		'https://proxy.example/~https%3A%2F%2Fexample.com/other.example/secret'
+	);
+	assert.equal(
+		rewriteUrl('//proxy.example/~https%3A%2F%2Fcdn.example/../asset.js', base, origin),
+		'https://proxy.example/~https%3A%2F%2Fcdn.example/asset.js'
+	);
+});
+
+test('HTML meta charset prescan follows WHATWG pragma and attribute precedence rules', async () => {
+	for (const [html, expected] of [
+		['<meta http-equiv="Content-Type" content="charset=gbk">', 'gbk'],
+		['<meta charset="" http-equiv="content-type" content="text/html; charset=gbk">', 'gbk'],
+		['<meta charset="invalid-label" http-equiv="content-type" content="text/html; charset=gbk">', 'gbk'],
+		['<meta content="text/html; charset=gbk" http-equiv="Content-Type">', 'gbk'],
+		['<meta content="text/html; charset=gbk"><meta charset="windows-1252">', 'windows-1252'],
+		['<meta content="text/html; charset=gbk" charset="windows-1252"><meta charset="utf-8">', 'utf-8'],
+	]) {
+		const sniffed = await sniffHtmlCharset(new Response(html).body);
+		assert.equal(sniffed.charset, expected, html);
+		await sniffed.body.cancel();
+	}
+});
+
+test('XML scripts and styles rewrite across comment-guarded CDATA and bare query ampersands', () => {
+	const cdataModule = '<svg><script type="module">/*<![CDATA[*/ import "./a.js?x=1&y=2"; /*]]>*/</script></svg>';
+	const out = rewriteSvg(cdataModule, base, origin);
+	assert.ok(out.includes(proxy('./a.js?x=1&y=2')));
+	assert.equal(
+		rewriteXmlText('import "./a.js?x=1&amp;y=2";', js => rewriteJsModuleSpecifiers(js, base, origin)),
+		`import "${proxy('./a.js?x=1&amp;y=2')}";`
+	);
+});
+
+test('standalone SVG sniffs XML encoding declarations beyond 256 bytes', () => {
+	const prolog = `<?xml version="1.0"${' '.repeat(300)}encoding="windows-1252"?><svg>Café</svg>`;
+	assert.equal(sniffTextCharset(Buffer.from(prolog, 'latin1'), 'svg', null), 'windows-1252');
 });
