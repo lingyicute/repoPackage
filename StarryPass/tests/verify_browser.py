@@ -547,6 +547,13 @@ async def test_copy_and_theme(browser, url):
         await poll(lambda: page.evaluate("document.getElementById('copy-label').textContent === '已复制'"))
         check(await page.evaluate('document.activeElement.id') == 'code-input', 'fallback copy restores keyboard focus')
         check(await page.locator('textarea').count() == 0, 'fallback copy removes temporary plaintext textarea')
+        snackbar_icon = "document.querySelector('#snackbar path').getAttribute('d')"
+        check((await page.evaluate(snackbar_icon)).startswith('M382-240'), 'successful copy shows the check mark')
+        await page.evaluate('document.execCommand = () => false')
+        await page.click('#copy-btn')
+        await poll(lambda: page.evaluate("document.getElementById('snackbar-text').textContent.startsWith('复制失败')"))
+        check(not (await page.evaluate(snackbar_icon)).startswith('M382-240'),
+              'failed copy does not show the success check mark')
         await page.emulate_media(color_scheme='dark')
         await page.evaluate("localStorage.setItem('sp-theme', 'light')")
         await page.reload()
@@ -561,9 +568,30 @@ async def test_counter_accessible_name(browser, url):
     try:
         check(await page.get_by_role('spinbutton', name='轮换序号').count() == 1,
               'counter number input exposes an accessible name')
+        policy = await page.locator('#policy').aria_snapshot()
+        arrow = await page.evaluate("getComputedStyle(document.querySelector('#policy > summary'), '::after').content")
+        check('站点策略' in policy and '▴' not in policy and arrow.startswith('"▴"'),
+              'policy disclosure arrow is rendered but kept out of the accessible name')
     finally:
         await context.close()
     print('PASS browser: counter input accessible name')
+
+
+async def test_forced_colors(browser, url):
+    context, page = await mock_page(browser, url)
+    try:
+        await page.emulate_media(forced_colors='active')
+        await page.evaluate("document.getElementById('strength').setAttribute('data-level', '2')")
+        background = 's => getComputedStyle(document.querySelector(s)).backgroundColor'
+        check(await page.evaluate(background, '.chip[aria-pressed="true"]')
+              != await page.evaluate(background, '.chip[aria-pressed="false"]'),
+              'forced colors keep the selected chips distinguishable')
+        check(await page.evaluate(background, '.strength__bar:nth-child(2)')
+              != await page.evaluate(background, '.strength__bar:nth-child(3)'),
+              'forced colors keep lit strength bars distinguishable')
+    finally:
+        await context.close()
+    print('PASS browser: forced-colors selection and strength states')
 
 
 THEME_PROBE = """(() => {
@@ -780,6 +808,32 @@ async def test_service_worker(browser, url, site, state):
         state['server_error'] = state['cacheable_assets'] = False
         await context.close()
     print('PASS browser: HTTPS service-worker update, query aliases, offline derivation and HTTP 503')
+
+
+async def test_narrow_field_labels(browser, url):
+    context, page = await mock_page(browser, url)
+    try:
+        await page.set_viewport_size({'width': 280, 'height': 650})
+        check(await page.evaluate("""() => [...document.querySelectorAll('.field')].every((field) =>
+            field.querySelector('.field__label').getBoundingClientRect().bottom
+                <= field.querySelector('.field__input').getBoundingClientRect().bottom)"""),
+              'placeholder labels stay inside their fields on a 280px viewport')
+    finally:
+        await context.close()
+    print('PASS browser: narrow-viewport field labels')
+
+
+async def test_landscape_safe_area(browser, url):
+    context, page = await mock_page(browser, url)
+    try:
+        cdp = await context.new_cdp_session(page)
+        await cdp.send('Emulation.setSafeAreaInsetsOverride', {'insets': {'left': 47, 'right': 47}})
+        padding = await page.evaluate("""() => { const style = getComputedStyle(document.querySelector('.app-bar'));
+            return [parseFloat(style.paddingLeft), parseFloat(style.paddingRight)]; }""")
+        check(min(padding) >= 47, 'app bar clears landscape display cutouts')
+    finally:
+        await context.close()
+    print('PASS browser: landscape safe-area insets')
 
 
 async def test_malformed_results(browser, url):
@@ -1088,6 +1142,9 @@ async def main():
                     await test_noble_fallback(browser, url)
                     await test_copy_and_theme(browser, url)
                     await test_counter_accessible_name(browser, url)
+                    await test_forced_colors(browser, url)
+                    await test_narrow_field_labels(browser, url)
+                    await test_landscape_safe_area(browser, url)
                     await test_counter_not_restored(browser, url, state)
                     await test_theme_first_paint_and_system_follow(browser, url)
                     await test_theme_without_storage(browser, url)
