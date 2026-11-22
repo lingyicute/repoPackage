@@ -35,6 +35,9 @@ const STRIP_RESPONSE_HEADERS = [
 	'report-to',
 	'nel',
 	'permissions-policy',
+	'feature-policy',     // Permissions-Policy 的旧名，同样按原站来源声明
+	'integrity-policy',   // 要求脚本带 SRI；代理已移除改写后失效的 integrity，保留会拦截全部脚本
+	'integrity-policy-report-only',
 	'timing-allow-origin',
 	'content-location',
 	'refresh',            // 由 stripResponseHeaders 改写目标后重新写入
@@ -903,6 +906,10 @@ async function sniffHtmlCharset(body, declaredCharset = null, isXml = false) {
 			const prefixText = new TextDecoder().decode(head.subarray(0, total));
 			charset = isXml ? xmlDeclaredCharset(prefixText) : prescanHtmlCharset(prefixText);
 			if (charset) break;
+			// XML 声明只能位于开头：已完整读完或不可能再出现时，结论不会因更多字节改变。
+			if (isXml && (prefixText.length < 6
+				? !'<?xml'.startsWith(prefixText.slice(0, 5))
+				: !/^<\?xml[ \t\r\n][^?]*$/.test(prefixText))) break;
 		}
 	} finally {
 		// 不 await：tee 另一支消费完之前 cancel 可能不 resolve。
@@ -1915,8 +1922,9 @@ function getHtmlAttribute(el, name, isXml = false) {
 	return isXml ? decodeXmlAttribute(raw) : decodeHtmlAttribute(raw);
 }
 
-function setHtmlAttribute(el, name, value) {
-	el.setAttribute(name, escapeHtml(value));
+// XHTML 的属性值按 XML 规范化，制表符和换行必须写成字符引用才能保留。
+function setHtmlAttribute(el, name, value, isXml = false) {
+	el.setAttribute(name, isXml ? escapeXmlAttr(value) : escapeHtml(value), isXml);
 }
 
 const HANDLERS = {
@@ -1925,7 +1933,8 @@ const HANDLERS = {
 	link:         { href: 'url', imagesrcset: 'srcset' },
 	script:       { src: 'url', href: 'url', 'xlink:href': 'url' },
 	img:          { src: 'url', srcset: 'srcset' },
-	image:        { href: 'url', 'xlink:href': 'url' },
+	// HTML 解析器把 SVG 之外的 <image> 当作 <img>，src/srcset 会直接加载。
+	image:        { href: 'url', 'xlink:href': 'url', src: 'url', srcset: 'srcset' },
 	feimage:      { href: 'url', 'xlink:href': 'url' },
 	iframe:       { src: 'url' },
 	frame:        { src: 'url' },
@@ -2016,7 +2025,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 					if (u.protocol === 'http:' || u.protocol === 'https:') {
 						hasBaseHref = true;
 						baseHref = u.href;
-						setHtmlAttribute(el, 'data-pe-base', baseHref);
+						setHtmlAttribute(el, 'data-pe-base', baseHref, isXml);
 					} else {
 						el.removeAttribute('data-pe-base');
 					}
@@ -2042,14 +2051,14 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 			}
 			if (he === 'refresh') {
 				const c = getHtmlAttribute(el, 'content', isXml);
-				if (c) setHtmlAttribute(el, 'content', rewriteRefreshContent(c, baseHref, workerOrigin));
+				if (c) setHtmlAttribute(el, 'content', rewriteRefreshContent(c, baseHref, workerOrigin), isXml);
 			}
 			if (he === 'content-type') {
 				const c = getHtmlAttribute(el, 'content', isXml);
-				if (c) setHtmlAttribute(el, 'content', c.replace(/charset\s*=\s*[^;]*/i, 'charset=UTF-8'));
+				if (c) setHtmlAttribute(el, 'content', c.replace(/charset\s*=\s*[^;]*/i, 'charset=UTF-8'), isXml);
 			}
 			if (getHtmlAttribute(el, 'charset', isXml) != null) {
-				setHtmlAttribute(el, 'charset', 'UTF-8');
+				setHtmlAttribute(el, 'charset', 'UTF-8', isXml);
 			}
 		},
 	});
@@ -2096,7 +2105,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 						} else next = rw(v);
 					}
 					// 页内锚点、javascript:/mailto:/data: 等不变的值无需跨运行时回写（与通配处理器一致）。
-					if (next !== v) setHtmlAttribute(el, attr, next);
+					if (next !== v) setHtmlAttribute(el, attr, next, isXml);
 				}
 				// script 标签上的内联 srcset 不存在；但懒加载属性可能出现在任意标签上（下面统一处理）
 			},
@@ -2148,7 +2157,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 				}
 				if (next !== v) (updates || (updates = [])).push([attr, next]);
 			}
-			if (updates) for (const [attr, next] of updates) setHtmlAttribute(el, attr, next);
+			if (updates) for (const [attr, next] of updates) setHtmlAttribute(el, attr, next, isXml);
 		},
 	});
 
@@ -2885,11 +2894,15 @@ Disallow: /
 		// ---- 漏网的站内相对请求：innerHTML、location.href = '/x'、Worker 内请求、默认 /favicon.ico 等未经改写的地址
 		//      会直接落到代理域。路径不带协议而 Referer 是代理页面时，按来源页的目标站点还原并重定向 ----
 		const usesRefererRoute = !isProxiedPath(url.pathname) && !/^(?:https?|wss?):\/\//i.test(decodeProxyPath(url.pathname).trim().replace(/^\/+/, ''));
+		const isWebSocket = (request.headers.get('Upgrade') || '').toLowerCase() === 'websocket';
+		let refererRouted = null;
 		if (usesRefererRoute) {
 			const refTarget = refererTarget(request, workerOrigin, env);
 			if (refTarget) {
 				const leaked = new URL(refTarget.origin + url.pathname + urlSuffix(url).split('#', 1)[0]);
-				return new Response(null, {
+				// 浏览器不跟随 WebSocket 握手的重定向（如无 shim 的 Worker 内相对地址），直接按来源页目标转发。
+				if (isWebSocket) refererRouted = leaked;
+				else return new Response(null, {
 					status: 307,
 					headers: { 'Location': toProxyUrl(leaked.href, workerOrigin), 'Cache-Control': 'no-store' },
 				});
@@ -2897,12 +2910,12 @@ Disallow: /
 		}
 
 		// ---- favicon 等杂项，避免被当成目标域名 ----
-		if (/^\/(favicon\.ico|sitemap\.xml|apple-touch-icon.*\.png|\.well-known\/.*)$/i.test(url.pathname)) {
+		if (!refererRouted && /^\/(favicon\.ico|sitemap\.xml|apple-touch-icon.*\.png|\.well-known\/.*)$/i.test(url.pathname)) {
 			return new Response(null, { status: 404, headers: { 'Cache-Control': 'no-store' } });
 		}
 
 		// ---- 解析目标 URL ----
-		const targetUrl = parseTarget(url);
+		const targetUrl = refererRouted || parseTarget(url);
 		if (!targetUrl) {
 			return invalidTargetPage(url);
 		}
@@ -2924,7 +2937,7 @@ Disallow: /
 		};
 
 		// WebSocket 请求走独立通道
-		if ((request.headers.get('Upgrade') || '').toLowerCase() === 'websocket') {
+		if (isWebSocket) {
 			if (request.method !== 'GET') return new Response('WebSocket 握手需要 GET', {
 				status: 405, headers: { Allow: 'GET', 'Cache-Control': 'no-store' },
 			});

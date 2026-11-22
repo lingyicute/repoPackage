@@ -1,9 +1,8 @@
 const { createApp, ref, computed, onMounted } = Vue;
+if (typeof window.browserCheckerRender !== 'function') throw new Error('缺少预编译的检测页面模板');
 
 const app = createApp({
-  // 本页模板没有自定义元素。避免编译器自动调用受限的 customElements.get，
-  // 否则某个待检测 API 不可用会在挂载前使整页崩溃。
-  compilerOptions: { isCustomElement: () => false },
+  render: window.browserCheckerRender,
   setup() {
     // 基础数据
     const userAgent = ref('');
@@ -23,6 +22,7 @@ const app = createApp({
     const isLinuxDesktop = ref(false);
     const isSecureContext = ref(true);
     const isFileOrigin = ref(false);
+    const isOpaqueOrigin = ref(false);
     const isStandalonePWA = ref(false);
     const skipNotices = ref([]);
 
@@ -73,7 +73,7 @@ const app = createApp({
     const getSupportRate = () => {
       const { supported, unsupported } = featureStats.value;
       const evaluated = supported + unsupported;
-      return evaluated ? Math.round((supported / evaluated) * 100) : 0;
+      return evaluated ? Math.round((supported / evaluated) * 100) : null;
     };
 
     // 检测项状态文字
@@ -99,8 +99,9 @@ const app = createApp({
 
     const animateScore = () => {
       const targetScore = totalScore.value;
+      const requestFrame = optionalValue(window, 'requestAnimationFrame');
       if (!Number.isFinite(targetScore) || targetScore <= 0 ||
-          typeof window.requestAnimationFrame !== 'function' || prefersReducedMotion() ||
+          typeof requestFrame !== 'function' || prefersReducedMotion() ||
           optionalValue(document, 'hidden') === true) {
         displayScore.value = targetScore;
         return;
@@ -138,7 +139,7 @@ const app = createApp({
       };
       const scheduleFrame = () => {
         try {
-          frame = window.requestAnimationFrame(updateScore);
+          frame = requestFrame.call(window, updateScore);
         } catch (e) {
           finish();
         }
@@ -168,6 +169,7 @@ const app = createApp({
       isLinuxDesktop.value = !isMobileDevice.value && /Linux|X11/i.test(ua) && !/Android|CrOS/i.test(ua);
 
       isFileOrigin.value = location.protocol === 'file:';
+      isOpaqueOrigin.value = optionalValue(window, 'origin') === 'null';
       isSecureContext.value = window.isSecureContext === true;
       const standaloneDisplay = matchesMedia('(display-mode: standalone)');
       isStandalonePWA.value = !!(standaloneDisplay || optionalValue(navigator, 'standalone') === true);
@@ -177,41 +179,43 @@ const app = createApp({
       return isMobileDevice.value;
     };
 
-    // 判断某个检测项在当前环境下是否应当跳过，返回跳过原因或 null
+    // 平台名单只是 API 缺失时的解释，不能盖过实际暴露的能力。
+    const getUnavailablePlatformReason = (feature) => {
+      if (feature.desktopOnly && isMobileDevice.value) return '当前移动端环境未提供此 API';
+      if (feature.skipOnIOS && isIOSDevice.value) return '当前 iOS 浏览器环境未提供此 API';
+      if (feature.skipOnLinuxDesktop && isLinuxDesktop.value) return '当前桌面 Linux 环境未提供此 API';
+      return null;
+    };
+
+    // 安全上下文和网站来源是两个条件。本地文件可以是安全上下文。
     const getSkipReason = (feature) => {
-      if (feature.secure && (isFileOrigin.value || !isSecureContext.value)) {
-        if (isFileOrigin.value) {
-          return 'file:// 本地页面没有可用于该 API 的网站来源';
-        }
+      if (feature.siteOrigin && (isFileOrigin.value || isOpaqueOrigin.value)) {
+        return isFileOrigin.value
+          ? 'file:// 本地页面没有可用于该 API 的网站来源'
+          : '当前页面使用不透明来源，无法评估此 API';
+      }
+      if (feature.secure && !isSecureContext.value) {
         return '需要安全上下文（HTTPS 或可信的本地来源）';
       }
-      if (feature.desktopOnly && isMobileDevice.value) {
-        return '移动端不提供此 API';
-      }
-      if (feature.skipOnIOS && isIOSDevice.value) {
-        return '当前 iOS 浏览器环境不提供此 API';
-      }
-      if (feature.skipOnLinuxDesktop && isLinuxDesktop.value) {
-        return '桌面 Linux 平台默认不提供此 API';
-      }
-      // 只信任浏览器明确认识且明确禁止的策略名称，未知策略不能当作“不支持”。
-      // 不查询/申请用户权限，也不改变 API 正常可检测时的评分。
+      // 只信任浏览器明确认识且明确禁止的策略名称；不查询或申请用户权限。
       if (feature.policy || feature.policiesAll) {
-        try {
-          const policy = document.permissionsPolicy || document.featurePolicy;
-          if (policy && typeof policy.features === 'function' &&
-              typeof policy.allowsFeature === 'function') {
+        const anyPolicies = feature.policy
+          ? (Array.isArray(feature.policy) ? feature.policy : [feature.policy])
+          : [];
+        for (const property of ['permissionsPolicy', 'featurePolicy']) {
+          const policy = optionalValue(document, property);
+          try {
+            if (!hasMethods(policy, ['features', 'allowsFeature'])) continue;
             const known = policy.features();
-            const isDenied = (name) => known.includes(name) && !policy.allowsFeature(name);
-            const anyPolicies = feature.policy
-              ? (Array.isArray(feature.policy) ? feature.policy : [feature.policy])
-              : [];
+            if (!Array.isArray(known)) continue;
+            const isDenied = (name) => known.includes(name) && policy.allowsFeature(name) === false;
             if (anyPolicies.some(isDenied) ||
                 (feature.policiesAll && feature.policiesAll.length > 0 && feature.policiesAll.every(isDenied))) {
               return '被页面权限策略（Permissions Policy）禁用';
             }
-          }
-        } catch (e) { /* 不支持策略 introspection 的浏览器仍执行原能力检测。 */ }
+            break;
+          } catch (e) { /* 尝试旧接口，否则直接执行能力检测。 */ }
+        }
       }
       if (typeof feature.skipIf === 'function') {
         try {
@@ -239,8 +243,9 @@ const app = createApp({
         clearTimeout(timer);
         clearTimeout(errorTimer);
         if (img) {
-          img.onload = img.onerror = null;
           // 清理属于尽力而为；不能在 settled 后抛错，导致 Promise 永远无法完成。
+          try { img.onload = null; } catch (e) {}
+          try { img.onerror = null; } catch (e) {}
           try { img.removeAttribute('src'); } catch (e) {}
         }
         try { document.removeEventListener('securitypolicyviolation', onPolicyViolation); } catch (e) {}
@@ -258,7 +263,10 @@ const app = createApp({
       try {
         img = new Image();
         document.addEventListener('securitypolicyviolation', onPolicyViolation);
-        img.onload = () => finish(img.naturalWidth > 0 && img.naturalHeight > 0);
+        img.onload = () => {
+          try { finish(img.naturalWidth > 0 && img.naturalHeight > 0); }
+          catch (e) { finish({ skipped: true, reason: '无法读取图片解码结果' }); }
+        };
         // 给异步 CSP 事件留出时间；普通解码失败仍然标记为不支持。
         img.onerror = () => {
           clearTimeout(errorTimer);
@@ -289,7 +297,13 @@ const app = createApp({
           if (key === null) return { skipped: true, reason: '无法分配独立的网站存储检测键' };
           storage.setItem(key, key);
           written = true;
-          if (storage.getItem(key) !== key) return false;
+          const matches = storage.getItem(key) === key;
+          storage.removeItem(key);
+          written = false;
+          if (storage.getItem(key) === key) {
+            return { skipped: true, reason: '浏览器未清除网站存储探测键' };
+          }
+          if (!matches) return false;
         } catch (error) {
           if (error && (error.name === 'SecurityError' || error.name === 'NotAllowedError' ||
               error.name === 'QuotaExceededError' || error.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
@@ -298,7 +312,9 @@ const app = createApp({
           return false;
         } finally {
           if (written) {
-            try { storage.removeItem(key); } catch (e) { /* 策略可能在检测期间变化。 */ }
+            try {
+              if (storage.getItem(key) === key) storage.removeItem(key);
+            } catch (e) { /* 策略可能在检测期间变化。 */ }
           }
         }
       }
@@ -341,11 +357,11 @@ const app = createApp({
       };
       try {
         factory = window.indexedDB;
-        if (!factory || typeof factory.open !== 'function') { finish(false); return; }
+        if (!hasMethods(factory, ['open', 'deleteDatabase'])) { finish(false); return; }
         timer = setTimeout(() => finish({ skipped: true, reason: 'IndexedDB 检测超时，无法评估' }), 2000);
         request = factory.open(name);
         request.onblocked = () => finish(restricted);
-        request.onerror = () => { if (!settled) fail(request.error); };
+        request.onerror = () => { if (!settled) fail(optionalValue(request, 'error')); };
         request.onupgradeneeded = (event) => {
           // 万一名称碰撞，不读写、更不删除已有数据库；超时后的升级直接回滚。
           if (settled || event.oldVersion !== 0) {
@@ -358,7 +374,9 @@ const app = createApp({
           // 保留原始事务错误，避免把存储限制误算为浏览器缺少 IndexedDB。
           const upgrade = request.transaction;
           let write;
-          if (upgrade) upgrade.onabort = () => { if (!settled) fail(upgrade.error || write?.error); };
+          if (upgrade) upgrade.onabort = () => {
+            if (!settled) fail(optionalValue(upgrade, 'error') || optionalValue(write, 'error'));
+          };
           try {
             write = request.result.createObjectStore('probe').put('ok', 'probe');
           } catch (error) {
@@ -376,8 +394,10 @@ const app = createApp({
           try {
             const transaction = database.transaction('probe', 'readonly');
             const read = transaction.objectStore('probe').get('probe');
-            transaction.oncomplete = () => finish(read.result === 'ok');
-            transaction.onabort = () => fail(transaction.error || read.error);
+            transaction.oncomplete = () => {
+              try { finish(read.result === 'ok'); } catch (error) { fail(error); }
+            };
+            transaction.onabort = () => fail(optionalValue(transaction, 'error') || optionalValue(read, 'error'));
             database.onversionchange = () => finish(restricted);
           } catch (error) { fail(error); }
         };
@@ -403,42 +423,35 @@ const app = createApp({
     const supportsCSS = (...args) => hasMethods(window.CSS, ['supports']) &&
       !!window.CSS.supports(...args);
 
+    // canPlayType 返回浏览器对具体媒体类型的判断，不代表已播放样本。
+    const canPlay = (elementName, types) => {
+      const media = document.createElement(elementName);
+      return typeof media.canPlayType === 'function' && types.some(type => {
+        const result = media.canPlayType(type);
+        return result === 'probably' || result === 'maybe';
+      });
+    };
+
     // 检测现代Web功能
     // 每个检测项可选字段：
     //   policy            - 对应 Permissions Policy（单条或数组）；任一策略明确禁用时跳过
     //   policiesAll       - 对应多条 Permissions Policy；全部明确禁用时跳过
-    //   secure            - 需要安全上下文（HTTPS），非 HTTPS 下跳过
-    //   desktopOnly       - 当前确实仅桌面端提供，移动端跳过
-    //   skipOnIOS         - 常见 iOS WebKit 环境不提供，跳过
-    //   skipOnLinuxDesktop- 桌面 Linux 平台默认不提供，跳过
+    //   secure            - 需要安全上下文；由浏览器判定，不直接等同于 HTTPS
+    //   siteOrigin        - 需要网站来源；本地文件与不透明来源跳过
+    //   desktopOnly / skipOnIOS / skipOnLinuxDesktop - 接口缺失时按平台跳过
     //   skipIf            - 根据当前运行形态返回跳过原因
     // test 可以返回布尔值、Promise<boolean>，或返回 { skipped: true, reason } 表示运行时判定为环境限制
     const checkModernFeatures = async () => {
       console.log('[浏览器检测] - 开始检测Web特性');
-      console.log('[浏览器检测] - 用户代理:', navigator.userAgent);
 
       const features = [
-        { name: 'ES6 支持', test: () => {
-          try {
-            new Function('() => {}; let x = 1; const y = 2;');
-            return true;
-          } catch (e) {
-            // 被 CSP 禁止 eval 时会抛出 EvalError，此时本脚本自身（使用了箭头函数/const）能运行即说明支持
-            return e instanceof EvalError;
-          }
-        }},
+        // 本脚本能执行就已经证明了所用的 ES6 和 async/await 语法，无需 eval。
+        { name: 'ES6 支持', test: () => true },
         { name: 'Fetch API', test: () => typeof window.fetch === 'function' },
         { name: 'Promise', test: () => typeof window.Promise === 'function' },
-        { name: 'Service Worker', secure: true, test: () => hasMethods(navigator.serviceWorker, ['register']) },
+        { name: 'Service Worker', secure: true, siteOrigin: true, test: () => hasMethods(navigator.serviceWorker, ['register']) },
         { name: 'WebAssembly', test: () => hasMethods(window.WebAssembly, ['compile', 'instantiate']) },
-        { name: 'Async/Await', test: () => {
-          try {
-            new Function('async () => { await Promise.resolve(); }');
-            return true;
-          } catch (e) {
-            return e instanceof EvalError;
-          }
-        }},
+        { name: 'Async/Await', test: () => true },
         { name: 'Intersection Observer', test: () => typeof window.IntersectionObserver === 'function' },
         { name: 'Web Animation API', test: () => typeof HTMLElement.prototype.animate === 'function' },
         { name: 'CSS Grid', test: () => supportsCSS('display', 'grid') },
@@ -474,10 +487,10 @@ const app = createApp({
         { name: 'WebXR Device API', policy: 'xr-spatial-tracking', secure: true, skipOnIOS: true, test: () => hasMethods(navigator.xr, ['requestSession']) },
         { name: 'WebUSB', policy: 'usb', secure: true, skipOnIOS: true, test: () => hasMethods(navigator.usb, ['requestDevice']) },
         { name: 'Web Bluetooth', policy: 'bluetooth', secure: true, skipOnIOS: true, test: () => hasMethods(navigator.bluetooth, ['requestDevice']) },
-        { name: 'WebAuthn', policy: ['publickey-credentials-get', 'publickey-credentials-create'], secure: true, test: () => hasMethods(navigator.credentials, ['get', 'create']) && typeof window.PublicKeyCredential === 'function' },
+        { name: 'WebAuthn', policy: ['publickey-credentials-get', 'publickey-credentials-create'], secure: true, siteOrigin: true, test: () => hasMethods(navigator.credentials, ['get', 'create']) && typeof window.PublicKeyCredential === 'function' },
         { name: 'Geolocation API', policy: 'geolocation', secure: true, test: () => hasMethods(navigator.geolocation, ['getCurrentPosition']) },
         { name: 'IndexedDB', test: testIndexedDB },
-        { name: 'Web Notifications', secure: true,
+        { name: 'Web Notifications', secure: true, siteOrigin: true,
           // iOS 的 Notifications API 主要面向已添加到主屏幕的 Web App。
           // 普通标签页跳过，主屏幕 Web App 则进行实际检测。
           skipIf: () => (isIOSDevice.value && !isStandalonePWA.value)
@@ -489,20 +502,13 @@ const app = createApp({
           screen.orientation.type.length > 0 && Number.isFinite(screen.orientation.angle)) },
         { name: 'Gamepad API', policy: 'gamepad', secure: true, test: () => typeof navigator.getGamepads === 'function' },
         { name: 'Web Components', test: () => hasMethods(window.customElements, ['define', 'get']) },
-        { name: '支持视频格式 WebM', test: () => {
-          const video = document.createElement('video');
-          if (typeof video.canPlayType !== 'function') return false;
-          return !!(video.canPlayType('video/webm; codecs="vp8, vorbis"') ||
-                    video.canPlayType('video/webm; codecs="vp9, opus"') ||
-                    video.canPlayType('video/webm'));
-        }},
-        { name: '支持音频格式 AAC', test: () => {
-          const audio = document.createElement('audio');
-          if (typeof audio.canPlayType !== 'function') return false;
-          return !!(audio.canPlayType('audio/aac') ||
-                    audio.canPlayType('audio/mp4; codecs="mp4a.40.2"') ||
-                    audio.canPlayType('audio/x-m4a'));
-        }},
+        { name: '支持视频格式 WebM', test: () => canPlay('video', [
+          'video/webm; codecs="vp8, vorbis"', 'video/webm; codecs="vp9, opus"',
+          'video/webm; codecs="av01.0.04M.08, opus"'
+        ]) },
+        { name: '支持音频格式 AAC', test: () => canPlay('audio', [
+          'audio/aac', 'audio/mp4; codecs="mp4a.40.2"'
+        ]) },
         { name: 'requestAnimationFrame', test: () => typeof window.requestAnimationFrame === 'function' },
         { name: 'Storage API', test: testStorage },
         { name: 'Clipboard API', policiesAll: ['clipboard-read', 'clipboard-write'], secure: true, test: () => {
@@ -518,7 +524,7 @@ const app = createApp({
         { name: '支持图像格式 WebP', test: () => testImageDecode(WEBP_SAMPLE) },
         { name: '支持图像格式 AVIF', test: () => testImageDecode(AVIF_SAMPLE) },
         { name: 'URL.createObjectURL', test: () => typeof URL !== 'undefined' && hasMethods(URL, ['createObjectURL']) },
-        { name: 'Web Locks API', secure: true, test: () => hasMethods(navigator.locks, ['request']) },
+        { name: 'Web Locks API', secure: true, siteOrigin: true, test: () => hasMethods(navigator.locks, ['request']) },
         // 新版 Chromium Android 已逐步提供文件选择器；这里使用能力检测，
         // 不再把整个 File System Access API 一刀切为桌面专属。
         { name: 'File System Access API', secure: true, test: () => typeof window.showOpenFilePicker === 'function' },
@@ -530,7 +536,7 @@ const app = createApp({
         { name: 'WebGPU API', secure: true, test: () => hasMethods(navigator.gpu, ['requestAdapter']) },
         { name: 'WebTransport API', secure: true, test: () => typeof window.WebTransport === 'function' },
         { name: 'Compression Streams API', test: () => typeof window.CompressionStream === 'function' },
-        { name: 'Cookie Store API', secure: true, test: () => hasMethods(window.cookieStore, ['get', 'set']) },
+        { name: 'Cookie Store API', secure: true, siteOrigin: true, test: () => hasMethods(window.cookieStore, ['get', 'set']) },
         { name: 'Idle Detection API', policy: 'idle-detection', secure: true, skipOnIOS: true, test: () => typeof window.IdleDetector === 'function' },
         { name: 'Web MIDI API', policy: 'midi', secure: true, skipOnIOS: true, test: () => typeof navigator.requestMIDIAccess === 'function' },
         { name: 'Reporting API', test: () => typeof window.ReportingObserver === 'function' },
@@ -538,7 +544,7 @@ const app = createApp({
         { name: 'EyeDropper API', secure: true, desktopOnly: true, test: () => typeof window.EyeDropper === 'function' },
         { name: 'ScrollTimeline / ViewTimeline', test: () => typeof window.ScrollTimeline === 'function' || typeof window.ViewTimeline === 'function' },
         { name: 'MediaSession API', test: () => hasMethods(navigator.mediaSession, ['setActionHandler']) },
-        { name: 'Credential Management API', secure: true, test: () => hasMethods(navigator.credentials, ['get', 'create']) },
+        { name: 'Credential Management API', secure: true, siteOrigin: true, test: () => hasMethods(navigator.credentials, ['get', 'create']) },
         // --- 针对 Chromium 120-150 新增的新特性检测 ---
         { name: 'Popover API', test: () => 'popover' in HTMLElement.prototype &&
           hasMethods(HTMLElement.prototype, ['showPopover', 'hidePopover', 'togglePopover']) },
@@ -567,7 +573,13 @@ const app = createApp({
           hasMethods(Uint8Array, ['fromBase64', 'fromHex']) && hasMethods(Uint8Array.prototype, ['toBase64', 'toHex']) },
         { name: 'Temporal API', test: () => typeof Temporal === 'object' && !!Temporal &&
           hasMethods(Temporal.Now, ['instant', 'plainDateISO']) && typeof Temporal.PlainDate === 'function' },
-        // --- Baseline 2024 / 2025 CSS 能力 ---
+        { name: 'Object.groupBy() / Map.groupBy()', test: () => hasMethods(Object, ['groupBy']) &&
+          typeof Map === 'function' && hasMethods(Map, ['groupBy']) },
+        { name: 'Promise.withResolvers()', test: () => hasMethods(window.Promise, ['withResolvers']) },
+        { name: 'Promise.try()', test: () => hasMethods(window.Promise, ['try']) },
+        { name: 'Array.fromAsync()', test: () => typeof Array.fromAsync === 'function' },
+        { name: 'Error.isError()', test: () => typeof Error.isError === 'function' },
+        // --- Baseline 与较新的 CSS 能力 ---
         { name: 'CSS @scope', test: () => typeof window.CSSScopeRule === 'function' },
         { name: 'CSS @starting-style', test: () => typeof window.CSSStartingStyleRule === 'function' },
         { name: 'CSS @property', test: () => hasMethods(window.CSS, ['registerProperty']) &&
@@ -577,14 +589,21 @@ const app = createApp({
         { name: 'CSS 锚点定位', test: () => supportsCSS('anchor-name: --a') && supportsCSS('position-anchor: --a') },
         { name: 'CSS Custom Highlight API', test: () => !!window.CSS &&
           hasMethods(window.CSS.highlights, ['set', 'delete']) && typeof window.Highlight === 'function' },
-        // --- Baseline 2024 / 2025 Web 平台能力：不创建元素实例、不发起解析或任务 ---
+        { name: 'CSS @layer', test: () => typeof window.CSSLayerBlockRule === 'function' &&
+          typeof window.CSSLayerStatementRule === 'function' },
+        { name: 'CSS 相对颜色', test: () => supportsCSS('color', 'rgb(from rebeccapurple r g b / 50%)') },
+        { name: 'CSS transition-behavior', test: () => supportsCSS('transition-behavior', 'allow-discrete') },
+        // 不测 content: attr(...)，它会把只支持旧字符串形式的浏览器算作支持。
+        { name: 'CSS 类型化 attr()', test: () => supportsCSS('width', 'attr(data-width type(<length>), 1px)') },
+        // --- Baseline 与较新的 Web 平台能力：不创建元素实例、不发起解析或任务 ---
         { name: '声明式 Shadow DOM / setHTMLUnsafe()', test: () => typeof window.HTMLTemplateElement === 'function' &&
           'shadowRootMode' in window.HTMLTemplateElement.prototype &&
           !!window.Element && hasMethods(window.Element.prototype, ['setHTMLUnsafe']) },
         { name: 'Invoker Commands（commandfor）', test: () => typeof window.HTMLButtonElement === 'function' &&
           'commandForElement' in window.HTMLButtonElement.prototype && typeof window.CommandEvent === 'function' },
         { name: 'Element.moveBefore()', test: () => !!window.Element && hasMethods(window.Element.prototype, ['moveBefore']) },
-        { name: 'scrollend 事件', test: () => 'onscrollend' in window },
+        { name: 'scrollend 事件', test: () => 'onscrollend' in document ||
+          (!!window.Element && 'onscrollend' in window.Element.prototype) },
         { name: 'URLPattern API', test: () => typeof window.URLPattern === 'function' },
         { name: 'Import Maps', test: () => typeof HTMLScriptElement !== 'undefined' &&
           hasMethods(HTMLScriptElement, ['supports']) && !!HTMLScriptElement.supports('importmap') },
@@ -593,6 +612,17 @@ const app = createApp({
           hasMethods(window.crypto.subtle, ['digest', 'encrypt']) },
         { name: 'WebCodecs API', secure: true, test: () => typeof window.VideoDecoder === 'function' },
         { name: 'Prioritized Task Scheduling（scheduler.postTask）', test: () => hasMethods(window.scheduler, ['postTask']) },
+        { name: 'AbortSignal.any() / timeout()', test: () => typeof window.AbortSignal === 'function' &&
+          hasMethods(window.AbortSignal, ['any', 'timeout']) },
+        { name: 'HTMLDialogElement.requestClose()', test: () => typeof window.HTMLDialogElement === 'function' &&
+          hasMethods(window.HTMLDialogElement.prototype, ['requestClose']) },
+        { name: 'IntersectionObserver.scrollMargin', test: () => typeof window.IntersectionObserver === 'function' &&
+          !!window.IntersectionObserver.prototype && typeof Object.getOwnPropertyDescriptor(
+            window.IntersectionObserver.prototype, 'scrollMargin')?.get === 'function' },
+        { name: 'Origin Private File System（OPFS）', secure: true, siteOrigin: true,
+          test: () => hasMethods(navigator.storage, ['getDirectory']) },
+        { name: 'Sanitizer API', test: () => typeof window.Sanitizer === 'function' &&
+          hasMethods(window.Element && window.Element.prototype, ['setHTML']) },
         // 与 WebUSB / Web Bluetooth 同类的硬件接口：只检查入口方法，不请求设备。
         { name: 'Web Serial API', policy: 'serial', secure: true, desktopOnly: true, test: () => hasMethods(navigator.serial, ['requestPort']) },
         { name: 'WebHID API', policy: 'hid', secure: true, desktopOnly: true, test: () => hasMethods(navigator.hid, ['requestDevice']) }
@@ -625,6 +655,13 @@ const app = createApp({
           }
         }
 
+        if (!supported && !skipped) {
+          const platformReason = getUnavailablePlatformReason(feature);
+          if (platformReason) {
+            skipped = true;
+            reason = platformReason;
+          }
+        }
         return { name: feature.name, supported, skipped, reason };
       }));
 
@@ -635,7 +672,7 @@ const app = createApp({
       });
 
       // 汇总跳过原因，用于页面提示
-      const reasonCount = {};
+      const reasonCount = Object.create(null);
       results.filter(r => r.skipped).forEach(r => {
         reasonCount[r.reason] = (reasonCount[r.reason] || 0) + 1;
       });
@@ -654,12 +691,15 @@ const app = createApp({
 
     // 与当前 Chrome Stable 主版本对齐；Chrome 从 2026 年起加快发布节奏，
     // 更新此基线时同步调整下方推荐阈值和回归测试。
-    const latestChromiumVersion = 157;
+    const latestChromiumVersion = 158;
 
     // 检测浏览器类型和版本
     const detectBrowserInfo = () => {
       const ua = navigator.userAgent;
       userAgent.value = ua;
+      isChromeEngine.value = false;
+      chromeVersion.value = 0;
+      switchSuggestion.value = '';
 
       console.log('[浏览器检测] - 开始分析浏览器类型和版本');
 
@@ -672,26 +712,34 @@ const app = createApp({
       } else if (isChinaBrowser) {
         browserType.value = '国产浏览器';
         totalScore.value -= 30;
-      } else if (/firefox|fxios/i.test(ua)) {
+      } else if (/\b(?:firefox|fxios)\//i.test(ua)) {
         browserType.value = 'Firefox';
-      } else if (/edg|edge/i.test(ua)) {
+      } else if (/\bedgios\//i.test(ua)) {
+        browserType.value = 'Edge（iOS）';
+      } else if (/\b(?:edg|edga|edge)\//i.test(ua)) {
         browserType.value = 'Edge';
-      } else if (/opera|opr/i.test(ua)) {
+      } else if (/\b(?:opios|opt)\//i.test(ua)) {
+        browserType.value = 'Opera（iOS）';
+      } else if (/\b(?:opera|opr)\//i.test(ua)) {
         browserType.value = 'Opera';
-      } else if (/crios/i.test(ua)) {
-        // iOS 上的 Chrome 使用系统 WebKit 而非 Chromium 内核，
-        // 不能标为 Chromium，否则与下方“未使用 Chromium 内核”的建议自相矛盾。
+      } else if (/\bcrios\//i.test(ua)) {
         browserType.value = 'Chrome（iOS）';
-      } else if (/safari/i.test(ua) && !/chrome/i.test(ua)) {
-        browserType.value = 'Safari';
-      } else if (/chrome/i.test(ua)) {
+      } else if (/\bandroid\b/i.test(ua) && /;\s*wv(?=[;)])/i.test(ua)) {
+        // 通用 Android WebView 是运行形态，不等同于上方指定的套壳品牌扣分规则。
+        browserType.value = 'Android WebView';
+      } else if (/\b(?:chrome|chromium|headlesschrome)\/\d+\b/i.test(ua)) {
         browserType.value = 'Chromium';
+      } else if (/\bsafari\//i.test(ua)) {
+        browserType.value = 'Safari';
       } else {
         browserType.value = '未知浏览器';
       }
 
-      // 检测Chromium内核版本
-      const chromeMatch = ua.match(/chrome\/(\d+)/i);
+      // EdgeHTML 与当前已知的 iOS 浏览器可能带兼容性标记，不能据此认定 Chromium。
+      const hasNonChromiumToken = /\b(?:edge|crios|edgios|firefox|fxios|opios|opt)\//i.test(ua);
+      const chromeMatch = isChinaBrowser || isWebView
+        ? ua.match(/chrome\/(\d+)/i) // 受保护的浏览器策略沿用原来的匹配范围。
+        : hasNonChromiumToken ? null : ua.match(/\b(?:chrome|chromium|headlesschrome)\/(\d+)\b/i);
       if (chromeMatch && chromeMatch[1]) {
         isChromeEngine.value = true;
         const reportedVersion = parseInt(chromeMatch[1], 10);
@@ -764,6 +812,8 @@ const app = createApp({
             upgradeSuggestion = '你的浏览器内核版本（Chromium ' + version + '）处于最新前沿，能够体验最先进的网络技术。';
           }
         }
+      } else if (browserType.value === '未知浏览器') {
+        upgradeSuggestion = '未能从 User-Agent 确认你的浏览器内核，建议保持浏览器更新。';
       } else {
         upgradeSuggestion = '你的浏览器未使用 Chromium 内核，建议保持更新以获得最佳性能和安全性。';
       }
@@ -777,19 +827,11 @@ const app = createApp({
       }
 
       if (!isFakeVersion) {
-        const supportRate = getSupportRate();
-
-        if (supportRate <= 50) {
-          featureSuggestion = '你的浏览器仅支持 ' + supportRate + '% 的现代 Web 特性，大多数现代网站可能无法正常工作。';
-        } else if (supportRate <= 70) {
-          featureSuggestion = '你的浏览器支持 ' + supportRate + '% 的现代 Web 特性，许多新型网站可能会出现兼容性问题。';
-        } else if (supportRate <= 85) {
-          featureSuggestion = '你的浏览器支持 ' + supportRate + '% 的现代 Web 特性，大部分网站能正常使用，但可能缺少一些新功能。';
-        } else if (supportRate < 95) {
-          featureSuggestion = '你的浏览器支持 ' + supportRate + '% 的现代 Web 特性，能够流畅使用大多数网站。';
-        } else {
-          featureSuggestion = '你的浏览器支持 ' + supportRate + '% 的现代 Web 特性，能够流畅体验几乎所有最新的 Web 功能。';
-        }
+        const { supported, unsupported } = featureStats.value;
+        const evaluated = supported + unsupported;
+        featureSuggestion = evaluated
+          ? `本次评估的 ${evaluated} 项现代 Web 特性中，有 ${supported} 项受支持（${getSupportRate()}%）。`
+          : '本次没有可评估的现代 Web 特性，无法给出支持率。';
       }
 
       if (isFakeVersion) {
@@ -806,7 +848,7 @@ const app = createApp({
     const finishLoading = () => {
       if (window.browserCheckerStartup) window.browserCheckerStartup.complete();
       isFadingOut.value = true;
-      if (prefersReducedMotion()) {
+      if (prefersReducedMotion() || optionalValue(document, 'hidden') === true) {
         isLoading.value = false;
         return;
       }
@@ -873,5 +915,15 @@ const app = createApp({
   }
 });
 
-// 挂载Vue应用
-app.mount('#app');
+// 让未处理的渲染异常到达启动守卫，不把空白页标记为成功。
+app.config.throwUnhandledErrorInProduction = true;
+const root = document.getElementById('app');
+app.mount(root);
+if (window.browserCheckerStartup) {
+  window.browserCheckerStartup.mounted();
+} else {
+  // 启动守卫本身被单独禁用时，若 Vue 和应用仍能运行就显示结果。
+  root.hidden = false;
+  const fallback = document.getElementById('startup-error');
+  if (fallback) fallback.hidden = true;
+}

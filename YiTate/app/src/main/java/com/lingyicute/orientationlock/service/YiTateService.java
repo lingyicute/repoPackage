@@ -34,6 +34,7 @@ import com.lingyicute.orientationlock.utils.PermissionUtils;
 public class YiTateService extends Service {
     private static final String TAG = YiTateService.class.getSimpleName();
     private static final String NOTIFICATION_ID = BuildConfig.APPLICATION_ID + ".notification";
+    private static final long OVERLAY_PERMISSION_POLL_MS = 5_000;
     public static final String ACTION_SYNC_ORIENTATION = BuildConfig.APPLICATION_ID + ".action.SYNC_ORIENTATION";
 
     private PreferenceManager preferences;
@@ -54,7 +55,7 @@ public class YiTateService extends Service {
     private AppOpsManager overlayOps;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Runnable checkOverlayPermission = () -> {
-        if (overlayOps == null || currentOrientation == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        if (currentOrientation == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 || PermissionUtils.isDrawOverlaysPermissionGranted(this)) return;
         if (preferences.getOrientation() == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
             stopLock();
@@ -62,6 +63,7 @@ public class YiTateService extends Service {
             failLock();
         }
     };
+    private final Runnable pollOverlayPermission = this::pollOverlayPermission;
     private final AppOpsManager.OnOpChangedListener overlayListener =
             (op, packageName) -> mainHandler.post(checkOverlayPermission);
 
@@ -93,32 +95,43 @@ public class YiTateService extends Service {
         // These are protected system broadcasts, not app-defined broadcasts.
         registerReceiver(screenReceiver, filter);
         AppOpsManager appOps = (AppOpsManager) getSystemService(APP_OPS_SERVICE);
-        if (appOps != null) {
+        // On API 21-22 the integer watcher can register, but Android only dispatches
+        // this listener for ops with a public string name. Overlay has none until M.
+        if (appOps != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
-                            getPackageName(), overlayListener);
-                } else {
-                    // API 21-22 cannot map the overlay op string; use its hidden integer overload.
-                    java.lang.reflect.Method watch = AppOpsManager.class.getMethod("startWatchingMode",
-                            int.class, String.class, AppOpsManager.OnOpChangedListener.class);
-                    watch.invoke(appOps, 24, getPackageName(), overlayListener);
-                }
+                appOps.startWatchingMode(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+                        getPackageName(), overlayListener);
                 overlayOps = appOps;
-            } catch (ReflectiveOperationException | IllegalArgumentException | SecurityException e) {
-                // Wake and selection still recheck permission on devices that block the watch.
+            } catch (IllegalArgumentException | SecurityException e) {
                 Log.w(TAG, "Unable to watch overlay permission", e);
             }
         }
     }
 
+    private void scheduleOverlayPermissionPoll() {
+        // Only poll when we cannot watch the op and there is an attached overlay.
+        // Screen off, Default and onDestroy all cancel the check via removal.
+        mainHandler.removeCallbacks(pollOverlayPermission);
+        if (overlayOps == null && holderView != null) {
+            mainHandler.postDelayed(pollOverlayPermission, OVERLAY_PERMISSION_POLL_MS);
+        }
+    }
+
+    private void pollOverlayPermission() {
+        checkOverlayPermission.run();
+        scheduleOverlayPermissionPoll();
+    }
+
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        if (currentOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                && (!getString(R.string.running_notification_channel_name).equals(lastChannelName)
+        if (currentOrientation == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) return;
+        // There is no channel, and hence no remembered channel name, before API 26.
+        boolean channelRenamed = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && !getString(R.string.running_notification_channel_name).equals(lastChannelName);
+        if (channelRenamed
                 || !getString(R.string.running_notification_title).equals(lastNotificationTitle)
-                || !getNotificationText().equals(lastNotificationText))) {
+                || !getNotificationText().equals(lastNotificationText)) {
             setForeground();
         }
     }
@@ -146,6 +159,7 @@ public class YiTateService extends Service {
             return false;
         }
         if (!applyOrientation()) return false;
+        scheduleOverlayPermissionPoll();
         if (refreshNotification || currentOrientation != previousOrientation) setForeground();
         return true;
     }
@@ -205,7 +219,19 @@ public class YiTateService extends Service {
                 .build();
         lastNotificationTitle = title;
         lastNotificationText = text;
-        startForeground(1, notification);
+        try {
+            startForeground(1, notification);
+        } catch (IllegalStateException | SecurityException e) {
+            // API 31+ rejects a background start, e.g. a sticky restart after the overlay
+            // permission (the exemption this app relies on) was revoked while the process was
+            // dead. Clear the lock and let the pending command stop the service instead.
+            Log.w(TAG, "Unable to run in the foreground", e);
+            if (preferences.getOrientation() == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+                stopLock(); // Nothing to report: the user already returned to Default.
+            } else {
+                failLock();
+            }
+        }
     }
 
     /** The notification is the only place a locked mode is visible outside the app. */
@@ -271,6 +297,7 @@ public class YiTateService extends Service {
     }
 
     private void removeOrientationLayout() {
+        mainHandler.removeCallbacks(pollOverlayPermission);
         if (holderView == null) return;
         try {
             ((WindowManager) getSystemService(WINDOW_SERVICE)).removeViewImmediate(holderView);

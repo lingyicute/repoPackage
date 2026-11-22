@@ -7,7 +7,9 @@ const files = Object.assign(Object.create(null), {
   '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/app.js': ['app.js', 'application/javascript; charset=utf-8'],
   '/startup.js': ['startup.js', 'application/javascript; charset=utf-8'],
-  '/style.css': ['style.css', 'text/css; charset=utf-8']
+  '/render.js': ['render.js', 'application/javascript; charset=utf-8'],
+  '/style.css': ['style.css', 'text/css; charset=utf-8'],
+  '/favicon.svg': ['favicon.svg', 'image/svg+xml']
 });
 http.createServer((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -28,6 +30,9 @@ http.createServer((req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (url.searchParams.get('permissions') === 'deny') res.setHeader('Permissions-Policy', 'geolocation=(), usb=(), payment=(), gamepad=()');
   if (url.searchParams.get('csp') === 'images') res.setHeader('Content-Security-Policy', "img-src 'none'");
-  if (url.searchParams.get('csp') === 'strict') res.setHeader('Content-Security-Policy', "script-src 'self' https://cdn.jsdelivr.net");
+  if (url.searchParams.get('csp') === 'strict') {
+    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data:; base-uri 'none'");
+  }
+  if (url.searchParams.get('csp') === 'no-scripts') res.setHeader('Content-Security-Policy', "script-src 'none'");
   res.end(req.method === 'HEAD' ? undefined : body);
 }).listen(4173, '127.0.0.1');

@@ -42,21 +42,21 @@ function harness() {
         listeners.get(name).add(fn);
       },
       removeEventListener: (name, fn) => listeners.get(name)?.delete(fn),
-      querySelector: () => ({ classList: { add() {} } }),
+      getElementById: id => id === 'app' ? { hidden: true } : null,
       createElement: () => ({ getContext: () => null, canPlayType: () => '' })
     },
     Vue: {
       ref: value => ({ value }),
       computed: getter => ({ get value() { return getter(); } }),
       onMounted: fn => { mounted = fn; },
-      createApp: options => ({ mount() { state = options.setup(); } })
+      createApp: options => ({ config: {}, mount() { state = options.setup(); } })
     }
   };
   context.window = {
     isSecureContext: true,
     matchMedia: () => ({ matches: false }),
     localStorage: storage(), sessionStorage: storage(),
-    CSS: context.CSS, Promise
+    CSS: context.CSS, Promise, browserCheckerRender() {}
   };
   // 仅在测试 VM 中暴露闭包，不增加生产脚本的公共 API。
   const instrumented = source.replace('    return {\n      userAgent,', `
@@ -95,7 +95,7 @@ test('browser policy and warning template remain stable', () => {
   const hash = text => createHash('sha256').update(text).digest('hex');
   const policy = source.slice(source.indexOf('    // 检测浏览器类型和版本'), source.indexOf('    // 收尾'));
   assert.equal(hash(policy), lock.policySha256);
-  const html = fs.readFileSync(path.join(rootDir, 'index.html'), 'utf8');
+  const html = fs.readFileSync(path.join(rootDir, 'templates', 'app.html'), 'utf8');
   const warning = html.slice(html.indexOf('      <!-- 国产/套壳浏览器警告块 -->'), html.indexOf('      <!-- 内核版本及建议块 -->'));
   assert.equal(hash(warning), lock.warningSha256);
 });
@@ -123,10 +123,16 @@ test('protected classification, deduction and disguised-version boundaries (378 
   h.api.detectBrowserInfo();
   assert.equal(h.state.browserType.value, '套壳浏览器');
   assert.equal(h.state.totalScore.value, 30);
+  h.context.navigator.userAgent = 'OPiOS/3.0 QQFooChrome/110.0 Edge/18.0';
+  h.state.totalScore.value = 100;
+  h.api.detectBrowserInfo();
+  assert.equal(h.state.browserType.value, '套壳浏览器');
+  assert.equal(h.state.chromeVersion.value, 110);
+  assert.equal(h.state.totalScore.value, 40);
 });
 
 test('Chromium version score tiers track the current Stable baseline', () => {
-  for (const [version, penalty] of [[109,50],[110,40],[115,40],[126,40],[127,30],[136,30],[137,20],[144,20],[145,10],[151,10],[152,0],[157,0],[158,0]]) {
+  for (const [version, penalty] of [[109,50],[110,40],[127,40],[128,30],[137,30],[138,20],[145,20],[146,10],[152,10],[153,0],[158,0],[159,0]]) {
     const h = harness();
     h.context.navigator.userAgent = `Chrome/${version}.0.0.0`;
     h.api.detectBrowserInfo();
@@ -136,9 +142,9 @@ test('Chromium version score tiers track the current Stable baseline', () => {
 
 test('Chromium upgrade recommendations track the current Stable baseline', () => {
   for (const [version, text] of [
-    [127, '严重过时'], [128, '落后较多'], [142, '落后较多'],
-    [143, '有些落后'], [151, '有些落后'], [152, '较新'],
-    [156, '较新'], [157, '处于最新前沿'], [158, '处于最新前沿']
+    [128, '严重过时'], [129, '落后较多'], [143, '落后较多'],
+    [144, '有些落后'], [152, '有些落后'], [153, '较新'],
+    [157, '较新'], [158, '处于最新前沿'], [159, '处于最新前沿']
   ]) {
     const h = harness();
     h.context.navigator.userAgent = `Chrome/${version}.0.0.0`;
@@ -172,6 +178,40 @@ test('iOS Firefox is not Safari or Chromium', () => {
   assert.equal(h.state.isIOSDevice.value, true);
 });
 
+test('legacy and mobile engine aliases are separated from Chromium version penalties', () => {
+  for (const [ua, type, major] of [
+    ['Windows NT 10.0 Chrome/42.0 Safari/537.36 Edge/18.19041', 'Edge', 0],
+    ['iPhone AppleWebKit/605.1.15 EdgiOS/157.0 Mobile/15E148 Safari/605.1', 'Edge（iOS）', 0],
+    ['iPhone AppleWebKit/605.1.15 OPiOS/3.3 Mobile/15E148 Safari/605.1', 'Opera（iOS）', 0],
+    ['iPhone AppleWebKit/605.1.15 OPT/4.0 Safari/605.1', 'Opera（iOS）', 0],
+    ['(Linux; Android 15; wv) Chrome/158.0 Mobile Safari/537.36', 'Android WebView', 158],
+    ['Linux Chromium/158.0 Safari/537.36', 'Chromium', 158],
+    ['Linux HeadlessChrome/158.0 Safari/537.36', 'Chromium', 158],
+    ['Windows NT 10.0 Chrome/158.0 Edg/158.0', 'Edge', 158],
+    ['Linux Chrome/158.0 OPR/129.0', 'Opera', 158],
+    ['FakeChrome/25 Edgy/27 NotFirefox/5', '未知浏览器', 0]
+  ]) {
+    const h = harness();
+    h.context.navigator.userAgent = ua;
+    h.api.detectBrowserInfo();
+    assert.equal(h.state.browserType.value, type, ua);
+    assert.equal(h.state.isChromeEngine.value, major > 0, ua);
+    assert.equal(h.state.chromeVersion.value, major, ua);
+    assert.equal(h.state.totalScore.value, 100, ua);
+  }
+});
+
+test('recommendations describe evaluated results without inferring whole-site compatibility', () => {
+  const h = harness();
+  h.state.detectionResults.value = [{ supported: true }, { supported: false }, { skipped: true }];
+  h.api.detectBrowserInfo();
+  assert.match(h.state.recommendation.value, /评估的 2 项.*1 项受支持（50%）/);
+  h.state.detectionResults.value = [];
+  h.api.generateRecommendation();
+  assert.match(h.state.recommendation.value, /无法给出支持率/);
+  assert.equal(h.state.getSupportRate(), null);
+});
+
 for (const [name, ua, touches, ios, mobile] of [
   ['iPad desktop UA', 'Macintosh', 5, true, true],
   ['Mac', 'Macintosh', 0, false, false],
@@ -195,10 +235,16 @@ test('secure and file-origin exclusions; localhost remains eligible', () => {
   h.context.location.protocol = 'file:';
   h.context.window.isSecureContext = true;
   h.api.detectEnvironment();
-  assert.match(h.api.getSkipReason({ secure: true }), /file:/);
+  assert.equal(h.api.getSkipReason({ secure: true }), null);
+  assert.match(h.api.getSkipReason({ secure: true, siteOrigin: true }), /file:/);
+  h.context.location.protocol = 'https:';
+  h.context.window.origin = 'null';
+  h.api.detectEnvironment();
+  assert.match(h.api.getSkipReason({ secure: true, siteOrigin: true }), /不透明来源/);
+  h.context.window.origin = 'http://localhost:4173';
   h.context.location.protocol = 'http:';
   h.api.detectEnvironment();
-  assert.equal(h.api.getSkipReason({ secure: true }), null);
+  assert.equal(h.api.getSkipReason({ secure: true, siteOrigin: true }), null);
 });
 
 test('iOS notification exception distinguishes tabs from standalone apps', async () => {
@@ -332,7 +378,8 @@ test('feature score, sorting, support rate and notice counts exclude skipped ite
   const h = harness();
   await detect(h);
   const items = h.state.detectionResults.value;
-  assert.equal(items.length, 91);
+  assert.equal(items.length, 105);
+  assert.equal(new Set(items.map(item => item.name)).size, items.length);
   const supported = items.filter(i => i.supported).length;
   const unsupported = items.filter(i => !i.supported && !i.skipped).length;
   assert.equal(h.state.totalScore.value, 100 - unsupported * 2);
@@ -401,10 +448,11 @@ test('ES2025+, CSS and platform additions are detected without invoking any inte
   h.context.Temporal = { Now: { instant: doNotInvoke, plainDateISO: doNotInvoke }, PlainDate: ctor() };
   Object.assign(w, { CSSScopeRule: ctor(), CSSStartingStyleRule: ctor(), CSSPropertyRule: ctor(), Highlight: ctor(),
     HTMLTemplateElement: ctor({ shadowRootMode: '' }), Element: ctor({ setHTMLUnsafe: doNotInvoke, moveBefore: doNotInvoke }),
-    HTMLButtonElement: ctor({ commandForElement: null }), CommandEvent: ctor(), onscrollend: null,
+    HTMLButtonElement: ctor({ commandForElement: null }), CommandEvent: ctor(),
     URLPattern: ctor(), OffscreenCanvas: ctor(), VideoDecoder: ctor(), scheduler: { postTask: doNotInvoke },
     crypto: { getRandomValues: doNotInvoke, randomUUID: doNotInvoke, subtle: { digest: doNotInvoke, encrypt: doNotInvoke } } });
   Object.assign(h.context.CSS, { registerProperty: doNotInvoke, highlights: { set: doNotInvoke, delete: doNotInvoke } });
+  h.context.document.onscrollend = null;
   h.context.HTMLScriptElement.supports = type => type === 'importmap';
   Object.assign(h.context.navigator, { serial: { requestPort: doNotInvoke }, hid: { requestDevice: doNotInvoke } });
   const find = await detect(h);
@@ -412,7 +460,7 @@ test('ES2025+, CSS and platform additions are detected without invoking any inte
     assert.equal(find(name).supported, true, name);
     assert.equal(find(name).skipped, false, name);
   }
-  assert.equal(h.state.detectionResults.value.length, 91);
+  assert.equal(h.state.detectionResults.value.length, 105);
 });
 
 test('ES2025+, CSS and platform additions reject partial or placeholder interfaces', async () => {
@@ -443,7 +491,7 @@ test('Web Serial and WebHID are skipped on mobile, Web Crypto and WebCodecs on i
   const mobile = harness();
   mobile.context.navigator.userAgent = 'Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 Chrome/157.0.0.0 Mobile Safari/537.36';
   const findMobile = await detect(mobile);
-  for (const name of ['Web Serial API', 'WebHID API']) assert.equal(findMobile(name).reason, '移动端不提供此 API');
+  for (const name of ['Web Serial API', 'WebHID API']) assert.equal(findMobile(name).reason, '当前移动端环境未提供此 API');
   const insecure = harness();
   insecure.context.window.isSecureContext = false;
   const findInsecure = await detect(insecure);
@@ -510,7 +558,7 @@ test('blocked optional environment APIs do not abort detection', async () => {
   h.runTimers(800);
   assert.equal(h.state.detectionError.value, false);
   assert.equal(h.state.isLoading.value, false);
-  assert.equal(h.state.detectionResults.value.length, 91);
+  assert.equal(h.state.detectionResults.value.length, 105);
 });
 
 test('animation exceptions cannot invalidate a completed score', () => {
@@ -580,6 +628,7 @@ test('unknown, allowed, missing or broken policy introspection does not bypass d
   for (const policy of [undefined, {},
     { features: () => [], allowsFeature: () => false },
     { features: () => ['usb'], allowsFeature: () => true },
+    { features: () => ['usb'], allowsFeature: () => undefined },
     { features: () => { throw new Error('blocked'); } }]) {
     h.context.document.permissionsPolicy = policy;
     assert.equal(h.api.getSkipReason(feature), null);
@@ -728,7 +777,7 @@ for (const property of ['mobile', 'maxTouchPoints', 'standalone']) {
     await pending;
     h.runTimers(800);
     assert.equal(h.state.detectionError.value, false);
-    assert.equal(h.state.detectionResults.value.length, 91);
+    assert.equal(h.state.detectionResults.value.length, 105);
   });
 }
 
@@ -1019,7 +1068,7 @@ for (const errorName of ['SecurityError', 'NotAllowedError', 'TypeError']) {
     assert.equal(result.skipped, errorName !== 'TypeError');
     if (result.skipped) assert.match(result.reason, /安全策略|权限/);
     assert.equal(find('Storage API').supported, true);
-    assert.equal(h.state.detectionResults.value.length, 91);
+    assert.equal(h.state.detectionResults.value.length, 105);
   });
 }
 
@@ -1054,4 +1103,170 @@ test('image probe ignores malformed securitypolicyviolation events', async () =>
   h.images[0].naturalWidth = h.images[0].naturalHeight = 1;
   h.images[0].onload();
   assert.equal(await pending, true);
+});
+
+test('file origins still test exposed secure-context APIs while skipping those needing a site', async () => {
+  const h = harness();
+  const method = () => { assert.fail('must not invoke detected interfaces'); };
+  h.context.location.protocol = 'file:';
+  h.context.navigator.serviceWorker = { register: method };
+  h.context.window.VideoDecoder = method;
+  const find = await detect(h);
+  assert.match(find('Service Worker').reason, /file:/);
+  assert.equal(find('WebCodecs API').supported, true);
+});
+
+test('platform skip rules never mask interfaces that the browser implements', async () => {
+  const android = harness();
+  const method = () => { assert.fail('must not prompt for permissions'); };
+  android.context.navigator.userAgent = 'Mozilla/5.0 (Linux; Android 15) Chrome/158.0 Mobile';
+  android.context.navigator.serial = { requestPort: method };
+  assert.equal((await detect(android))('Web Serial API').supported, true);
+  const ios = harness();
+  ios.context.navigator.userAgent = 'iPhone';
+  ios.context.navigator.xr = { requestSession: method };
+  assert.equal((await detect(ios))('WebXR Device API').supported, true);
+  const linux = harness();
+  linux.context.navigator.userAgent = 'X11; Linux';
+  linux.context.navigator.share = method;
+  assert.equal((await detect(linux))('Web Share API').supported, true);
+  delete linux.context.navigator.share;
+  assert.match((await detect(linux))('Web Share API').reason, /桌面 Linux/);
+});
+
+test('working legacy policy introspection is used when the newer interface is blocked', () => {
+  const h = harness();
+  Object.defineProperty(h.context.document, 'permissionsPolicy', { get() { throw new Error('blocked'); } });
+  h.context.document.featurePolicy = { features: () => ['usb'], allowsFeature: () => false };
+  assert.match(h.api.getSkipReason({ policy: 'usb' }), /Permissions Policy/);
+});
+
+test('media probes reject generic containers and invalid canPlayType responses', async () => {
+  const h = harness();
+  h.context.document.createElement = () => ({
+    canPlayType(type) {
+      return ['video/webm', 'audio/x-m4a'].includes(type) ? 'maybe' : 'no';
+    }
+  });
+  const generic = await detect(h);
+  assert.equal(generic('支持视频格式 WebM').supported, false);
+  assert.equal(generic('支持音频格式 AAC').supported, false);
+  h.context.document.createElement = () => ({
+    canPlayType: type => /av01|mp4a\.40\.2/.test(type) ? 'probably' : ''
+  });
+  const specific = await detect(h);
+  assert.equal(specific('支持视频格式 WebM').supported, true);
+  assert.equal(specific('支持音频格式 AAC').supported, true);
+});
+
+test('scrollend is detected at its actual document and element targets', async () => {
+  const h = harness();
+  h.context.window.onscrollend = null;
+  assert.equal((await detect(h))('scrollend 事件').supported, false);
+  h.context.document.onscrollend = null;
+  assert.equal((await detect(h))('scrollend 事件').supported, true);
+  delete h.context.document.onscrollend;
+  h.context.window.Element = function Element() {};
+  h.context.window.Element.prototype.onscrollend = null;
+  assert.equal((await detect(h))('scrollend 事件').supported, true);
+});
+
+test('unremovable storage probes are not reported as fully supported', () => {
+  const h = harness();
+  h.context.window.localStorage.removeItem = () => {};
+  assert.match(h.api.testStorage().reason, /未清除网站存储探测键/);
+});
+
+test('IndexedDB does not create a probe when deletion is unavailable', async () => {
+  const h = harness();
+  let calls = 0;
+  h.context.window.indexedDB = { open() { calls++; } };
+  assert.equal(await h.api.testIndexedDB(), false);
+  assert.equal(calls, 0);
+});
+
+test('image handler cleanup and an inaccessible rAF getter cannot interrupt detection', async () => {
+  const h = harness();
+  Object.defineProperty(h.context.window, 'requestAnimationFrame', { get() { throw new Error('blocked'); } });
+  const pending = h.mounted();
+  for (const image of h.images) {
+    Object.defineProperty(image, 'onerror', { set() { throw new Error('cleanup denied'); } });
+  }
+  completeImages(h);
+  await pending;
+  h.runTimers(800);
+  assert.equal(h.state.isLoading.value, false);
+  assert.equal(h.state.detectionError.value, false);
+  assert.equal(h.state.displayScore.value, h.state.totalScore.value);
+  assert.equal(h.listeners.get('securitypolicyviolation').size, 0);
+  assert.equal(h.timers.size, 0);
+});
+
+const expandedFeatureNames = ['Object.groupBy() / Map.groupBy()', 'Promise.withResolvers()', 'Promise.try()',
+  'Array.fromAsync()', 'Error.isError()', 'CSS @layer', 'CSS 相对颜色', 'CSS transition-behavior', 'CSS 类型化 attr()',
+  'AbortSignal.any() / timeout()', 'HTMLDialogElement.requestClose()', 'IntersectionObserver.scrollMargin',
+  'Origin Private File System（OPFS）', 'Sanitizer API'];
+
+test('expanded capabilities inspect complete interfaces and CSS syntax without external effects', async () => {
+  const h = harness();
+  const doNotCall = () => { assert.fail('must not invoke detected APIs or getters'); };
+  const ctor = (proto = {}) => Object.assign(function Ctor() { doNotCall(); }, { prototype: proto });
+  for (const [name, prop] of [['Object', 'groupBy'], ['Map', 'groupBy'], ['Array', 'fromAsync'], ['Error', 'isError']]) {
+    const intrinsic = vm.runInNewContext(name);
+    h.context[name] = Object.assign(ctor(), { [prop]: doNotCall });
+    // The app may need other static methods on these intrinsics for unrelated work.
+    Object.setPrototypeOf(h.context[name], intrinsic);
+  }
+  const observer = ctor();
+  Object.defineProperty(observer.prototype, 'scrollMargin', { get: doNotCall });
+  Object.assign(h.context.window, {
+    Promise: Object.assign(ctor(), { withResolvers: doNotCall, try: doNotCall }),
+    CSSLayerBlockRule: ctor(), CSSLayerStatementRule: ctor(),
+    AbortSignal: Object.assign(ctor(), { any: doNotCall, timeout: doNotCall }),
+    HTMLDialogElement: ctor({ requestClose: doNotCall }), IntersectionObserver: observer,
+    Sanitizer: ctor(), Element: ctor({ setHTML: doNotCall })
+  });
+  h.context.navigator.storage = { getDirectory: doNotCall };
+  const cssQueries = [];
+  h.context.window.CSS.supports = (...args) => { cssQueries.push(args); return true; };
+  const find = await detect(h);
+  for (const name of expandedFeatureNames) {
+    assert.equal(find(name).supported, true, name);
+    assert.equal(find(name).skipped, false, name);
+  }
+  assert.ok(cssQueries.some(([prop, value]) => prop === 'width' && value.startsWith('attr(data-width type(')));
+});
+
+test('expanded probes reject partial interfaces, old CSS attr() and fake observers', async () => {
+  const h = harness();
+  const w = h.context.window;
+  h.context.Object = Object.assign(Object.create(Object), { groupBy: () => {} });
+  h.context.Map = function Map() {};
+  h.context.Array = Object.assign(Object.create(Array), { fromAsync: {} });
+  h.context.Error = { isError: null };
+  w.Promise = { try: null, withResolvers: {} };
+  w.CSSLayerBlockRule = function CSSLayerBlockRule() {};
+  w.AbortSignal = Object.assign(function AbortSignal() {}, { any: () => {} });
+  w.HTMLDialogElement = { requestClose: () => {} };
+  w.IntersectionObserver = function IntersectionObserver() {};
+  w.IntersectionObserver.prototype.scrollMargin = undefined;
+  w.Sanitizer = function Sanitizer() {};
+  w.Element = function Element() {};
+  h.context.navigator.storage = { getDirectory: {} };
+  w.CSS.supports = (property, value) => property === 'content' && value.startsWith('attr(');
+  const find = await detect(h);
+  for (const name of expandedFeatureNames) assert.equal(find(name).supported, false, name);
+});
+
+test('OPFS requires a secure site origin and never opens the directory', async () => {
+  const h = harness();
+  h.context.navigator.storage = { getDirectory() { assert.fail('must not open a directory'); } };
+  const name = 'Origin Private File System（OPFS）';
+  h.context.window.isSecureContext = false;
+  assert.match((await detect(h))(name).reason, /安全上下文/);
+  h.context.window.isSecureContext = true;
+  h.context.location.protocol = 'file:';
+  assert.match((await detect(h))(name).reason, /file:/);
+  h.context.location.protocol = 'http:';
+  assert.equal((await detect(h))(name).supported, true);
 });

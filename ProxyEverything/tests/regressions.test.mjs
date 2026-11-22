@@ -392,3 +392,32 @@ test('rejected WebSocket handshakes report the upstream status instead of a gene
 		assert.ok(upstream.bodyUsed, 'the rejected handshake body is drained');
 	}
 });
+
+test('XHTML charset sniffing stops once no XML declaration can still supply an encoding', async () => {
+	for (const head of ['<html xmlns="http://www.w3.org/1999/xhtml">', '<?xml version="1.0"?><html>']) {
+		// 上游仍在流式输出：嗅探不能等到 4096 字节或 EOF。
+		const stream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(head)); } });
+		const sniffed = await Promise.race([
+			sniffHtmlCharset(stream, null, true),
+			new Promise(resolve => setTimeout(() => resolve('timeout'), 200)),
+		]);
+		assert.notEqual(sniffed, 'timeout', head);
+		assert.equal(sniffed.charset, null, head);
+		await sniffed.body.cancel();
+	}
+});
+
+test('leaked relative WebSocket handshakes are forwarded instead of redirected', async t => {
+	const seen = [];
+	t.mock.method(globalThis, 'fetch', async url => { seen.push(String(url)); return new Response('refused', { status: 403 }); });
+	const request = new Request('https://proxy.example/live/socket?room=1', {
+		headers: { Upgrade: 'websocket', Referer: proxy('https://example.com/app/worker.js') },
+	});
+	const response = await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+	assert.equal(response.status, 403);
+	assert.deepEqual(seen, ['https://example.com/live/socket?room=1']);
+	const plain = await worker.fetch(new Request('https://proxy.example/live/data', {
+		headers: { Referer: proxy('https://example.com/app/') },
+	}), { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+	assert.equal(plain.status, 307);
+});

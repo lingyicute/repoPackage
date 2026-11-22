@@ -25,22 +25,23 @@
 
 ## 📖 Overview
 
-点开页面，它就会：识别你的浏览器类型与内核版本，检查 91 项现代 Web 能力，分辨国产浏览器、套壳浏览器和应用内 WebView，并把结果整理成一个 0–100 的分数和几条可读的建议。
+点开页面，它就会：识别你的浏览器类型与内核版本，检查 105 项现代 Web 能力，分辨国产浏览器、套壳浏览器和应用内 WebView，并把结果整理成一个 0–100 的分数和几条可读的建议。
 
-这个项目仍然是一个**无需构建的静态网站**：`index.html`、`style.css`、`app.js` 和 `startup.js` 就是运行时的全部。没有后端、没有账号、没有追踪，部署到任意静态托管即可。你也可以直接打开 `index.html`，或访问官方站点 [test.92li.uk](https://test.92li.uk)。
+这个项目仍然是一个**无需构建的静态网站**：`index.html`、`style.css`、`app.js`、`startup.js`、已生成的 `render.js` 和 `favicon.svg` 是运行时文件。没有后端、没有账号、没有追踪，部署到任意静态托管即可。你也可以直接打开 `index.html`，或访问官方站点 [test.92li.uk](https://test.92li.uk)。
 
 <br>
 
 ## ✨ Features
 
-- **🔍 91 项现代 Web 能力检测**
+- **🔍 105 项现代 Web 能力检测**
   - 覆盖 ES6、Fetch API、WebAssembly 等常见特性，以及 Navigation API、Math.sumPrecise()、Iterator.concat()、Intl.Locale 信息 API、CSS field-sizing 与 :open 等现代特性。
   - 包含 Temporal、Set 集合运算、Iterator Helpers、Float16Array、Uint8Array Base64 等 ES2025+ 内置能力，@scope、@starting-style、锚点定位、subgrid 等 Baseline CSS 能力，以及声明式 Shadow DOM、Invoker Commands、URLPattern、WebCodecs、Web Crypto 等平台 API。
+  - 也检测 `Promise.withResolvers()`、`Promise.try()`、`Array.fromAsync()`、集合分组、`Error.isError()`、CSS 分层与相对颜色、类型化 `attr()`、离散过渡、对话框关闭请求、OPFS、Sanitizer 等现代能力。
   - 每项结果都会显示为「支持 / 不支持 / 已跳过」，并附上跳过原因。
 
 - **🧭 浏览器与内核信息**
   - 显示浏览器类型、Chromium 内核版本（如适用）和 User-Agent。
-  - 根据版本给出升级建议。
+  - 根据版本给出升级建议；当前分档参考 Chrome 158 Stable，并非在线查询。
 
 - **🚩 国产 / 套壳浏览器识别**
   - 识别中国厂商浏览器与套壳浏览器，并给出切换建议。
@@ -53,7 +54,7 @@
 - **📱 响应式与可访问**
   - 适合手机、平板和桌面端访问。
   - 窄屏下特性名称自动换行，详情区域支持键盘聚焦与滚动。
-  - 尊重「减少动态效果」设置，后台页面直接给出最终分数。
+  - 尊重「减少动态效果」设置，后台页面直接给出最终分数；装饰性动画不会无限循环。
   - 内容默认可见；即使用户样式禁用了 CSS 动画，也不会隐藏已完成的结果。
 
 - **🛡️ 尽量避免假阳性**
@@ -86,11 +87,12 @@
 为了避免在受限环境下误报，以下情况的检测项会被标记为「已跳过」：
 
 - **非安全上下文**：依赖安全上下文的 API（例如 Service Worker、Clipboard、WebUSB、WebGPU、Wake Lock 等）在非 HTTPS 或非可信本地来源下不检测；`localhost` 等可信本地来源仍可参与检测。
-- **本地文件**：通过 `file://` 直接打开页面时，依赖网站来源的 API 会被跳过；建议通过 HTTPS 或 `localhost` 访问以获得完整结果。
-- **移动端**：EyeDropper API、Web Serial、WebHID 等明确仅桌面端提供的功能在移动端跳过。
-- **iOS / iPadOS**：在常见 WebKit 环境下，WebUSB、Web Bluetooth、WebXR、Idle Detection、Web MIDI、Speculation Rules 等不可用的功能会被跳过。
+- **本地文件**：通过 `file://` 直接打开页面时，只因网站来源缺失而跳过明确依赖该来源的 API（如 Service Worker、Cookie Store）；其他安全上下文 API 按浏览器实际环境检测。不透明来源也会跳过来源依赖项。建议通过 HTTPS 或 `localhost` 访问以获得完整结果。
+- **移动端**：EyeDropper、Web Serial、WebHID 等在未暴露对应接口时跳过；新版 Android 浏览器已提供的 Web Serial 会照常检测。
+- **iOS / iPadOS**：在 WebUSB、Web Bluetooth、WebXR、Idle Detection、Web MIDI、Speculation Rules 等接口不可用时跳过；已提供的接口仍按能力判断。
 - **iOS 通知**：普通 iOS 标签页不检测 Web Notifications；已添加到主屏幕并以独立 Web App 运行时可进行实际检测。
-- **桌面 Linux**：Web Share API 在该平台的浏览器实现受操作系统能力限制，因此不计入评分。
+- **桌面 Linux**：Web Share API 若未暴露则跳过；浏览器已提供时仍计入检测。
+- **媒体检测**：WebM / AAC 根据 `canPlayType` 对具体编码或媒体类型的声明判定；这不同于对 WebP / AVIF 样本执行实际图片解码。
 - **图片解码受限**：图片样本被 CSP 拦截或解码超时时跳过；明确解码失败才视为不支持。
 - **页面权限策略**：对已配置策略映射的检测项，如果浏览器提供 Permissions Policy 反射 API，且明确认识并禁止对应策略，则跳过。没有反射 API、未知策略或策略查询失败时仍执行原能力检测，不会据此假定 API 被禁止。此检查不查询或申请用户权限。
 - **API 访问受限**：能力检测访问接口时，若明确抛出 `SecurityError` 或 `NotAllowedError`，标记为无法评估并跳过；普通异常（如 `TypeError`）仍按不支持处理，不一律免除扣分。
@@ -133,8 +135,11 @@ python3 -m http.server 8000
 
 - `index.html` — 主 HTML 文件
 - `style.css` — 样式表
+- `favicon.svg` — 随站点发布的本地图标
 - `app.js` — Vue.js 应用与检测逻辑
 - `startup.js` — 不依赖 Vue 的启动失败提示与超时保护
+- `templates/app.html` — Vue 页面模板源文件
+- `scripts/compile-template.cjs` / `render.js` — 模板生成脚本与提交到仓库的产物
 - `tests/` — 单元测试、跨浏览器回归测试及策略锁定基线
 - `playwright.config.cjs` — Chromium / Firefox / WebKit 测试配置
 
@@ -142,7 +147,7 @@ python3 -m http.server 8000
 
 ## 🔨 开发与测试
 
-页面是无需构建的静态网站；Node.js / npm 仅用于开发测试。
+页面无需构建即可访问；Node.js / npm 仅用于开发。修改 `templates/app.html` 后执行 `node scripts/compile-template.cjs` 并一并提交 `render.js`，测试会校验产物。
 
 ```sh
 # Node.js 20+（CI 使用 22）
@@ -156,16 +161,16 @@ npm run test:browser
 
 回归覆盖还包括不可调用的 API 占位符、安全策略拒绝、受限的 `customElements`、禁用 CSS 动画，以及国产／套壳浏览器的完整警告与扣分。测试服务器另有畸形 URL、静态文件白名单、请求方法和读取错误处理的单元测试。
 
-Pull Request 会自动运行回归测试；主分支 Pages 部署也必须先通过相同测试。部署只发布 `index.html`、`style.css`、`app.js`、`startup.js`，不发布测试及 npm 依赖。
+Pull Request 会自动运行回归测试；主分支 Pages 部署也必须先通过相同测试。部署只发布 `index.html`、`style.css`、`app.js`、`startup.js`、`render.js`、`favicon.svg`，不发布模板源、测试及 npm 依赖。
 
 <br>
 
 ## ⚠️ 检测范围与运行限制
 
-- 分数是本站规则下的特性可用性评估，不是性能基准测试，也不是完整安全审计。API 存在不等于已经授权、具有硬件支持，或所有调用都能成功；检测不会申请摄像头、定位、蓝牙等权限。
-- 浏览器识别依赖 User-Agent。品牌和版本可被伪装，iOS Firefox 的 `FxiOS` 会被识别为 Firefox，但不会因此标记为 Gecko 内核。
-- 运行时使用固定版本的 Vue 生产构建并启用 SRI。首次打开（包括 `file://`）仍需网络访问 CDN。
-- 当前使用 Vue 的 DOM 模板运行时编译器，严格禁止 `unsafe-eval` 的 CSP 无法启动完整页面。
+- 分数是本站规则下的特性可用性评估，不是性能基准测试，也不是完整安全审计；支持率只描述本页实际评估的项目，不能外推为网站兼容率。API 存在不等于已经授权、具有硬件支持，或所有调用都能成功；检测不会申请摄像头、定位、蓝牙等权限。
+- 浏览器识别依赖 User-Agent。品牌和版本可被伪装，iOS 上的 Firefox、Chrome、Edge 和 Opera 不因兼容性标记计为 Chromium；通用 Android WebView 单独显示，不触发指定套壳品牌的额外扣分。
+- 运行时使用固定版本的 Vue 生产构建并启用 SRI。首次打开（包括 `file://`）仍需联系 Vue CDN；站点不再请求外部图标，也不会向 CDN 发送页面 Referer。
+- 运行时使用预编译模板，不要求 CSP 开启 `unsafe-eval`。托管方仍需允许所需脚本、样式和 Vue CDN；全部脚本被拦截时会显示静态提示。
 - 显示模式查询、可选 Client Hints 或分数动画被禁用时会降级，不会导致整个检测失败。后台页面和减少动态效果模式直接提供最终分数。
 - 详细结果区域可通过 Tab 聚焦，再用方向键、Page Down / End 等按键滚动；窄屏下特性名称自动换行。
 
