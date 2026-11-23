@@ -20,8 +20,11 @@ import android.os.Bundle;
 import android.os.Looper;
 import android.os.Process;
 import android.provider.Settings;
+import android.view.Gravity;
 import android.widget.Button;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
+import android.widget.Space;
 import android.widget.TextView;
 
 import com.lingyicute.orientationlock.preference.PreferenceManager;
@@ -86,6 +89,21 @@ public class MainActivityTest {
             activity.findViewById(R.id.tv_orientation_default).performClick();
             assertNull(shadowOf(activity).getNextStoppedService());
             assertEquals(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED, preferences.getOrientation());
+        }
+    }
+
+    @Test
+    public void restartingActivityReconcilesSelectionChangedWhileStopped() {
+        ShadowSettings.setCanDrawOverlays(true);
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            activity.findViewById(R.id.tv_orientation_landscape).performClick();
+            assertTrue(activity.findViewById(R.id.tv_orientation_landscape).isSelected());
+            controller.pause().stop();
+            preferences.setOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            controller.start();
+            assertTrue(activity.findViewById(R.id.tv_orientation_default).isSelected());
+            assertFalse(activity.findViewById(R.id.tv_orientation_landscape).isSelected());
         }
     }
 
@@ -155,6 +173,25 @@ public class MainActivityTest {
             assertTrue(choice.getMaxLines() > 1);
             assertNull(choice.getEllipsize());
             assertTrue(activity.findViewById(R.id.iv_about) instanceof ImageButton);
+        }
+    }
+
+    @Test
+    public void dynamicSectionHeadingRemainsCenteredBetweenBalancedControls() {
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            LinearLayout root = activity.findViewById(R.id.ll_root);
+            LinearLayout header = (LinearLayout) root.getChildAt(0);
+            assertTrue(header.getChildAt(0) instanceof Space);
+            TextView dynamicHeading = (TextView) header.getChildAt(1);
+            ImageButton about = (ImageButton) header.getChildAt(2);
+            assertEquals(Gravity.CENTER, dynamicHeading.getGravity());
+            LinearLayout.LayoutParams startParams =
+                    (LinearLayout.LayoutParams) header.getChildAt(0).getLayoutParams();
+            LinearLayout.LayoutParams endParams =
+                    (LinearLayout.LayoutParams) about.getLayoutParams();
+            assertEquals(endParams.width, startParams.width);
+            assertEquals(endParams.getMarginEnd(), startParams.getMarginStart());
         }
     }
 
@@ -262,8 +299,10 @@ public class MainActivityTest {
         AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
         shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(Manifest.permission.SYSTEM_ALERT_WINDOW);
         int op = 24; // SYSTEM_ALERT_WINDOW before its public string name.
-        shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(), AppOpsManager.MODE_ALLOWED);
-        assertTrue(PermissionUtils.isDrawOverlaysPermissionGranted(context));
+        for (int mode : new int[]{AppOpsManager.MODE_ALLOWED, AppOpsManager.MODE_DEFAULT}) {
+            shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(), mode);
+            assertTrue(PermissionUtils.isDrawOverlaysPermissionGranted(context));
+        }
         for (int mode : new int[]{AppOpsManager.MODE_ERRORED, AppOpsManager.MODE_IGNORED}) {
             shadowOf(appOps).setMode(op, Process.myUid(), context.getPackageName(), mode);
             assertFalse(PermissionUtils.isDrawOverlaysPermissionGranted(context));
@@ -275,9 +314,11 @@ public class MainActivityTest {
     public void legacyAllowedAppOpCannotReplaceTheInstallTimePermission() {
         Context context = RuntimeEnvironment.getApplication();
         AppOpsManager appOps = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
-        shadowOf(appOps).setMode(24, Process.myUid(), context.getPackageName(), AppOpsManager.MODE_ALLOWED);
         shadowOf(RuntimeEnvironment.getApplication()).denyPermissions(Manifest.permission.SYSTEM_ALERT_WINDOW);
-        assertFalse(PermissionUtils.isDrawOverlaysPermissionGranted(context));
+        for (int mode : new int[]{AppOpsManager.MODE_ALLOWED, AppOpsManager.MODE_DEFAULT}) {
+            shadowOf(appOps).setMode(24, Process.myUid(), context.getPackageName(), mode);
+            assertFalse(PermissionUtils.isDrawOverlaysPermissionGranted(context));
+        }
     }
 
     @Test

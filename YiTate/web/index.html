@@ -365,14 +365,15 @@
   .layer {
     position: absolute; left: 50%; top: 50%; width: 220px; height: 150px; border-radius: 18px;
     transform: translate(-50%,-50%) rotateX(55deg) rotateZ(-35deg) translateZ(var(--z));
-    display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: .9rem;
+    /* Labels sit on the edge the upper layers leave uncovered, so reading them needs no hover. */
+    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 12px; font-weight: 700; font-size: .9rem;
     box-shadow: 0 20px 40px -20px rgba(0,0,0,.4);
     transition: transform .6s var(--ease-emph);
   }
   .layers:hover .layer { transform: translate(-50%,-50%) rotateX(55deg) rotateZ(-35deg) translateZ(calc(var(--z) * 1.6)); }
   .layer.l1 { --z: 0px; background: var(--surface-container-highest); color: var(--on-surface); }
   .layer.l2 { --z: 50px; background: var(--secondary-container); color: var(--on-secondary-container); }
-  .layer.l3 { --z: 100px; background: var(--primary); background: color-mix(in oklab, var(--primary) 75%, transparent); color: var(--on-primary); border: 2px dashed var(--on-primary); backdrop-filter: blur(2px); }
+  .layer.l3 { --z: 100px; background: var(--primary); background: color-mix(in oklab, var(--primary) 92%, transparent); color: var(--on-primary); border: 2px dashed var(--on-primary); backdrop-filter: blur(2px); }
 
   /* Download */
   .download {
@@ -386,13 +387,15 @@
   .download::before { width: 360px; height: 360px; top: -160px; left: -120px; }
   .download::after { width: 280px; height: 280px; bottom: -140px; right: -80px; }
   .download h2 { font-size: clamp(2rem, 4vw, 3rem); font-weight: 800; letter-spacing: -.02em; position: relative; }
-  .download p { opacity: .85; margin-top: 12px; position: relative; font-size: 1.05rem; }
+  /* Dimming costs contrast: these values keep 4.5:1 on the primary tone at every hue. */
+  .download p { opacity: .9; margin-top: 12px; position: relative; font-size: 1.05rem; }
   .dl-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 14px; margin-top: 32px; position: relative; }
   .download .btn-filled { background: var(--on-primary); color: var(--primary); }
   .download .btn-outlined { color: var(--on-primary); box-shadow: inset 0 0 0 1.5px var(--on-primary); box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--on-primary) 50%, transparent); }
   .download .btn-outlined:hover { background: color-mix(in oklab, var(--on-primary) 12%, transparent); }
-  .dl-note { margin-top: 20px; font-size: .85rem; opacity: .75; position: relative; }
-  .dl-note code { font-family: var(--font); background: color-mix(in oklab, var(--on-primary) 15%, transparent); padding: 2px 8px; border-radius: 6px; }
+  /* A bare class loses to `.download p` and would never apply. */
+  .download .dl-note { margin-top: 20px; font-size: .85rem; opacity: 1; position: relative; }
+  .dl-note code { font-family: var(--font); background: color-mix(in oklab, var(--on-primary) 6%, transparent); padding: 2px 8px; border-radius: 6px; }
 
   /* Footer */
   footer { padding: 48px 0 40px; color: var(--on-surface-variant); font-size: .9rem; }
@@ -592,7 +595,7 @@
       <div class="reveal">
         <span class="eyebrow">How it works</span>
         <h2 class="title">原理其实很简单</h2>
-        <p class="sub">用一个透明的悬浮窗告诉系统："请按这个方向来。" 这就是全部。</p>
+        <p class="sub">用一个透明的悬浮窗告诉系统：“请按这个方向来。”这就是全部。</p>
       </div>
       <div class="steps">
         <div class="step reveal">
@@ -668,7 +671,7 @@
     <div class="license">
       <strong>Copyright © 2024 lingyicute.</strong><br>
       This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the <a href="https://www.gnu.org/licenses" target="_blank" rel="noopener" style="color:var(--primary)">GNU General Public License</a> for more details.
-      <p class="font-notice">字体：<a href="https://github.com/lingyicute/Nebulove">Nebulove</a>（lingyicute）。这项素材单独授权，不适用项目代码的 GPL 许可。按 <a href="https://github.com/lingyicute/Nebulove/blob/df0d98ed69435d0ff1f3705c084aca057f4ca9a5/LICENSE">Nebulove 项目嵌入许可 1.0（限非商业使用）</a>使用。</p>
+      <p class="font-notice">字体：<a href="https://github.com/lingyicute/Nebulove" target="_blank" rel="noopener">Nebulove</a>（lingyicute）。这项素材单独授权，不适用项目代码的 GPL 许可。按 <a href="https://github.com/lingyicute/Nebulove/blob/df0d98ed69435d0ff1f3705c084aca057f4ca9a5/LICENSE" target="_blank" rel="noopener">Nebulove 项目嵌入许可 1.0（限非商业使用）</a>使用。</p>
     </div>
   </div>
 </footer>
@@ -698,6 +701,13 @@
         // A later write may have superseded this queued event.
         value = store.getItem(key);
       } catch (_) { return; }
+      apply(value);
+    });
+    // No storage event reaches a page while it sits in the back/forward cache.
+    window.addEventListener('pageshow', event => {
+      if (!event.persisted) return;
+      let value;
+      try { value = window.localStorage.getItem(key); } catch (_) { return; }
       apply(value);
     });
   }

@@ -375,6 +375,14 @@ public class YiTateServiceTest {
     }
 
     @Test
+    @Config(sdk = 34)
+    public void foregroundNotificationOptsOutOfDeferralOnAndroid12Plus() {
+        Notification notification = shadowOf(service).getLastForegroundNotification();
+        assertEquals(Notification.FOREGROUND_SERVICE_IMMEDIATE,
+                (int) ReflectionHelpers.getField(notification, "mFgsDeferBehavior"));
+    }
+
+    @Test
     public void refreshingThePersistentNotificationDoesNotRepeatItsAlert() {
         select(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         select(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
@@ -424,6 +432,16 @@ public class YiTateServiceTest {
         service.onConfigurationChanged(service.getResources().getConfiguration());
         assertNotSame(initial, shadowOf(service).getLastForegroundNotification());
         assertEquals("已锁定：感应竖屏", notificationText());
+    }
+
+    @Test
+    public void notificationReopensTheActivityAsANewTaskLaunch() {
+        Intent launch = shadowOf(shadowOf(service).getLastForegroundNotification().contentIntent)
+                .getSavedIntent();
+        assertEquals(MainActivity.class.getName(), launch.getComponent().getClassName());
+        int required = Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP;
+        assertEquals(required, launch.getFlags() & required);
     }
 
     @Test
