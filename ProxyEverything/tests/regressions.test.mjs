@@ -424,6 +424,52 @@ test('leaked relative WebSocket handshakes are forwarded instead of redirected',
 	assert.equal(plain.status, 307);
 });
 
+test('a leaked "/" from a proxied page reaches the target root instead of the homepage', async t => {
+	t.mock.method(globalThis, 'fetch', async () => { throw new Error('upstream down'); });
+	const env = { ALLOWED_TARGET_ORIGINS: 'https://example.com' };
+	const leaked = await worker.fetch(new Request('https://proxy.example/?next=1', {
+		method: 'POST', body: 'a=1', headers: { Referer: proxy('https://example.com/app/page') },
+	}), env);
+	assert.equal(leaked.status, 307);
+	assert.equal(leaked.headers.get('location'), proxy('https://example.com/?next=1'));
+	for (const headers of [{}, { Referer: 'https://proxy.example/' }, { Referer: proxy('https://denied.example/') }]) {
+		const home = await worker.fetch(new Request('https://proxy.example/', { headers }), env);
+		assert.equal(home.status, 200);
+		assert.match(await home.text(), /id="urlForm"/);
+	}
+	// The error page lives on a proxied URL; its home link must not be mistaken for the target root.
+	const failed = await worker.fetch(new Request(proxy('https://example.com/app/page')), env);
+	assert.equal(failed.status, 502);
+	assert.match(await failed.text(), /<a [^>]*href="\/" rel="noreferrer"/);
+});
+
+test('an upstream status outside 200-599 yields the proxy error page for every method', async t => {
+	t.mock.method(globalThis, 'fetch', async () => ({
+		status: 999, statusText: '', headers: new Headers({ 'Content-Type': 'text/html' }), body: null,
+	}));
+	for (const method of ['GET', 'HEAD']) {
+		const response = await worker.fetch(new Request(proxy('https://example.com/blocked'), { method }), {
+			ALLOWED_TARGET_ORIGINS: 'https://example.com',
+		});
+		assert.equal(response.status, 502, method);
+	}
+});
+
+test('undeclared HTML falls back to windows-1252 only when its prefix is not valid UTF-8', async () => {
+	const sniff = async (bytes, isXml = false) => {
+		const stream = new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } });
+		const result = await sniffHtmlCharset(stream, null, isXml);
+		assert.deepEqual(Buffer.from(await new Response(result.body).arrayBuffer()), Buffer.from(bytes));
+		return result.charset;
+	};
+	assert.equal(await sniff(Buffer.from('<p>caf\xe9</p>', 'latin1')), 'windows-1252');
+	assert.equal(await sniff(Buffer.from('<p>café 你好</p>')), null);
+	assert.equal(await sniff(Buffer.from('<p>plain</p>')), null);
+	// A multi-byte sequence cut by the 4096-byte sniffing window is not an encoding error.
+	assert.equal(await sniff(Buffer.from('x'.repeat(4095) + 'é'.repeat(8))), null);
+	assert.equal(await sniff(Buffer.from('<p>caf\xe9</p>', 'latin1'), true), null);
+});
+
 test('XML charset detection does not depend on the upstream chunk boundaries', async () => {
 	for (const charset of ['windows-1252', 'utf-16le', 'utf-16be']) {
 		const declaration = `<?xml version="1.0" encoding="${charset}"?>`;

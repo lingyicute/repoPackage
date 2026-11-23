@@ -6,12 +6,16 @@ require_hosted_runner() {
   [[ "${RUNNER_ENVIRONMENT:-}" == github-hosted ]] || runner_fail 'GitHub-hosted runner required'
 }
 
+# Hosted runners come with either a separate /mnt disk or one larger OS disk that
+# also holds /mnt. Both are accepted: host.sh checks the space that is really free.
 require_relay_mount() {
   local root_device
   [[ -d /mnt && ! -L /mnt ]] || runner_fail '/mnt must be a real directory'
   root_device=$(stat -c '%d' -- /) || runner_fail 'Cannot inspect root filesystem'
   relay_device=$(stat -c '%d' -- /mnt) || runner_fail 'Cannot inspect /mnt filesystem'
-  [[ "$relay_device" != "$root_device" ]] || runner_fail 'A separate /mnt filesystem is required; refusing to use the OS disk for the build tree'
+  [[ -n "$root_device" && -n "$relay_device" ]] || runner_fail 'Cannot inspect /mnt filesystem'
+  relay_shares_root=0
+  [[ "$relay_device" != "$root_device" ]] || relay_shares_root=1
 }
 
 require_relay_directory() {
@@ -75,7 +79,7 @@ realpath_exact() {
 # Resolve symlinked ancestor directories without dereferencing the leaf itself,
 # matching the canonical paths recorded in /proc/self/mountinfo.
 resolve_mount_parent() {
-  local __rm_out=$1 __rm_path='' __rm_suffix='' __rm_parent __rm_resolved __rm_walked=0
+  local __rm_out=$1 __rm_path='' __rm_suffix='' __rm_parent __rm_resolved
   normalize_mount_path __rm_path "$2"
   if [[ "$__rm_path" == / ]]; then
     printf -v "$__rm_out" '%s' /
@@ -84,12 +88,11 @@ resolve_mount_parent() {
   __rm_parent=${__rm_path%/*}
   __rm_suffix="/${__rm_path##*/}"
   while [[ -n "$__rm_parent" && ! -e "$__rm_parent" && ! -L "$__rm_parent" ]]; do
-    __rm_walked=1
     __rm_suffix="/${__rm_parent##*/}${__rm_suffix}"
     __rm_parent=${__rm_parent%/*}
   done
   realpath_exact __rm_resolved "${__rm_parent:-/}" || runner_fail "Cannot resolve ancestor of $__rm_path"
-  if (( __rm_walked )) && [[ ! -d "$__rm_resolved" || ! -x "$__rm_resolved" ]]; then
+  if [[ ! -d "$__rm_resolved" || ! -x "$__rm_resolved" ]]; then
     runner_fail "Cannot resolve ancestor of $__rm_path"
   fi
   [[ "$__rm_resolved" != / ]] || __rm_resolved=''

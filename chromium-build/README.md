@@ -1,6 +1,6 @@
 # Chromium Stable Build
 
-**仅使用 GitHub 官方 Actions 的分段构建方案。** 目标为 GitHub.com 的标准 `ubuntu-24.04` hosted runner，构建原版 Chromium `chrome_public_apk`。此方案依赖 runner 实际提供独立且够大的 `/mnt` 文件系统；GitHub 不保证该额外空间，环境不满足时会提前失败。
+**仅使用 GitHub 官方 Actions 的分段构建方案。** 目标为 GitHub.com 的标准 `ubuntu-24.04` hosted runner，构建原版 Chromium `chrome_public_apk`。构建树固定放在 `/mnt` 下：hosted runner 目前有独立 `/mnt` 盘与单块大系统盘（`/mnt` 与 `/` 同盘）两种布局，两者都接受，但清理并建立 swap 后 `/mnt` 所在文件系统必须仍有足够空闲空间；GitHub 不保证这些空间，环境不满足时会提前失败。
 
 ## 目录
 
@@ -12,7 +12,7 @@
     tests.yml                 # 每次 push 运行 tests/ 下的离线测试，不编译 Chromium
   scripts/
     common.sh                # 固定绝对路径、工具缓存位置与网络重试
-    runner.sh                # hosted VM、独立 /mnt、目录类型/内容预检
+    runner.sh                # hosted VM、/mnt 所在文件系统、目录类型/内容预检
     host.sh                  # 临时 VM 清理、/ 上建 swap、资源检查，不安装系统包
     resolve.py               # 解析一次 Android Stable，验证 JSON
     fetch.sh                 # 源码与工具链锁定、同步、hooks、GN
@@ -35,6 +35,7 @@ tests/
   test_runner.py
   test_apk.py
   test_checkpoint_integration.py
+  test_release.py
 README.md
 ```
 > [!tip]
@@ -52,7 +53,7 @@ README.md
 
 ```text
 prepare（stage 00，与续编段共用 chromium-stage.yml）
-  ├─ 清理 / 上的预装软件、在 / 建立 16 GiB swap（/mnt 整盘留给源码树与检查点）、检查空闲空间
+  ├─ 清理 / 上的预装软件、在 / 建立 16 GiB swap（有独立 /mnt 盘时整盘留给源码树与检查点；单盘 runner 上三者共用系统盘）、检查空闲空间
   ├─ ChromiumDash 查询 Android Stable
   ├─ 官方 Git tag 的提交必须与查询返回的 Chromium SHA 相符
   ├─ checkout 固定的 depot_tools；禁用自更新
@@ -77,7 +78,7 @@ result：只接受连续的成功检查点，以及已确认上传 APK 的成功
 
 每个 job 上限 350 分钟。在首个输入校验步骤中、checkout 前记录单调时钟（`CLOCK_BOOTTIME`），常规编译段（含 `prepare`，源码同步越慢其编译时间越少）受到“本 job 开始后第 260 分钟停止”的预算约束，为导出和上传留出约 90 分钟；最终段 `part-08` 无后续消费者，跳过检查点打包上传并将截止点放宽至第 325 分钟，仅保留时间用于 APK 验签与产物上传。每段编译时长即截止点减去同步/下载/恢复耗时，不另设固定时间片上限。
 
-每个步骤都设有 `timeout-minutes`：`continue-on-error` 只容忍失败，挡不住挂起。任一步骤（包括只作记录的 `source-lock-` / `logs-` 上传）卡住时只会让该步超时，不会一直拖到 job 上限。截止点为 Ninja 停机、会话清理和产物处理留出时间；按配置的步骤时限计算，常规段的首次检查点上传与最终段的 APK 路径均能为 job 初始化、步骤切换和收尾额外留下至少 4 分钟。检查点上传重试仍是尽力而为，日志在该重试前保存。
+每个步骤都设有 `timeout-minutes`：`continue-on-error` 只容忍失败，挡不住挂起。任一步骤（包括只作记录的 `source-lock-` / `logs-` 上传）卡住时只会让该步超时，不会一直拖到 job 上限。截止点为 Ninja 停机、会话清理和产物处理留出时间（Ninja 确认中断后，被中断任务遗留的子进程可在同一停机宽限内自行退出，届时仍存活才强杀并判失败）；按配置的步骤时限计算，常规段的首次检查点上传与最终段的 APK 路径均能为 job 初始化、步骤切换和收尾额外留下至少 4 分钟。检查点上传重试仍是尽力而为，日志在该重试前保存。
 
 > [!tip]
 > 这只是时间预算，慢网络下可能无法在 GitHub 的时限内保存检查点。
@@ -135,7 +136,7 @@ Android stable 的版本不是写死的；每次新 workflow run 从官方 API �
 
 ## 故障与重跑
 
-- `/mnt` 不独立或空间不足：当前 VM 不满足布局要求；不要通过关闭检查把整个树塞进系统盘。
+- `/mnt` 所在文件系统空间不足：当前 VM 不满足要求；不要通过关闭空间检查硬塞。单盘 runner 上构建树与 swap 共用系统盘，写满会连同 runner 一起失败。
 - tag/SHA 不匹配：可能是上游发布记录/仓库更新的时间差，或元数据异常。检查官方记录，稍后启动新 run。
 - `gclient` / hooks 失败：源码 fetch、`gclient sync` 与 hooks 会针对同一官方来源和版本各自最多尝试 3 次（不切换镜像或版本）；仍失败时查看 prepare 日志，网络问题可以重跑。
 - `GN --fail-on-unused-args` 失败：新版上游可能调整参数，需要人工审查 `config/args.gn`。不静默忽略未知参数。

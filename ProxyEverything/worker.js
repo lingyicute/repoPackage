@@ -132,8 +132,11 @@ function stripResponseHeaders(headers, request, baseUrl) {
 	if (location) {
 		try {
 			const target = new URL(location, baseUrl);
-			if (!['http:', 'https:'].includes(target.protocol)) throw new Error();
-			headers.set('Location', rewriteUrl(target.href, baseUrl, origin));
+			// mailto:、应用深链等交给浏览器的外部协议处理，与 meta refresh 和链接一致；
+			// 浏览器本身拒绝跟随指向 javascript:、data: 等的重定向。
+			if (['http:', 'https:'].includes(target.protocol)) {
+				headers.set('Location', rewriteUrl(target.href, baseUrl, origin));
+			}
 		} catch { headers.delete('Location'); }
 	}
 }
@@ -295,6 +298,10 @@ function rewriteUrl(value, baseUrl, workerOrigin, resolveEmptyOrFragment = false
 	}
 }
 
+function isSrcsetSpace(ch) {
+	return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f';
+}
+
 /**
  * 重写 srcset："url 1x, url 2x" / "url 320w, ..." / "url1,url2"
  *
@@ -311,10 +318,6 @@ function rewriteUrl(value, baseUrl, workerOrigin, resolveEmptyOrFragment = false
  *      该候选项到此结束（没有描述符）；
  *   4. 否则其后跟随描述符，直到「括号外的」逗号或字符串结束。
  */
-function isSrcsetSpace(ch) {
-	return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f';
-}
-
 function mapSrcset(s, rewrite) {
 	const n = s.length;
 	let out = '';
@@ -399,11 +402,16 @@ function readCssString(css, start) {
 	let i = start + 1;
 	while (i < css.length) {
 		if (css[i] === quote) return { end: i + 1, value: decodeCssEscapes(css.slice(start + 1, i)) };
-		if (/[\n\r\f]/.test(css[i])) break; // bad-string-token
+		if (/[\n\r\f]/.test(css[i])) return { end: i, value: null }; // bad-string-token
 		if (css[i] === '\\') i = cssEscapeEnd(css, i);
 		else i++;
 	}
-	return { end: i, value: null };
+	// EOF 也结束字符串 token（CSS Syntax §4.3.5）；末尾落单的反斜杠不计入内容。
+	let end = css.length;
+	let slashes = 0;
+	while (end - slashes - 1 > start && css[end - slashes - 1] === '\\') slashes++;
+	if (slashes % 2) end--;
+	return { end: css.length, value: decodeCssEscapes(css.slice(start + 1, end)) };
 }
 
 function skipCssSpace(css, start, comments = false) {
@@ -426,7 +434,8 @@ function readCssUrl(css, start) {
 	if (css[i] === '"' || css[i] === "'") {
 		const str = readCssString(css, i);
 		i = skipCssSpace(css, str.end, true);
-		if (str.value !== null && css[i] === ')') return { end: i + 1, value: str.value };
+		// EOF 同样闭合函数块：浏览器照常加载 url("a.png 与 url("a.png" 中的地址。
+		if (str.value !== null && (i >= css.length || css[i] === ')')) return { end: Math.min(i + 1, css.length), value: str.value };
 		let depth = 1;
 		while (i < css.length && depth > 0) {
 			if (css[i] === '"' || css[i] === "'") { i = readCssString(css, i).end; continue; }
@@ -437,13 +446,13 @@ function readCssUrl(css, start) {
 		}
 		return { end: i, value: null };
 	} else {
-		i = skipCssSpace(css, start);
 		const valueStart = i;
-		while (i < css.length) {
-			if (css[i] === ')') return { end: i + 1, value: decodeCssEscapes(css.slice(valueStart, i)) };
+		for (;;) {
+			// EOF 也结束 url token（CSS Syntax §4.3.6）。
+			if (i >= css.length || css[i] === ')') return { end: Math.min(i + 1, css.length), value: decodeCssEscapes(css.slice(valueStart, i)) };
 			if (isSrcsetSpace(css[i])) {
 				const end = skipCssSpace(css, i);
-				if (css[end] === ')') return { end: end + 1, value: decodeCssEscapes(css.slice(valueStart, i)) };
+				if (end >= css.length || css[end] === ')') return { end: Math.min(end + 1, css.length), value: decodeCssEscapes(css.slice(valueStart, i)) };
 				i = end;
 				break;
 			}
@@ -951,6 +960,7 @@ function xmlDeclaredCharset(text) {
 
 /**
  * HTML 编码优先级：BOM > HTTP charset > 完整的 meta / XML 声明。
+ * 都没有时，HTML 前缀若不是合法 UTF-8 则回退 windows-1252；XML 默认 UTF-8。
  * 一旦确定编码就停止嗅探，不必等到 4096 字节/EOF 才开始向浏览器输出。
  * tee 的另一支保留全部字节；只在固定大小的前缀缓冲中检查声明。
  */
@@ -994,6 +1004,12 @@ async function sniffHtmlCharset(body, declaredCharset = null, isXml = false) {
 		// 不 await：tee 另一支消费完之前 cancel 可能不 resolve。
 		reader.cancel().catch(() => {});
 		reader.releaseLock();
+	}
+	// 没有任何声明时浏览器不会假定 UTF-8：前缀不是合法 UTF-8 就使用 WHATWG 的通用回退编码。
+	// stream 模式容忍被 4096 字节边界截断的末尾序列。
+	if (!charset && !isXml && total) {
+		try { new TextDecoder('utf-8', { fatal: true }).decode(head.subarray(0, total), { stream: true }); }
+		catch { charset = 'windows-1252'; }
 	}
 	return { charset, body: b };
 }
@@ -1146,7 +1162,6 @@ var search=urlSuffix(new URL(location.href)).split('#',1)[0];
 var full=DEC+(search?(DEC.indexOf('?')>=0?'&':'?')+search.substring(1):'');
 try{var u=new URL(full);if(u.protocol==='ws:')u.protocol='http:';else if(u.protocol==='wss:')u.protocol='https:';u.username='';u.password='';u.hostname=u.hostname.toLowerCase().replace(/\\.+$/,'');return u.href;}catch(e){return full;}
 }
-var ABS_RE=/^[a-z][a-z0-9+.-]*:\\/\\//i;
 var SKIP_RE=/^(data:|blob:|javascript:|mailto:|tel:|sms:|about:|#)/i;
 function base(){
   var target=currentTarget();
@@ -1197,20 +1212,22 @@ function rp(v){
   if(!s||SKIP_RE.test(s))return s;
   if(isProxiedPath(s)){try{return normProxied(s,false);}catch(e){return s;}}
   var forcedWs='';
+  var b;try{b=base();}catch(e){return s;}
   try{
     if(s===WO)s='/';
-    else if(ABS_RE.test(s)||s.indexOf('//')===0){
-      var pu=new URL(s,WO);
-      if(isSelfHost(pu)){
+    else{
+      /* 与服务端一致：先按文档基址解析，再判断是否落回代理域；反斜线或省略斜线的写法同样指向代理自身 */
+      var pu=new URL(s,b);
+      if((pu.protocol==='http:'||pu.protocol==='https:'||pu.protocol==='ws:'||pu.protocol==='wss:')&&isSelfHost(pu)){
         var rawSelf=s.replace(/^(?:[a-z][a-z0-9+.-]*:)?\\/\\/[^/?#]*/i,'');
         if(isProxiedPath(pu.pathname)||isProxiedPath(rawSelf))return normProxied(s,true);
         if(pu.protocol==='ws:'||pu.protocol==='wss:')forcedWs=pu.protocol;
         // 用完整来源拼接：已解析路径开头的双斜线不是新的主机名。
-        s=new URL(base()).origin+pu.pathname+urlSuffix(pu);
+        s=new URL(b).origin+pu.pathname+urlSuffix(pu);
       }
     }
   }catch(e){}
-  var u;try{u=new URL(s,base());}catch(e){return s;}
+  var u;try{u=new URL(s,b);}catch(e){return s;}
   if(u.origin===WO&&isProxiedPath(u.pathname))return u.href;
   var p=forcedWs?(u.protocol==='http:'?'ws:':'wss:'):u.protocol;
   if(p!=='http:'&&p!=='https:'&&p!=='ws:'&&p!=='wss:')return s;
@@ -1359,6 +1376,25 @@ var oWo=window.open;
 if(oWo)window.open=function(u){try{if(arguments.length&&u!==undefined&&typeof u!=='symbol')arguments[0]=rwUrlArg(String(u));}catch(e){}return oWo.apply(this,arguments);};
 try{var oAs=location.assign.bind(location);location.assign=function(u){return oAs(u!==undefined&&typeof u!=='symbol'?rpBase(String(u)):u);};}catch(e){}
 try{var oRe=location.replace.bind(location);location.replace=function(u){return oRe(u!==undefined&&typeof u!=='symbol'?rpBase(String(u)):u);};}catch(e){}
+/* Location 的 href/assign/replace 不可配置，上面两行在真实浏览器中不会生效。支持 Navigation API 时在此兜底：
+   把脚本或漏改链接发起的、会离开代理或落到未改写路径的跨文档导航改道；POST 表单与下载保持原样。 */
+try{
+  if(window.navigation&&navigation.addEventListener)navigation.addEventListener('navigate',function(ev){
+    try{
+      if(!ev.cancelable||ev.hashChange||ev.formData||ev.downloadRequest!=null)return;
+      if(ev.navigationType!=='push'&&ev.navigationType!=='replace')return;
+      if(ev.destination.sameDocument)return;
+      var dest=new URL(ev.destination.url);
+      if(dest.protocol!=='http:'&&dest.protocol!=='https:')return;
+      if(isSelfHost(dest)&&isProxiedPath(dest.pathname))return;
+      var next=rp(dest.href);
+      if(!isProxyRequestUrl(next))return;
+      ev.preventDefault();
+      var replace=ev.navigationType==='replace';
+      setTimeout(function(){if(replace)location.replace(next);else location.assign(next);},0);
+    }catch(e){}
+  });
+}catch(e){}
 /* ---- DOM 属性 setter 拦截：img.src = "..." 等动态赋值 ---- */
 ${mapPingUrls.toString()}
 function rwPing(v){return v!=null&&typeof v!=='symbol'?mapPingUrls(String(v),rp):v;}
@@ -2306,10 +2342,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 // CSS Syntax §3.2 指定字节签名而非一般 at-rule；含终止符最多 1024 字节。
 const CSS_CHARSET_SIGNATURE = /^@charset "([\x00-\x21\x23-\x7f]{0,1012})";/;
 
-/**
- * 限制整体缓冲的原始输入字节量；不信任 Content-Length（可缺失/虚报）。
- * 超过 2 MiB 上限时把已读分片与剩余流无缝拼接，原样透传正文及其表示元数据。
- */
+/** 整体缓冲文本的编码：BOM > HTTP charset > CSS @charset 或 XML 声明，默认 UTF-8。 */
 function sniffTextCharset(bytes, kind, declaredCharset = null) {
 	const head = bytes.subarray(0, kind === 'css' ? 1024 : kind === 'svg' ? 4096 : 256);
 	if (head[0] === 0xff && head[1] === 0xfe) return 'utf-16le';
@@ -2355,6 +2388,10 @@ function replayBody(reader, prefix, tail) {
 	});
 }
 
+/**
+ * 限制整体缓冲的原始输入字节量；不信任 Content-Length（可缺失/虚报）。
+ * 超过 2 MiB 上限时把已读分片与剩余流无缝拼接，原样透传正文及其表示元数据。
+ */
 async function readTransformText(body, kind = '', declaredCharset = null) {
 	if (!body) return { text: '', passthrough: null };
 	const reader = body.getReader();
@@ -3069,13 +3106,6 @@ export default {
 
 		const isWebSocket = (request.headers.get('Upgrade') || '').toLowerCase() === 'websocket';
 
-		// ---- 首页 ----
-		if (!isWebSocket && (url.pathname === '/' || url.pathname === '')) {
-			return new Response(request.method === 'HEAD' ? null : getRootHtml(), {
-				headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
-			});
-		}
-
 		// ---- robots.txt：允许收录首页，禁止抓取代理目标路径以防耗尽 Worker 配额 ----
 		if (!isWebSocket && url.pathname === '/robots.txt') {
 			return new Response(request.method === 'HEAD' ? null :
@@ -3102,6 +3132,13 @@ Disallow: /
 					headers: { 'Location': toProxyUrl(leaked.href, workerOrigin), 'Cache-Control': 'no-store' },
 				});
 			}
+		}
+
+		// ---- 首页：代理页面发出的 "/"（location.href = '/'、fetch('/') 等）已在上面还原为目标站根路径 ----
+		if (!isWebSocket && (url.pathname === '/' || url.pathname === '')) {
+			return new Response(request.method === 'HEAD' ? null : getRootHtml(), {
+				headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+			});
 		}
 
 		// ---- favicon 等杂项，避免被当成目标域名 ----
@@ -3171,6 +3208,13 @@ Disallow: /
 				cache: ck.hasCookie || fwdHeaders.has('authorization') ? 'no-store' : undefined,
 			});
 		} catch {
+			return errorPage();
+		}
+
+		// Response 构造器只接受 200–599。LinkedIn 的 999 这类状态无法转发，统一按上游失败处理，
+		// 否则 try 之外的 HEAD/重定向分支会抛出未捕获的 RangeError。
+		if (upstream.status < 200 || upstream.status > 599) {
+			if (upstream.body) upstream.body.cancel().catch(() => {});
 			return errorPage();
 		}
 
@@ -3805,6 +3849,7 @@ ${browserPathHelpers()}
 }
 
 // ---- 错误页 ----
+// “返回首页”不带 Referer：来自代理页面的 "/" 会被还原为目标站根路径。
 function renderErrorPage(title, message) {
 	return md3Head(title + ' · ProxyEverything', 'ProxyEverything 错误提示', 'noindex, nofollow') + `
 <body>
@@ -3815,7 +3860,7 @@ function renderErrorPage(title, message) {
     <p class="t-body-md muted">${message}</p>
     <div class="actions">
       <button class="text-btn md-ripple" type="button" onclick="location.reload()"><span class="t-label-lg">重试</span></button>
-      <a class="tonal-btn md-ripple" href="/"><span class="t-label-lg">返回首页</span></a>
+      <a class="tonal-btn md-ripple" href="/" rel="noreferrer"><span class="t-label-lg">返回首页</span></a>
     </div>
   </section>
 </div>
