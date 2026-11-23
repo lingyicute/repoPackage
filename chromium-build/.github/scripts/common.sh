@@ -45,7 +45,7 @@ unset GIT_CACHE_PATH CCACHE_DIR CCACHE_PREFIX GOOGLE_APPLICATION_CREDENTIALS \
   GIT_SSH GIT_SSH_COMMAND GIT_ASKPASS SSH_ASKPASS GIT_EXEC_PATH \
   GIT_TEMPLATE_DIR GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE \
   GIT_NAMESPACE GIT_EXTERNAL_DIFF \
-  BASH_ENV ENV CDPATH GLOBIGNORE TAR_OPTIONS ZSTD_CLEVEL ZSTD_NBTHREADS
+  BASH_ENV ENV CDPATH GLOBIGNORE POSIXLY_CORRECT TAR_OPTIONS ZSTD_CLEVEL ZSTD_NBTHREADS
 mkdir -p "$CR_LOGS" "$TMPDIR"
 trap 'echo "::error::Interrupted (signal INT), aborting" >&2; exit 130' INT
 trap 'echo "::error::Terminated (signal TERM), aborting" >&2; exit 143' TERM
@@ -75,6 +75,12 @@ retry() {
   trap 'interrupted=130; (( sleep_pid == 0 )) || kill "$sleep_pid" 2>/dev/null || true' INT
   trap 'interrupted=143; (( sleep_pid == 0 )) || kill "$sleep_pid" 2>/dev/null || true' TERM
   for attempt in 1 2 3; do
+    if (( interrupted != 0 )); then
+      eval "${prev_int:-trap - INT}"
+      eval "${prev_term:-trap - TERM}"
+      echo "::error::Interrupted (exit $interrupted), aborting without retry: $*" >&2
+      exit "$interrupted"
+    fi
     rc=0
     "$@" || rc=$?
     if (( interrupted != 0 )); then

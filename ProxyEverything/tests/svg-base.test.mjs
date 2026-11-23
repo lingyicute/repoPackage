@@ -24,8 +24,8 @@ test('SVG xml:base on a self-closing element cannot affect its siblings', () => 
 });
 
 test('SVG styles and modules inherit xml:base without leaking their own scope', () => {
-	const input = '<svg xml:base="/assets/"><style xml:base="paint/">a{fill:url(p.svg#x)}</style><script type="module" xml:base="js/">import "./entry.js";</script><image href="last.png"/></svg>';
-	assert.equal(rewrite(input), `<svg xml:base="${proxy('/assets/')}"><style xml:base="${proxy('/assets/paint/')}">a{fill:url("${proxy('/assets/paint/p.svg#x')}")}</style><script type="module" xml:base="${proxy('/assets/js/')}">import "${proxy('/assets/js/entry.js')}";</script><image href="${proxy('/assets/last.png')}"/></svg>`);
+	const input = '<svg xml:base="/assets/"><style xml:base="paint/">a{fill:url(p.svg#x)}</style><script type="module" xml:base="js/">import "./entry.js";</script><script type="importmap">{"imports":{"pkg":"./pkg.js"}}</script><script type="speculationrules">{"prefetch":[{"urls":["./next.svg"]},{"relative_to":"document","urls":["./doc.svg"]}]}</script><image href="last.png"/></svg>';
+	assert.equal(rewrite(input), `<svg xml:base="${proxy('/assets/')}"><style xml:base="${proxy('/assets/paint/')}">a{fill:url("${proxy('/assets/paint/p.svg#x')}")}</style><script type="module" xml:base="${proxy('/assets/js/')}">import "${proxy('/assets/js/entry.js')}";</script><script type="importmap">{"imports":{"pkg":"${proxy('/assets/pkg.js')}"}}</script><script type="speculationrules">{"prefetch":[{"urls":["${proxy('/assets/next.svg')}"]},{"relative_to":"document","urls":["${proxy('/dir/doc.svg')}"]}]}</script><image href="${proxy('/assets/last.png')}"/></svg>`);
 });
 
 test('SVG preserves fragment semantics and uses exact qualified names for base scopes', () => {
@@ -67,9 +67,9 @@ test('SVG resolves XLink href by namespace URI rather than a fixed prefix', () =
 });
 
 test('SVG rewrites object data attributes without touching custom data attributes', () => {
-	const input = '<svg><g data="raw"/><foreignObject><object xmlns="http://www.w3.org/1999/xhtml" data="embed.html"/></foreignObject></svg>';
+	const input = '<svg><g data="raw" action="save" formaction="next"/><foreignObject><object xmlns="http://www.w3.org/1999/xhtml" data="embed.html"/><form xmlns="http://www.w3.org/1999/xhtml" action="submit"><button formaction="go"/></form></foreignObject></svg>';
 	assert.equal(
 		rewrite(input),
-		`<svg><g data="raw"/><foreignObject><object xmlns="http://www.w3.org/1999/xhtml" data="${proxy('/dir/embed.html')}"/></foreignObject></svg>`
+		`<svg><g data="raw" action="save" formaction="next"/><foreignObject><object xmlns="http://www.w3.org/1999/xhtml" data="${proxy('/dir/embed.html')}"/><form xmlns="http://www.w3.org/1999/xhtml" action="${proxy('/dir/submit')}"><button formaction="${proxy('/dir/go')}"/></form></foreignObject></svg>`
 	);
 });

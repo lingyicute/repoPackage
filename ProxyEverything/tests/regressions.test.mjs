@@ -463,6 +463,8 @@ test('undeclared HTML falls back to windows-1252 only when its prefix is not val
 		return result.charset;
 	};
 	assert.equal(await sniff(Buffer.from('<p>caf\xe9</p>', 'latin1')), 'windows-1252');
+	assert.equal(await sniff(Buffer.from('caf\xe9', 'latin1')), 'windows-1252');
+	assert.equal(await sniff(Buffer.from('caf\xe9\xa0', 'latin1')), 'windows-1252');
 	assert.equal(await sniff(Buffer.from('<p>café 你好</p>')), null);
 	assert.equal(await sniff(Buffer.from('<p>plain</p>')), null);
 	// A multi-byte sequence cut by the 4096-byte sniffing window is not an encoding error.
@@ -543,13 +545,31 @@ test('dot segments in already-proxied URLs stay clamped within their target orig
 		'/~https%3A%2F%2Fexample.com/other.example/secret?q=1#h'
 	);
 	assert.equal(
+		rewriteUrl('/~https%3A%2F%2Fexample.com/../~https%3A%2F%2Fother.example/secret', base, origin),
+		'/~https%3A%2F%2Fexample.com/~https%3A%2F%2Fother.example/secret'
+	);
+	assert.equal(
+		rewriteUrl('/~https%3A%2F%2Fexample.com/%2e%2e/other.example/secret', base, origin),
+		'/~https%3A%2F%2Fexample.com/other.example/secret'
+	);
+	assert.equal(
+		rewriteUrl('/https://example.com/../other.example/secret', base, origin),
+		'/~https%3A%2F%2Fexample.com/other.example/secret'
+	);
+	assert.equal(
 		rewriteUrl('https://proxy.example/~https%3A%2F%2Fexample.com/../../other.example/secret', base, origin),
 		'https://proxy.example/~https%3A%2F%2Fexample.com/other.example/secret'
 	);
-	assert.equal(
-		rewriteUrl('//proxy.example/~https%3A%2F%2Fcdn.example/../asset.js', base, origin),
-		'https://proxy.example/~https%3A%2F%2Fcdn.example/asset.js'
-	);
+	for (const input of [
+		'//proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
+		'/\\proxy.example/~https%3A%2F%2Fcdn.example/asset.js',
+		'/\\proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
+		'\\\\proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
+		'https:\\\\proxy.example\\~https%3A%2F%2Fcdn.example\\..\\asset.js',
+		'http:proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
+	]) {
+		assert.equal(rewriteUrl(input, base, origin), 'https://proxy.example/~https%3A%2F%2Fcdn.example/asset.js', input);
+	}
 });
 
 test('HTML meta charset prescan follows WHATWG pragma and attribute precedence rules', async () => {

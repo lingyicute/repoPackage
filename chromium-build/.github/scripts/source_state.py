@@ -79,7 +79,13 @@ def read_lock(root, workspace):
     return lock
 
 
+def _raise_walk_error(exc):
+    raise exc
+
+
 def verify_source(root, lock):
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError('Build root must be a real directory')
     resolved_root = root.resolve(strict=True)
     git_env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
     git_env.update(
@@ -96,7 +102,7 @@ def verify_source(root, lock):
         objects_dir = gitdir / 'objects'
         if objects_dir.is_symlink() or not objects_dir.is_dir():
             raise ValueError(f'{directory} has a symlinked or missing Git objects directory')
-        for dirpath, dirnames, filenames in os.walk(gitdir):
+        for dirpath, dirnames, filenames in os.walk(gitdir, onerror=_raise_walk_error):
             base = Path(dirpath)
             if any((base / name).is_symlink() for name in (*dirnames, *filenames)):
                 raise ValueError(f'{directory} contains a symlink inside .git')
@@ -107,11 +113,24 @@ def verify_source(root, lock):
         info_attrs = gitdir / 'info/attributes'
         if info_attrs.exists() or info_attrs.is_symlink():
             raise ValueError(f'{directory} uses local Git info/attributes')
+        worktree_cfg = gitdir / 'config.worktree'
+        if worktree_cfg.exists() or worktree_cfg.is_symlink():
+            raise ValueError(f'{directory} uses worktree Git config')
         git = ['/usr/bin/git', '--no-optional-locks', '--no-replace-objects',
                '-c', 'core.hooksPath=/dev/null',
+               '-c', 'core.attributesFile=/dev/null',
                '-c', 'core.fsmonitor=false', '-c', 'core.filemode=true',
                '-c', 'core.symlinks=true', '-c', 'core.autocrlf=false',
                '-c', 'core.ignorecase=false', '-C', str(repo)]
+        local_cfg = subprocess.check_output(
+            [*git, 'config', '--local', '--list', '--name-only', '-z'], env=git_env,
+        )
+        for cfg_key in local_cfg.split(b'\x00'):
+            if cfg_key and re.match(
+                rb'^(?:filter|diff|merge|include|includeif)\.|^(?:core\.attributesfile|extensions\.worktreeconfig)$',
+                cfg_key,
+            ):
+                raise ValueError(f'{directory} has unsafe driver configuration in .git/config')
         resolved_gitdir = str(gitdir.resolve())
         fields = subprocess.check_output(
             [*git, 'rev-parse', '--path-format=absolute',
@@ -120,12 +139,6 @@ def verify_source(root, lock):
         ).splitlines()
         if fields != [str(repo.resolve()), resolved_gitdir, resolved_gitdir, lock[field]]:
             raise ValueError(f'{directory} worktree or revision mismatch')
-        local_cfg = subprocess.check_output(
-            [*git, 'config', '--local', '--list', '--name-only', '-z'], env=git_env,
-        )
-        for cfg_key in local_cfg.split(b'\x00'):
-            if cfg_key and re.match(rb'^(?:filter|diff|merge)\.', cfg_key):
-                raise ValueError(f'{directory} has unsafe driver configuration in .git/config')
         # Reject assume-unchanged or skip-worktree index bits on non-gitlink files,
         # which would make git status silently ignore modified tracked files.
         indexed = subprocess.check_output([*git, 'ls-files', '-v', '-s', '-z'], env=git_env)
