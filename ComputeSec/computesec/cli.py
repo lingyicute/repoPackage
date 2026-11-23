@@ -47,6 +47,8 @@ def _copy_icon(src, dst):
         with open(dst, "wb") as f:
             f.write(blob)
     except PermissionError:
+        if not os.path.lexists(dst):
+            raise
         os.remove(dst)
         with open(dst, "wb") as f:
             f.write(blob)
@@ -60,6 +62,8 @@ def _write_text(dst, content):
         with open(dst, "w", encoding="utf-8") as f:
             f.write(content)
     except PermissionError:
+        if not os.path.lexists(dst):
+            raise
         os.remove(dst)
         with open(dst, "w", encoding="utf-8") as f:
             f.write(content)
@@ -70,7 +74,7 @@ def _default_launcher():
     if argv0 and os.sep not in argv0:
         found = shutil.which(argv0)
         if found:
-            return [found]
+            return [os.path.abspath(found)]
     return [os.path.abspath(argv0 or "computesec")]
 
 

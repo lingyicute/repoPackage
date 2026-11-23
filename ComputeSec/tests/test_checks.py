@@ -1515,3 +1515,79 @@ def test_cpu_model_tolerates_malformed_model_name_line(monkeypatch):
         "model name without colon\nmodel name\t: Test CPU\n" if p == "/proc/cpuinfo" else default
     ))
     assert checks.cpu_model() == "Test CPU"
+
+
+def test_collect_survives_arch_and_cpu_vendor_exceptions(monkeypatch):
+    def boom():
+        raise RuntimeError("broken platform")
+
+    monkeypatch.setattr(checks, "arch", boom)
+    monkeypatch.setattr(checks, "cpu_vendor", boom)
+    rep = checks.collect()
+    assert rep.arch == ""
+    assert rep.cmdline.arch == ""
+    assert rep.cmdline.cpu is None
+    assert rep.sysctl.arch == ""
+
+
+def test_cmdline_bare_rdshell_is_truthy_in_value_ok():
+    assert checks._cmdline_value_ok("rd.shell", None, "1") is True
+    assert checks._cmdline_value_ok("rd.shell", None, "0") is False
+
+
+def test_cmdline_empty_efi_or_iommu_segments_do_not_leave_dangling_commas(monkeypatch):
+    monkeypatch.setattr(checks, "arch", lambda: "x86_64")
+    monkeypatch.setattr(checks, "cpu_vendor", lambda: "intel")
+    monkeypatch.setattr(checks, "read", lambda p, default="": (
+        "efi= efi=noruntime efi= intel_iommu=off intel_iommu=" if p == "/proc/cmdline" else default
+    ))
+    by_key = {i.key: i for i in checks.get_cmdline_report().items}
+    assert by_key["efi"].actual == "noruntime"
+    assert by_key["intel_iommu"].actual == "off"
+
+
+def test_flatpak_apps_ignores_hidden_and_non_id_directories(monkeypatch, tmp_path):
+    app_dir = tmp_path / "flatpak" / "app"
+    (app_dir / ".ostree").mkdir(parents=True)
+    (app_dir / "notanappid").mkdir(parents=True)
+    (app_dir / "org.example.Valid").mkdir(parents=True)
+    monkeypatch.setattr(checks, "_flatpak_app_dirs", lambda: [str(app_dir)])
+    monkeypatch.setattr(checks, "run", lambda *_: (None, ""))
+    apps, source = checks._flatpak_apps()
+    assert apps == {"org.example.Valid"}
+    assert source == "目录扫描"
+
+
+def test_windows_installed_deduplicates_same_file_paths(monkeypatch, tmp_path):
+    real_esp = tmp_path / "efi" / "EFI" / "Microsoft" / "Boot"
+    real_esp.mkdir(parents=True)
+    bootmgfw = real_esp / "bootmgfw.efi"
+    bootmgfw.write_bytes(b"MZ")
+    link_boot = tmp_path / "boot"
+    link_boot.mkdir()
+    (link_boot / "efi").symlink_to(tmp_path / "efi")
+
+    p1 = str(link_boot / "efi" / "EFI" / "Microsoft" / "Boot" / "bootmgfw.efi")
+    p2 = str(tmp_path / "efi" / "EFI" / "Microsoft" / "Boot" / "bootmgfw.efi")
+    orig_exists = checks.os.path.exists
+    orig_same = checks._same_path
+    mapping = {
+        "/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi": p1,
+        "/efi/EFI/Microsoft/Boot/bootmgfw.efi": p2,
+        "/boot/EFI/Microsoft/Boot/bootmgfw.efi": str(tmp_path / "missing"),
+    }
+    monkeypatch.setattr(checks.os.path, "exists", lambda p: orig_exists(mapping.get(p, p)))
+    monkeypatch.setattr(checks, "_same_path", lambda a, b: orig_same(mapping.get(a, a), mapping.get(b, b)))
+    monkeypatch.setattr(checks.glob, "glob", lambda _pat: [])
+    hints = checks._windows_installed()
+    assert len(hints) == 1
+
+
+def test_ntfs_from_lsblk_json_does_not_double_dev_prefix():
+    j = {"blockdevices": [
+        {"name": "/dev/sda2", "fstype": "ntfs", "label": "Win", "size": "50G", "mountpoint": None},
+    ]}
+    found = checks._ntfs_from_lsblk_json(j)
+    assert len(found) == 1
+    assert found[0].startswith("/dev/sda2 ")
+    assert "/dev//dev/" not in found[0]

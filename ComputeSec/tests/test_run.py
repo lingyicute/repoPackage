@@ -408,3 +408,44 @@ def test_install_desktop_same_path_symlink_icon_survives(tmp_path, monkeypatch):
     assert not icon_link.is_symlink()
     assert icon_link.read_text(encoding="utf-8") == "<svg>ok</svg>"
     assert real_icon.read_text(encoding="utf-8") == "<svg>ok</svg>"
+
+
+def test_install_desktop_readonly_parent_dir_reports_permission_error(tmp_path, monkeypatch, capsys):
+    data_home = _prepare(tmp_path, monkeypatch)
+    apps_dir = data_home / "applications"
+    icon_dir = data_home / "icons" / "hicolor" / "scalable" / "apps"
+    apps_dir.mkdir(parents=True)
+    icon_dir.mkdir(parents=True)
+
+    def deny_open(path, mode="r", *args, **kwargs):
+        if "w" in mode and str(path).startswith(str(data_home)):
+            raise PermissionError(13, "Permission denied", str(path))
+        return orig_open(path, mode, *args, **kwargs)
+
+    import builtins
+    orig_open = builtins.open
+    monkeypatch.setattr(builtins, "open", deny_open)
+    assert cli.install_desktop(launcher=["/opt/computesec"]) is False
+    err = capsys.readouterr().err
+    assert "Permission denied" in err
+    assert "No such file or directory" not in err
+
+
+def test_default_launcher_normalizes_relative_which_hit(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.sys, "argv", ["computesec"])
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "./bin/computesec")
+    got = cli._default_launcher()
+    assert len(got) == 1 and os.path.isabs(got[0])
+
+
+def test_xdg_display_dir_unnormalized_home_and_atomic_write_type_error(monkeypatch, tmp_path):
+    from computesec import xdg
+
+    monkeypatch.setenv("HOME", str(tmp_path) + "/./sub/..")
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    assert xdg.display_dir() == "~/.local/share/computesec"
+
+    cache = tmp_path / "t.json"
+    xdg.atomic_write_json(str(cache), {"ok": 1})
+    xdg.atomic_write_json(str(cache), {"bad": {1, 2, 3}})
+    assert cache.read_text(encoding="utf-8") == '{"ok": 1}'

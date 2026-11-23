@@ -73,6 +73,19 @@ def _read(path, default=""):
         return default
 
 
+_OS_RELEASE_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _has_closing_quote(v):
+    if len(v) < 2 or v[0] != v[-1] or v[0] not in ("'", '"'):
+        return False
+    if v[0] == "'":
+        return True
+    # 双引号末尾若紧跟奇数个反斜杠（如 "foo\"），末字符是被转义的字面引号而非闭合引号。
+    backslashes = len(v) - 1 - len(v[:-1].rstrip("\\"))
+    return backslashes % 2 == 0
+
+
 def parse_os_release(text):
     d = {}
     for line in text.splitlines():
@@ -80,8 +93,11 @@ def parse_os_release(text):
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
+        key = k.strip()
+        if not _OS_RELEASE_KEY_RE.match(key):
+            continue
         v = v.strip()
-        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        if _has_closing_quote(v):
             quote = v[0]
             v = v[1:-1]
             # os-release(5)：双引号内支持 \" \\ \$ \` 转义，单引号原样保留
@@ -90,9 +106,7 @@ def parse_os_release(text):
         else:
             # os-release(5)：无引号值同样支持 shell 反斜杠转义（如 Arch\ Linux）。
             v = re.sub(r"\\(.)", r"\1", v)
-        key = k.strip()
-        if key:
-            d[key] = v
+        d[key] = v
     return d
 
 
@@ -160,9 +174,12 @@ def _build_identity() -> HostIdentity:
     parsed = parse_os_release(text) if text else {}
     if parsed:
         ident.os_release = parsed
+        os_pretty = parsed.get("PRETTY_NAME") or parsed.get("NAME") or ""
+        os_cpe = parsed.get("CPE_NAME") or ""
+        used_os_release = (not ident.pretty_name and bool(os_pretty)) or (not ident.cpe_name and bool(os_cpe))
         if not ident.source:
             ident.source = src
-        elif not ident.pretty_name:
+        elif used_os_release:
             ident.source += f" + {src}"
 
     if not ident.pretty_name:
@@ -171,7 +188,7 @@ def _build_identity() -> HostIdentity:
         ident.cpe_name = ident.os_release.get("CPE_NAME") or ""
 
     # 兜底：runtime 的 /etc/os-release（Flatpak 内不准确，仅在别无选择时使用）
-    if not ident.pretty_name and not ident.os_release:
+    if not ident.pretty_name:
         fallback = parse_os_release(_read("/etc/os-release"))
         if fallback:
             ident.os_release = fallback

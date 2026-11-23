@@ -599,9 +599,11 @@ def _cmdline_value_ok(key, actual, expected):
         # 记录调用者 U，严格强于推荐的 FZ。
         actual = "FZPU"
     if actual is None:
-        # 裸 token（无 =）仅对 module_param / systemd 布尔参数等价于真；
+        # 裸 token（无 =）仅对 module_param / systemd / dracut 布尔参数等价于真；
         # early_param 型会解析失败，内核保持默认值，不能视为已启用。
-        if nk not in _CMDLINE_MODULE_BOOL_KEYS and nk not in _CMDLINE_SYSTEMD_BOOL_KEYS:
+        if (nk not in _CMDLINE_MODULE_BOOL_KEYS
+                and nk not in _CMDLINE_SYSTEMD_BOOL_KEYS
+                and nk not in _CMDLINE_DRACUT_BOOL_KEYS):
             return False
         actual = "1"
     if actual == expected:
@@ -668,9 +670,10 @@ def get_cmdline_report() -> CmdlineReport:
         if v is not None:
             if nk == "efi":
                 efi_tokens.append(v)
-                present[nk] = ",".join(efi_tokens)
+                present[nk] = ",".join(x for x in efi_tokens if x)
             elif nk in _CMDLINE_COMMA_KEYS and present.get(nk):
-                present[nk] = f"{present[nk]},{v}"
+                if v:
+                    present[nk] = f"{present[nk]},{v}"
             else:
                 present[nk] = v
         else:
@@ -1100,7 +1103,7 @@ def _flatpak_apps():
     for d in dirs:
         try:
             for name in os.listdir(d):
-                if os.path.isdir(os.path.join(d, name)):
+                if "." in name and not name.startswith(".") and os.path.isdir(os.path.join(d, name)):
                     apps.add(name)
             source = "目录扫描"
         except OSError:
@@ -1305,7 +1308,9 @@ def _ntfs_from_lsblk_json(j):
                 mp = n.get("mountpoint")
                 if not mp and isinstance(n.get("mountpoints"), list):
                     mp = ", ".join(str(x) for x in n["mountpoints"] if x)
-                line = (f"/dev/{n.get('name')}  {n.get('size', '')}  标签: {n.get('label') or '-'}"
+                dev = str(n.get("name") or "")
+                dev_path = dev if dev.startswith("/dev/") else f"/dev/{dev}"
+                line = (f"{dev_path}  {n.get('size', '')}  标签: {n.get('label') or '-'}"
                         f"  挂载: {mp or '-'}")
                 if ftype == data.BITLOCKER_FS_TYPE:
                     # 加密卷看不出里面是 NTFS，界面上要说清楚是被什么加密的。
@@ -1401,11 +1406,20 @@ def _ntfs_partitions():
     return found, source
 
 
+def _same_path(a, b):
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def _windows_installed():
     hints = []
+    seen = []
     for p in ("/boot/efi/EFI/Microsoft/Boot/bootmgfw.efi", "/efi/EFI/Microsoft/Boot/bootmgfw.efi",
               "/boot/EFI/Microsoft/Boot/bootmgfw.efi"):
-        if os.path.exists(p):
+        if os.path.exists(p) and not any(_same_path(p, s) for s in seen):
+            seen.append(p)
             hints.append(f"发现 Windows 引导管理器：{p}")
     for f in glob.glob("/sys/firmware/efi/efivars/Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]-*"):
         if "Windows Boot Manager".encode("utf-16-le") in read_bytes(f):
@@ -1496,12 +1510,14 @@ def _safe(fn, fallback):
 
 def collect() -> Report:
     ident = _safe(lambda: hostinfo.get_identity(refresh=True), lambda e: hostinfo.HostIdentity(dbus_error=str(e)))
+    ar = _safe(arch, lambda _e: "")
+    cv = _safe(cpu_vendor, lambda _e: None)
     return Report(
         hsi=_safe(get_hsi, lambda e: HsiReport(ok=False, error=f"检测时出错：{e}")),
-        cmdline=_safe(get_cmdline_report, lambda e: CmdlineReport(arch=arch(), cpu=cpu_vendor(), cmdline=f"读取失败：{e}", items=[])),
-        sysctl=_safe(get_sysctl_report, lambda e: SysctlReport(arch=arch(), groups=[])),
+        cmdline=_safe(get_cmdline_report, lambda e: CmdlineReport(arch=ar, cpu=cv, cmdline=f"读取失败：{e}", items=[])),
+        sysctl=_safe(get_sysctl_report, lambda e: SysctlReport(arch=ar, groups=[])),
         hardware=_safe(get_hardware, lambda e: HardwareReport("", "", "", "", "", "", data.DEFAULT_VENDOR, "")),
         habits=_safe(get_habits, lambda e: HabitsReport(checks=[HabitCheck("err", "检测出错", "unknown", str(e), [], "")])),
-        arch=_safe(arch, lambda _e: ""), cpu=_safe(cpu_model, lambda _e: ""), os_name=ident.os_name, kernel=ident.kernel, in_flatpak=IN_FLATPAK,
+        arch=ar, cpu=_safe(cpu_model, lambda _e: ""), os_name=ident.os_name, kernel=ident.kernel, in_flatpak=IN_FLATPAK,
         identity=ident, hostdata=hostdata.CURRENT, kernel_support=kernelver.CURRENT,
     )
