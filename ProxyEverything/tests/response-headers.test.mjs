@@ -344,3 +344,98 @@ test('SameSite=None and Partitioned cookies require an upstream Secure attribute
 	assert.match(values[1], /_part=4; Secure; Partitioned;/);
 	assert.match(values[2], /_lax=5; SameSite=Lax;/);
 });
+
+test('authenticated redirects reject opaque non-HTTP schemes carrying the same host', async t => {
+	const env = { ALLOWED_TARGET_ORIGINS: 'https://example.com' };
+	for (const location of ['blob:https://example.com/id', 'mailto:example.com/path']) {
+		t.mock.method(globalThis, 'fetch', async () => new Response(null, { status: 302, headers: { location } }));
+		const r = await worker.fetch(new Request(proxy('https://example.com/start'), {
+			headers: { authorization: 'Bearer tok' },
+		}), env);
+		assert.equal(r.status, 502, location);
+	}
+});
+
+test('Connection header cannot strip X-Content-Type-Options', async () => {
+	const r = await fetchThrough('https://example.com/file.txt', {
+		'content-type': 'text/plain',
+		'x-content-type-options': 'nosniff',
+		connection: 'X-Content-Type-Options, X-Transient',
+		'x-transient': '1',
+	}, 'ok');
+	assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+	assert.equal(r.headers.get('x-transient'), null);
+});
+
+test('strips Use-As-Dictionary origin-wide compression dictionary header', async () => {
+	const r = await fetchThrough('https://example.com/app.js', {
+		'content-type': 'text/plain',
+		'use-as-dictionary': 'match="/app/*"',
+	}, 'ok');
+	assert.equal(r.headers.get('use-as-dictionary'), null);
+});
+
+test('strips Available-Dictionary and Dictionary-ID request headers before forwarding', async t => {
+	let seen;
+	t.mock.method(globalThis, 'fetch', async (_, init) => {
+		seen = new Headers(init.headers);
+		return new Response('ok');
+	});
+	const r = await worker.fetch(new Request(proxy('https://example.com/app.js'), {
+		headers: { 'available-dictionary': ':abc:', 'dictionary-id': '"dict"', 'x-keep': '1' },
+	}), { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+	assert.equal(r.status, 200);
+	assert.equal(seen.get('available-dictionary'), null);
+	assert.equal(seen.get('dictionary-id'), null);
+	assert.equal(seen.get('x-keep'), '1');
+});
+
+test('strips Attribution Reporting registration response headers', async () => {
+	const names = [
+		'attribution-reporting-register-source',
+		'attribution-reporting-register-trigger',
+		'attribution-reporting-register-os-source',
+		'attribution-reporting-register-os-trigger',
+	];
+	const headers = Object.fromEntries([['content-type', 'text/plain'], ...names.map(n => [n, '{}'])]);
+	const r = await fetchThrough('https://example.com/pixel', headers, 'ok');
+	for (const name of names) assert.equal(r.headers.get(name), null, name);
+});
+
+test('strips additional client IP forwarding request headers', async t => {
+	const stripped = [
+		'client-ip', 'x-cluster-client-ip', 'x-originating-ip',
+		'x-remote-ip', 'x-remote-addr', 'fly-client-ip', 'x-envoy-external-address',
+	];
+	let seen;
+	t.mock.method(globalThis, 'fetch', async (_, init) => {
+		seen = new Headers(init.headers);
+		return new Response('ok');
+	});
+	const headers = Object.fromEntries([...stripped.map(n => [n, '203.0.113.1']), ['x-keep', 'ok']]);
+	await worker.fetch(new Request(proxy('https://example.com/'), { headers }),
+		{ ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+	for (const name of stripped) assert.equal(seen.get(name), null, name);
+	assert.equal(seen.get('x-keep'), 'ok');
+});
+
+test('strips X-Url-Scheme forwarding request header', async t => {
+	let seen;
+	t.mock.method(globalThis, 'fetch', async (_, init) => {
+		seen = new Headers(init.headers);
+		return new Response('ok');
+	});
+	await worker.fetch(new Request(proxy('https://example.com/'), {
+		headers: { 'x-url-scheme': 'http', 'x-keep': 'ok' },
+	}), { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+	assert.equal(seen.get('x-url-scheme'), null);
+	assert.equal(seen.get('x-keep'), 'ok');
+});
+
+test('Set-Cookie normalizes and deduplicates HttpOnly attributes', async () => {
+	const headers = new Headers({ 'content-type': 'text/plain' });
+	headers.append('Set-Cookie', 'sid=1; HttpOnly=ignored; httponly; Secure');
+	const r = await fetchThrough('https://example.com/login', headers);
+	const [cookie] = r.headers.getSetCookie();
+	assert.match(cookie, /_sid=1; HttpOnly; Secure; Path=\/$/);
+});

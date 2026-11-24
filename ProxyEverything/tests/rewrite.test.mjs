@@ -186,6 +186,8 @@ test('manifest: id resolves against the start_url origin, other URLs against the
 	assert.equal(rewrite({ id: '?pwa', start_url: proxy('https://other.example/app') }).id, proxy('https://other.example/?pwa'));
 	assert.equal(rewrite({ id: '?pwa', start_url: '/~' + encodeURIComponent('https://other.example') + '/app' }).id, proxy('https://other.example/?pwa'));
 	assert.equal(rewrite({ id: '?pwa', start_url: origin + '/app' }).id, proxy('https://example.com/?pwa'));
+	assert.equal(rewrite({ note_taking: { new_note_url: '/notes/new' } }).note_taking.new_note_url,
+		proxy('https://example.com/notes/new'));
 });
 
 test('HTTP downgrade does not forward Referer and a different proxy origin is not trusted', async () => {
@@ -264,4 +266,11 @@ test('a non-GET upgrade is rejected instead of becoming an upstream GET', async 
 	assert.equal(r.status, 405);
 	assert.equal(r.headers.get('allow'), 'GET');
 	assert.equal(forwarded, null);
+});
+
+test('WebSocket upgrade matches websocket token in multi-value Upgrade headers', async () => {
+	const target = proxy('wss://example.com/socket');
+	const r = await send(target, { headers: { upgrade: 'h2c, WebSocket' } });
+	assert.equal(r.status, 502);
+	assert.equal(forwarded.headers.get('upgrade'), 'websocket');
 });

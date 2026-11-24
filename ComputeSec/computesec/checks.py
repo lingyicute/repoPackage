@@ -480,6 +480,15 @@ _CMDLINE_FORCE_DISABLE = {
     "nospectre_v2": "spectre_v2",
     "nospec_store_bypass_disable": "spec_store_bypass_disable",
 }
+# arch/x86/mm/pti.c 与 arch/x86/kernel/cpu/bugs.c：cpu_mitigations_off() 会无条件
+# 禁用下列 x86 缓解，即便命令行上同时写有 pti=on / spectre_v2=on 等单项参数。
+_MITIGATIONS_OFF_TARGETS = (
+    "pti",
+    "spectre_v2",
+    "spec_store_bypass_disable",
+    "l1tf",
+    "gather_data_sampling",
+)
 
 
 def _iter_cmdline_tokens(cmdline):
@@ -726,6 +735,10 @@ def get_cmdline_report() -> CmdlineReport:
                     and nk != "hash_pointers"):
                 continue
             present[nk] = None
+    if present.get("mitigations") == "off":
+        for target in _MITIGATIONS_OFF_TARGETS:
+            if target in present:
+                present[target] = "mitigations=off"
     for target, flag in forced_off.items():
         present[target] = flag
     ar, cv = arch(), cpu_vendor()
@@ -909,7 +922,14 @@ def _sysctl_from_proc(key):
 
 def _sysctl_effective_values(key, actual):
     """Preserve raw readings for display, but compare effective rp_filter modes."""
-    if key != "net.ipv4.conf.*.rp_filter" or not actual:
+    if not actual:
+        return actual
+    if key == "net.ipv6.conf.*.use_tempaddr":
+        default_key = "net.ipv6.conf.default.use_tempaddr"
+        if default_key not in actual:
+            return {**actual, default_key: None}
+        return actual
+    if key != "net.ipv4.conf.*.rp_filter":
         return actual
     all_key = "net.ipv4.conf.all.rp_filter"
     default_key = "net.ipv4.conf.default.rp_filter"
@@ -930,7 +950,7 @@ def _sysctl_effective_values(key, actual):
             continue
         try:
             mode = int(value)
-            effective[k] = ("2" if mode == 2 else
+            effective[k] = (str(mode) if mode >= 2 else
                             str(max(mode, global_mode)) if global_mode is not None else None)
         except (TypeError, ValueError):
             effective[k] = None
@@ -954,6 +974,16 @@ def get_sysctl_report() -> SysctlReport:
             actual, raw_unreadable = _sysctl_from_proc(key)
             denied_keys = set(raw_unreadable) if isinstance(raw_unreadable, (set, frozenset, list, tuple)) else None
             unreadable = bool(raw_unreadable)
+            skip_ifaces = set(e.get("skip_ifaces") or ())
+            if skip_ifaces:
+                # Some per-interface settings have no effective conf/all value.
+                actual = {k: v for k, v in actual.items()
+                          if k.split(".")[-2] not in skip_ifaces}
+                if denied_keys is not None:
+                    denied_keys = {k for k in denied_keys if k.split(".")[-2] not in skip_ifaces}
+                    unreadable = bool(denied_keys)
+                else:
+                    unreadable = unreadable and any(v is None for v in actual.values())
             source = "proc"
             snapshot_gap = ""
             net_isolated = sandbox_netns and key.startswith("net.")
@@ -961,6 +991,9 @@ def get_sysctl_report() -> SysctlReport:
             # 条目，也能补上被 Flatpak 沙箱屏蔽或隔离的条目。但它在本机的地位取决于
             # 环境，两种环境必须分开处理。
             supplied = hd.sysctl_lookup(key) if user_values else {}
+            if skip_ifaces and supplied:
+                supplied = {k: v for k, v in supplied.items()
+                            if k.split(".")[-2] not in skip_ifaces}
             if supplied and IN_FLATPAK:
                 # 沙箱里的 /proc/sys 可能属于隔离视图（被屏蔽、被改写、或另一个
                 # netns），不能混入宿主机快照，只能整块以快照为准。
@@ -1015,12 +1048,6 @@ def get_sysctl_report() -> SysctlReport:
                 # 这种情况落到下面的 unknown，界面才会给出「可能没有加 sudo」的提示。
                 actual, source, snapshot_gap = {}, "快照缺失", "快照缺失"
                 unreadable = False
-            if e.get("skip_ifaces"):
-                # Some per-interface settings have no effective conf/all value.
-                actual = {k: v for k, v in actual.items()
-                          if k.split(".")[-2] not in e["skip_ifaces"]}
-                if denied_keys is not None:
-                    unreadable = unreadable and bool(denied_keys.intersection(actual))
             compared = _sysctl_effective_values(key, actual)
             if snapshot_gap:
                 status = "unverified"
@@ -1585,7 +1612,7 @@ class Report:
         return (self.hsi.score is None or bool(self.hsi.undetermined)
                 or self.cmdline.score is None or self.sysctl.score is None
                 or bool(self.sysctl.unknown or self.sysctl.unverified)
-                or not self.hardware.matched_on or self.habits.score is None
+                or not self.hardware.matched_on or bool(self.hardware.vendor.get("virtual")) or self.habits.score is None
                 or any(c.status == "unknown" for c in self.habits.checks)
                 or ks is None or not ks.known or ks.stale or not ks.supported)
 

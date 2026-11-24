@@ -125,8 +125,9 @@ def score_label(score, big=False):
 
 def level_bar(score):
     bar = Gtk.LevelBar(min_value=0, max_value=100, hexpand=True, valign=Gtk.Align.CENTER)
-    bar.add_offset_value("low", 50)
-    bar.add_offset_value("high", 80)
+    # Gtk.LevelBar 按 value <= offset 匹配区间，用 .5 对齐 score_css() 的 >= 50 / >= 80。
+    bar.add_offset_value("low", 49.5)
+    bar.add_offset_value("high", 79.5)
     bar.add_offset_value("full", 100)
     bar.set_value(0 if score is None else score)
     if score is None:
@@ -498,7 +499,10 @@ def build_hsi(report, win):
         if not scored:
             fix.add(text_row("暂无可评估的检测项", "所有检测项均因缺少数据而无法判定。"))
         elif h.failed:
-            fix.add(praise_row("所有可由用户修复的项目均已通过，做得非常好！"))
+            fix.add(praise_row(
+                "所有可判定的用户可修复项目均已通过，做得非常好！"
+                if h.undetermined else
+                "所有可由用户修复的项目均已通过，做得非常好！"))
         elif h.undetermined:
             fix.add(praise_row("所有可判定的检测项均已通过，做得非常好！"))
         else:

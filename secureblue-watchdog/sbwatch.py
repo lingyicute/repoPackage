@@ -1671,6 +1671,39 @@ class Bodhi:
                 pass
             return None
 
+    def _fresh_entry(self, path):
+        if not path:
+            return None
+        try:
+            modified = os.path.getmtime(path)
+        except OSError:
+            return None
+        now = time.time()
+        if now - modified >= self.ttl:
+            return None
+        data = self._read_cache_entry(path)
+        if data is None:
+            return None
+        fetched = data.get("fetched_at", modified)
+        # The TTL starts with page 1, not the last retry that wrote the answer.
+        if type(fetched) not in (int, float) or not 0 <= now - fetched < self.ttl:
+            return None
+        return data
+
+    def _cached_progress(self, path):
+        data = self._fresh_entry(path)
+        if not data or data.get("truncated") is not True or "fetched_at" not in data:
+            return None
+        page, pages, total = (data.get(k) for k in ("next_page", "pages", "total"))
+        aliases = data.get("seen_aliases")
+        if (type(page) is not int or type(pages) is not int or type(total) is not int
+                or not 1 < page <= min(pages, MAX_BODHI_PAGES)
+                or not isinstance(aliases, list) or not 0 < len(aliases) < total
+                or any(not isinstance(a, str) or not a for a in aliases)
+                or len(set(aliases)) != len(aliases)):
+            return None
+        return data
+
     def _fetch_page(self, url: str, src: str, expected_page: int) -> tuple:
         """One page of /updates/ as (document, updates), validated.
 
@@ -1752,17 +1785,13 @@ class Bodhi:
             ent = self._mem[key]
             return ent["updates"] if isinstance(ent, dict) else ent
         cf = self._cf(key)
-        try:
-            fresh = cf and time.time() - os.path.getmtime(cf) < self.ttl
-        except OSError:
-            fresh = False
-        if fresh:
-            cached = self._read_cache_entry(cf)
-            if cached is not None:
-                self._mem[key] = cached
-                if cached.get("truncated"):
-                    self.truncated_src.add(src)
-                return cached["updates"]
+        partial_path = cf.removesuffix(".json") + ".partial.json" if cf else None
+        cached = self._fresh_entry(cf)
+        if cached is not None:
+            self._mem[key] = cached
+            if cached.get("truncated"):
+                self.truncated_src.add(src)
+            return cached["updates"]
         if self.down:
             # Not attempted, but counted as failed (once per source package): the
             # verdict must still say that the errata coverage is incomplete.
@@ -1773,24 +1802,25 @@ class Bodhi:
             # Cache hits still count even when no further requests may be made.
             return self._memo_budget_miss(key)
 
-        res: list = []
-        total = None
-        truncated = False
-        budget_cut = False
-        received = 0  # total counts all content types, not just the RPMs we keep
-        seen_aliases = set()
-        page_count = None
-        inconsistent = False
-        ok = False
-        for page in range(1, MAX_BODHI_PAGES + 1):
+        progress = self._cached_progress(partial_path)
+        started = progress["fetched_at"] if progress else time.time()
+        res = progress["updates"] if progress else []
+        total = progress["total"] if progress else None
+        page_count = progress["pages"] if progress else None
+        seen_aliases = set(progress["seen_aliases"]) if progress else set()
+        received = len(seen_aliases)  # includes non-RPM updates
+        first_page = progress["next_page"] if progress else 1
+        truncated = budget_cut = inconsistent = ok = False
+        resumable = True
+        for page in range(first_page, MAX_BODHI_PAGES + 1):
             if page > 1 and self._budget_reached():
                 # --max-bodhi caps API calls, and every page is one call: the
                 # guard above only ran before page 1, so a 127-erratum package
                 # walked past the budget. Stop here and say the audit is partial.
                 truncated = budget_cut = True
-                log(T(f"  ! bodhi: query budget reached after {len(res)} of {total} errata "
+                log(T(f"  ! bodhi: query budget reached after {received} of {total} updates "
                       f"for {src} - this package's audit is INCOMPLETE",
-                      f"  ！Bodhi：{src} 只取到 {total} 条勘误中的 {len(res)} 条时查询预算"
+                      f"  ！Bodhi：{src} 只取到 {total} 条更新中的 {received} 条时查询预算"
                       f"已用尽——该包的审计不完整"))
                 break
             url = f"{self.BASE}/updates/?" + urllib.parse.urlencode(
@@ -1822,6 +1852,10 @@ class Bodhi:
             ok = True
             self._streak = 0
             pages = data.get("pages")
+            numbered = data.get("page") == page and pages is not None and "total" in data
+            resumable &= numbered
+            if progress and not numbered:
+                inconsistent = True
             if ((total is not None and data.get("total", total) != total)
                     or (page_count is not None and pages is not None and pages != page_count)):
                 inconsistent = True
@@ -1835,6 +1869,10 @@ class Bodhi:
                         inconsistent = True
                         continue
                     seen_aliases.add(alias)
+                else:
+                    resumable = False
+                    if progress:
+                        inconsistent = True
                 ctype = (u.get("content_type") or "").strip().lower()
                 if ctype and ctype != "rpm":
                     continue
@@ -1904,12 +1942,24 @@ class Bodhi:
                   f"  ！读取 {src} 时 Bodhi 分页发生变化，审计不完整"))
         if truncated:
             self.truncated_src.add(src)
-        # never cache a failed query: an empty answer would blind later runs. A
-        # budget-cut one is not cached either - the next run may have the budget.
+        answer = {"cache_version": BODHI_CACHE_VERSION, "fetched_at": started,
+                  "total": total, "truncated": truncated, "updates": res}
         if cf and ok and not budget_cut and not inconsistent:
-            _cache_write(cf, {"cache_version": BODHI_CACHE_VERSION,
-                              "total": total, "truncated": truncated,
-                              "updates": res}, "Bodhi")
+            _cache_write(cf, answer, "Bodhi")
+        # Keep a budget-cut prefix separate from usable answers. Otherwise a
+        # source that has more pages than the per-run budget can never finish.
+        if (partial_path and budget_cut and ok and resumable and not inconsistent
+                and len(seen_aliases) == received < total):
+            _cache_write(partial_path, {**answer, "next_page": page, "pages": page_count,
+                                        "seen_aliases": sorted(seen_aliases)}, "Bodhi progress")
+        elif progress and (ok or inconsistent):
+            try:
+                os.unlink(partial_path)
+            except OSError:
+                pass
+        if progress and inconsistent:
+            # Changed pagination: do not present a blend of two collections.
+            res = []
         self._mem[key] = {"total": total, "truncated": truncated, "updates": res,
                           "unqueried": None if ok else "failed"}
         return res
@@ -2375,6 +2425,12 @@ def _epoch(e: dict) -> str:
     return str(e.get("epoch") or "0")
 
 
+def _nevra(e: dict) -> dict:
+    """Exact package identity for JSON, independent of display formatting."""
+    return {**{k: e.get(k) for k in ("name", "version", "release", "arch")},
+            "epoch": _epoch(e)}
+
+
 def _evr_pair(old: dict, new: dict) -> tuple[str, str]:
     """(old_evr, new_evr), prefixed with their epochs when the epoch moved."""
     oe, ne = old["evr"], new["evr"]
@@ -2410,9 +2466,12 @@ def pkg_diff(pa: dict, pb: dict) -> dict:
         changed.append({"name": n, "old": x, "new": y, "src": y["src"],
                         "dir": ("downgrade" if d > 0 else "upgrade" if d < 0
                                 else "arch-change" if arch_changed else "rebuild")})
+    added, removed = sorted(keys_b - keys_a), sorted(keys_a - keys_b)
     return {
-        "added": sorted(keys_b - keys_a),
-        "removed": sorted(keys_a - keys_b),
+        "added": added,
+        "removed": removed,
+        "added_nevra": [_nevra(pb[n]) for n in added],
+        "removed_nevra": [_nevra(pa[n]) for n in removed],
         "changed": changed,
         "downgrades": [c for c in changed if c["dir"] == "downgrade"],
         "count_a": len(pa), "count_b": len(pb),
@@ -4432,9 +4491,21 @@ def _stream_major(tag, cur: dict | None = None) -> str:
     return maj if ver.startswith(maj + ".") else ""
 
 
+class _TagList(list):
+    """Tag strings plus any evidence that discovery did not read every page."""
+
+    def __init__(self):
+        super().__init__()
+        self.warnings = []
+
+    def warn(self, msg):
+        self.warnings.append(msg)
+        log("  ! " + msg)
+
+
 def list_tags(reg: Registry, max_pages: int = TAG_LIST_MAX_PAGES) -> list:
     """All tags of the repo. ghcr returns them in push order; pages via Link header."""
-    out, url = [], f"https://{reg.host}/v2/{reg.repo}/tags/list?n=1000"
+    out, url = _TagList(), f"https://{reg.host}/v2/{reg.repo}/tags/list?n=1000"
     pages_done = 0
     for _ in range(max_pages):
         page = hdrs = None
@@ -4468,9 +4539,9 @@ def list_tags(reg: Registry, max_pages: int = TAG_LIST_MAX_PAGES) -> list:
                 if attempt == TAG_LIST_RETRIES - 1:
                     # silent truncation here would quietly shorten the build history
                     # and can make `check` pick a wrong baseline, so say so loudly
-                    log(T(f"  ! tag list stopped after {attempt + 1} tries at page "
+                    out.warn(T(f"tag list stopped after {attempt + 1} tries at page "
                           f"{pages_done + 1} ({e}) - history may be incomplete",
-                          f"  ！tag 列表在第 {pages_done + 1} 页重试 {attempt + 1} 次后中止（{e}）"
+                          f"tag 列表在第 {pages_done + 1} 页重试 {attempt + 1} 次后中止（{e}）"
                           f"——历史记录可能不完整"))
                 else:
                     time.sleep(1.5 * (attempt + 1))
@@ -4489,16 +4560,16 @@ def list_tags(reg: Registry, max_pages: int = TAG_LIST_MAX_PAGES) -> list:
             if (target.scheme, target.netloc.lower()) != ("https", reg.host.lower()):
                 raise ValueError("pagination left the registry origin")
         except ValueError:
-            log(T("  ! unsafe tag pagination link refused - history may be incomplete",
-                  "  ！已拒绝不安全的 tag 分页链接——历史记录可能不完整"))
+            out.warn(T("unsafe tag pagination link refused - history may be incomplete",
+                  "已拒绝不安全的 tag 分页链接——历史记录可能不完整"))
             break
         url = next_url
     else:
         # Every allowed page was read and the registry still offered another one.
         # ghcr lists tags in push order, so a capped walk loses the NEWEST builds.
-        log(T(f"  ! tag list capped at {max_pages} pages ({len(out)} tags) - the newest "
+        out.warn(T(f"tag list capped at {max_pages} pages ({len(out)} tags) - the newest "
               f"tags may be missing, history may be incomplete",
-              f"  ！tag 列表在第 {max_pages} 页（共 {len(out)} 个 tag）处被截断——"
+              f"tag 列表在第 {max_pages} 页（共 {len(out)} 个 tag）处被截断——"
               f"可能缺少最新的 tag，历史记录可能不完整"))
     return out
 
@@ -4521,6 +4592,8 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
     trips and, if the tag moved in between, anchored the history on another build.
     """
     tags = list_tags(reg)
+    if warn is not None:
+        warn.extend(getattr(tags, "warnings", ()))
     if cur is None:
         cur = resolve(reg, to)
     # does the watched image carry the chunkah layout this tool diffs by?
@@ -4539,8 +4612,11 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
         if bt != watched_tag and bt.startswith(("br-", "pr-")) and not bt.endswith("-uki"):
             try:
                 branch_digests.add(reg.index_digest(bt))
-            except (Exception, RegistryError):
-                continue
+            except RegistryError as e:
+                if e.http_code != 404:
+                    probe_failures.append((bt, e.http_code or "network error"))
+            except Exception as e:
+                probe_failures.append((bt, type(e).__name__))
     sigs = [m.group(1) for m in (SIGTAG_RE.match(t) for t in tags) if m]
     recs: dict = {cur["index_digest"]: {
         "digest": cur["index_digest"], "platform_digest": cur.get("digest"),
@@ -5402,6 +5478,7 @@ def _comparison_json(res: dict, from_label=None, to_label=None) -> dict:
         is_down = c.get("dir") == "downgrade"
         old, new = _evr_pair(c["old"], c["new"])
         changed.append({"name": c["name"], "old": old, "new": new, "src": c["src"],
+                        "old_nevra": _nevra(c["old"]), "new_nevra": _nevra(c["new"]),
                         "old_arch": c["old"].get("arch"), "new_arch": c["new"].get("arch"),
                         "dir": c["dir"], "security": False if is_down else bool(cls.get("security")),
                         "cves": [] if is_down else cls.get("cves", []),
@@ -5428,6 +5505,7 @@ def _comparison_json(res: dict, from_label=None, to_label=None) -> dict:
             "rpmdb_issues": d.get("rpmdb_issues"),
             "changelog_scan_incomplete": d.get("changelog_scan_incomplete", []),
             "changed": changed, "added": d.get("added", []), "removed": d.get("removed", []),
+            "added_nevra": d.get("added_nevra", []), "removed_nevra": d.get("removed_nevra", []),
             "silent_rebuilds": xc.get("silent_rebuilds", []),
             "behind_stable_security": res.get("backlog") or [],
             "backlog_coverage": res.get("backlog_coverage")}
@@ -5488,6 +5566,15 @@ def _state_label(state: dict) -> str:
                      lang="both")
 
 
+def _watch_analysis_scope(args) -> dict:
+    """The requested coverage, before the equal-rpmdb fast path changes --exact."""
+    exact = bool(getattr(args, "exact", 1))
+    bodhi = exact and not getattr(args, "no_bodhi", False)
+    audit = bodhi and getattr(args, "audit", False)
+    return {"exact": exact, "bodhi": bodhi, "audit": audit,
+            "backlog_candidates": getattr(args, "backlog_candidates", None) if audit else None}
+
+
 def cmd_check(args):
     """Daily entry point: only do real work when the watched tag moved.
 
@@ -5535,6 +5622,10 @@ def cmd_check(args):
     maybe_verify_resolved(reg, cur, args)
     ver = cur["annotations"].get("org.opencontainers.image.version", "?")
 
+    scope = _watch_analysis_scope(args)
+    # Recheck older checkpoints with a reproducible baseline once; their prior
+    # coverage could have been intentionally narrower than this invocation's.
+    old_scope = state.get("analysis_scope", None if state.get("prev_digest") else scope)
     watched = {"watched_digest": cur["digest"], "watched_version": ver,
                "watched_index_digest": cur.get("index_digest") or cur["digest"]}
 
@@ -5547,7 +5638,7 @@ def cmd_check(args):
              "created_order": cur.get("created_order"),
              "inputhash": cur["annotations"].get("rpmostree.inputhash"),
              "ostree_commit": cur["annotations"].get("ostree.commit"),
-             "checked": int(time.time())}
+             "checked": int(time.time()), "analysis_scope": scope}
         if extra:
             d.update(extra)
         _atomic_write_json(state_path, d)      # a crash mid-write must not corrupt state
@@ -5555,7 +5646,8 @@ def cmd_check(args):
     # An explicit --a (the workflow's `from_tag`) asks for that comparison; "no
     # new build since the last look" does not answer it, so it must not skip it.
     if (state.get("digest") == cur["digest"] and not args.force and not args.a
-            and state.get("last_verdict") != "unknown" and state.get("analysis_incomplete") is False):
+            and old_scope == scope and state.get("last_verdict") != "unknown"
+            and state.get("analysis_incomplete") is False):
         msg = T(f"no new build for {args.image}:{args.to} - still {ver} "
                 f"({cur['digest'][:19]}...), nothing to download",
                 f"{args.image}:{args.to} 无新构建——仍为 {ver}"
@@ -5568,7 +5660,7 @@ def cmd_check(args):
         _atomic_write_text(report, f"# No new build 无新构建\n\n{msg}\n")
         _atomic_write_json(report + ".json", {
             "verdict": {"level": "no-update", "headline": msg}, "version": ver,
-            "digest": cur["digest"], "download_bytes": 0, **watched})
+            "digest": cur["digest"], "download_bytes": 0, "analysis_incomplete": False, **watched})
         gh_outputs({"verdict": "no-update", "digest": cur["digest"], "summary": msg,
                     "download_bytes": 0, "report": report, "version": ver,
                     "inputhash": cur["annotations"].get("rpmostree.inputhash") or "", **watched})
@@ -5728,17 +5820,21 @@ def cmd_check(args):
                 f"有新构建（{ver}），但没有可用于对比的更早镜像")
         log(msg)
         report = args.report or "report.md"
-        _atomic_write_text(report, f"# {msg}\n\nNo baseline image found to diff "
-                                  f"against / 未找到可用于对比的基线镜像. "
-                                  f"Current 当前: {ver} {cur['digest'][:19]}...\n")
+        md = (f"# {msg}\n\nNo baseline image found to diff against / 未找到可用于对比的基线镜像. "
+              f"Current 当前: {ver} {cur['digest'][:19]}...\n")
+        if hist_warnings:
+            md += "\n## Baseline discovery warnings / 基线探测警告\n\n"
+            md += "".join(f"- {warning}\n" for warning in hist_warnings)
+        _atomic_write_text(report, md)
         _atomic_write_json(report + ".json", {
             "verdict": {"level": "unknown", "headline": msg},
-            "version": ver, "digest": cur["digest"], **watched})
+            "version": ver, "digest": cur["digest"], "download_bytes": None,
+            "analysis_incomplete": True, "baseline_warnings": hist_warnings, **watched})
         gh_outputs({"verdict": "unknown", "digest": cur["digest"], "summary": msg,
-                    "download_bytes": 0, "report": report, "version": ver, **watched})
+                    "download_bytes": "", "report": report, "version": ver, **watched})
         # Remember the checkpoint for a future build, not a successful analysis.
         # An unchanged digest must retry the missing baseline on the next run.
-        save_state({"last_verdict": "unknown", "baseline_missing": True})
+        save_state({"last_verdict": "unknown", "baseline_missing": True, "analysis_incomplete": True})
         return 0
 
     # Resolve the baseline exactly once and hand it to do_diff. Resolving the same

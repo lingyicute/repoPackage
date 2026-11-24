@@ -65,6 +65,11 @@ const STRIP_RESPONSE_HEADERS = [
 	'activate-storage-access', // Storage Access 状态作用于整个代理源
 	'observe-browsing-topics', // 避免代表代理源记录上游的 Topics 观测
 	'supports-loading-mode',
+	'use-as-dictionary',  // 共享压缩字典按代理源持久化，可能跨目标站点生效
+	'attribution-reporting-register-source', // 归因报告注册状态归属整个代理源
+	'attribution-reporting-register-trigger',
+	'attribution-reporting-register-os-source',
+	'attribution-reporting-register-os-trigger',
 ];
 
 // 仅正文变换时移除；透传响应必须保留其表示元数据。
@@ -105,7 +110,7 @@ const PROTECTED_END_TO_END = new Set([
 	'etag', 'last-modified', 'accept-ranges', 'content-disposition',
 	'accept', 'accept-encoding', 'accept-language', 'user-agent',
 	'allow', 'retry-after', 'age', 'expires', 'date', 'pragma',
-	'x-robots-tag', 'service-worker', 'sec-fetch-dest', 'sec-fetch-mode',
+	'x-content-type-options', 'x-robots-tag', 'service-worker', 'sec-fetch-dest', 'sec-fetch-mode',
 	'sec-fetch-site', 'sec-fetch-user', 'sec-websocket-protocol', 'sec-websocket-key',
 	'sec-websocket-version', 'sec-websocket-extensions', 'sec-websocket-accept',
 	'access-control-allow-origin', 'access-control-allow-credentials',
@@ -226,7 +231,7 @@ function decodeProxyPath(pathname) {
 	if (!raw.startsWith('~')) return safeDecode(raw);
 	const cut = raw.indexOf('/');
 	const origin = safeDecode(raw.slice(1, cut === -1 ? raw.length : cut));
-	if (!/^(?:https?|wss?):\/\/[^\\/?#\s]+$/i.test(origin)) return '';
+	if (!/^(?:https?|wss?):\/\/[^\\/?#@\s]+$/i.test(origin)) return '';
 	return origin + (cut === -1 ? '/' : raw.slice(cut));
 }
 
@@ -238,9 +243,10 @@ function decodeProxiedTarget(rawPath, suffix = '') {
 	const hash = hashCut < 0 ? '' : suffix.slice(hashCut);
 	const baseTarget = decoded.split('#', 1)[0];
 	try {
-		const extraQuery = query ? (baseTarget.includes('?') ? (query.length > 1 ? '&' + query.slice(1) : '') : query) : '';
+		const sep = baseTarget.endsWith('?') || baseTarget.endsWith('&') ? '' : '&';
+		const extraQuery = query ? (baseTarget.includes('?') ? (query.length > 1 ? sep + query.slice(1) : '') : query) : '';
 		const target = new URL(baseTarget + extraQuery + hash);
-		if (!['http:', 'https:', 'ws:', 'wss:'].includes(target.protocol)) return null;
+		if (!['http:', 'https:', 'ws:', 'wss:'].includes(target.protocol) || target.username || target.password) return null;
 		const host = normalizeHostname(target.hostname);
 		if (!host) return null;
 		target.hostname = host;
@@ -690,7 +696,7 @@ function rewriteRefreshContent(content, baseUrl, workerOrigin, resolveBase = fal
 	const cleaned = trimUrlSpace(url);
 	if (!cleaned && !(resolveBase && (quoted || urlPrefix))) return raw;
 	const rewritten = rewriteUrl(cleaned, baseUrl, workerOrigin, resolveBase);
-	return !cleaned && rewritten === cleaned ? raw : prefix + 'url=' + rewritten;
+	return rewritten === cleaned ? raw : prefix + 'url=' + rewritten;
 }
 
 // Cookie 命名空间（不提供浏览器安全隔离）
@@ -758,7 +764,8 @@ function scopeSetCookie(c, ns, workerIsHttps, fromScript = false) {
 		if (attr === 'path') { path = split < 0 ? '' : part.slice(split + 1).trim(); continue; }
 		if (attr === 'httponly') {
 			if (fromScript) return null;
-			hasHttpOnly = true;
+			if (!hasHttpOnly) { out.push('HttpOnly'); hasHttpOnly = true; }
+			continue;
 		}
 		if (attr === 'secure') {
 			if (!workerIsHttps) return null;
@@ -961,18 +968,18 @@ function prescanHtmlCharset(text) {
 		if (!scanned) return null;
 		start = scanned.end;
 		if (!meta) continue;
-		let gotPragma = false, needPragma = null, charset = null;
+		let gotPragma = false, needPragma = null, charset;
 		for (const [name, value] of scanned.attrs) {
 			if (name === 'http-equiv' && value.toLowerCase() === 'content-type') gotPragma = true;
-			else if (name === 'content' && charset === null) {
+			else if (name === 'content' && charset === undefined) {
 				const candidate = extractMetaCharset(value);
 				if (candidate) { charset = candidate; needPragma = true; }
-			} else if (name === 'charset' && charset === null) {
-				const candidate = normalizeCharsetLabel(value, true);
-				if (candidate) { charset = candidate; needPragma = false; }
+			} else if (name === 'charset') {
+				charset = normalizeCharsetLabel(value, true);
+				needPragma = false;
 			}
 		}
-		if (needPragma !== null && (!needPragma || gotPragma)) return charset;
+		if (needPragma !== null && (!needPragma || gotPragma) && charset) return charset;
 	}
 	return null;
 }
@@ -981,6 +988,21 @@ function utf16XmlSignature(head) {
 	if (head[0] === 0x3c && head[1] === 0 && head[2] === 0x3f && head[3] === 0) return 'utf-16le';
 	if (head[0] === 0 && head[1] === 0x3c && head[2] === 0 && head[3] === 0x3f) return 'utf-16be';
 	return null;
+}
+
+function utf16HtmlXmlSignature(head, total) {
+	// WHATWG HTML §13.2.3.2：无 BOM 的 UTF-16LE/BE XML 声明（<?x）在预扫描前识别。
+	const le = [0x3c, 0, 0x3f, 0, 0x78, 0];
+	const be = [0, 0x3c, 0, 0x3f, 0, 0x78];
+	const limit = Math.min(total, 6);
+	let matchLe = true, matchBe = true;
+	for (let i = 0; i < limit; i++) {
+		if (head[i] !== le[i]) matchLe = false;
+		if (head[i] !== be[i]) matchBe = false;
+	}
+	if (!matchLe && !matchBe) return null;
+	if (total < 6) return 'pending';
+	return matchLe ? 'utf-16le' : 'utf-16be';
 }
 
 function utf8XmlDeclaration(declaration) {
@@ -1075,6 +1097,10 @@ async function sniffHtmlCharset(body, declaredCharset = null, isXml = false) {
 					charset = utf16XmlSignature(head);
 					if (charset) break;
 				}
+			} else {
+				const sig = utf16HtmlXmlSignature(head, total);
+				if (sig === 'pending') continue;
+				if (sig) { charset = sig; break; }
 			}
 			const prefixText = new TextDecoder().decode(head.subarray(0, total));
 			charset = isXml ? xmlDeclaredCharset(prefixText) : prescanHtmlCharset(prefixText);
@@ -1243,7 +1269,7 @@ var DEC=trimUrlSpace(decodeProxyPath(location.pathname)).replace(/^\\/+/,'');
 if(!/^[a-z][a-z0-9+.-]*:\\/\\//i.test(DEC))DEC='https://'+DEC;
 var hIdx=DEC.indexOf('#');if(hIdx>=0)DEC=DEC.substring(0,hIdx);
 var search=urlSuffix(new URL(location.href)).split('#',1)[0];
-var full=DEC+(search?(DEC.indexOf('?')>=0?(search.length>1?'&'+search.substring(1):''):search):'');
+var full=DEC+(search?(DEC.indexOf('?')>=0?(search.length>1?(/[?&]$/.test(DEC)?'':'&')+search.substring(1):''):search):'');
 try{var u=new URL(full);if(u.protocol==='ws:')u.protocol='http:';else if(u.protocol==='wss:')u.protocol='https:';u.username='';u.password='';u.hostname=u.hostname.toLowerCase().replace(/\\.+$/,'');return u.href;}catch(e){return full;}
 }
 var SKIP_RE=/^(data:|blob:|javascript:|mailto:|tel:|sms:|about:|#)/i;
@@ -1460,7 +1486,8 @@ if(WS)['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k,i){try{WS[k]=i
 function wrapHistory(fn){return function(st,t,u){
   if(u!=null){
     var next=rwNavigation(String(u),true);
-    var link=new URL(next,location.href);
+    var link;
+    try{link=new URL(next,location.href);}catch(e){throw new DOMException('Invalid history URL','SecurityError');}
     if(isSelfHost(link)){
       var dec=isProxiedPath(link.pathname)?decodeProxyPath(link.pathname):'';
       var dest=null;
@@ -1703,7 +1730,7 @@ if(CK){
 /* ---- 链接点击与表单提交兜底（覆盖 innerHTML 动态插入节点与编程式 submit） ---- */
 function rwLinkEv(ev){
   try{
-    var t=ev.target;
+    var t=(ev.composedPath&&ev.composedPath()[0])||ev.target;
     if(t&&!t.closest)t=t.parentElement;
     var el=t&&t.closest?t.closest('a,area'):null;
     if(!el)return;
@@ -2266,7 +2293,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck, sourceCharset = null
 	// template 内容不是活动文档的一部分；嵌套模板也不能改变文档基地址。
 	rewriter.on('template', {
 		element(el) {
-			if (el.namespaceURI !== htmlNamespace) return;
+			if (el.namespaceURI !== htmlNamespace || (isXml && el.selfClosing)) return;
 			templateDepth++;
 			el.onEndTag(() => { templateDepth--; });
 		},
@@ -2592,9 +2619,10 @@ return parse;
 
 /** HTML 的 URL-like module specifier：只有 /、./、../ 开头才带基址解析。 */
 function rewriteModuleSpecifier(specifier, baseUrl, workerOrigin) {
-	const clean = trimUrlSpace(String(specifier)).replace(/[\t\r\n]/g, '');
-	// 为保持幂等，已是代理路径的说明符不能按目标站点路径再次包装。
-	if (isProxiedPath(clean)) return rewriteUrl(specifier, baseUrl, workerOrigin);
+	const raw = String(specifier);
+	const clean = trimUrlSpace(raw).replace(/[\t\r\n]/g, '');
+	// 为保持幂等，仅以 '/' 开头的已代理路径直接规范化；带前导空白的是裸说明符。
+	if (raw.startsWith('/') && isProxiedPath(raw.replace(/[\t\r\n]/g, ''))) return rewriteUrl(raw, baseUrl, workerOrigin);
 	try {
 		const isRel = /^(?:\/|\.\.?\/)/.test(specifier);
 		const resolved = isRel ? new URL(specifier, baseUrl) : new URL(specifier);
@@ -2693,7 +2721,9 @@ const rewriteSpeculationRules = capRewriteGrowth((account, text, baseUrl, worker
 		const rules = spec[key];
 		if (!Array.isArray(rules)) continue;
 		for (const rule of rules) {
-			if (rule && Array.isArray(rule.urls)) {
+			if (!rule || typeof rule !== 'object') continue;
+			delete rule.referrer_policy;
+			if (Array.isArray(rule.urls)) {
 				const ruleBase = rule.relative_to === 'document' ? docUrl : baseUrl;
 				rule.urls = rule.urls.map(u => typeof u === 'string' ? account(u.length, rewriteUrl(u, ruleBase, workerOrigin, true)) : u);
 			}
@@ -2986,6 +3016,7 @@ const rewriteJsonUrls = capRewriteGrowth((account, text, baseUrl, workerOrigin) 
 		fields(item, ['url']);
 	}
 	fields(manifest.share_target, ['action']);
+	fields(manifest.note_taking, ['new_note_url']);
 	delete manifest.serviceworker;
 	return JSON.stringify(manifest);
 });
@@ -3019,7 +3050,8 @@ function parseTarget(url) {
 	// 不保留内部参数名：目标站可能合法使用 __pe，且查询串可能参与签名。
 	const search = urlSuffix(url).split('#', 1)[0];
 	if (search) {
-		target += target.includes('?') ? (search.length > 1 ? '&' + search.slice(1) : '') : search;
+		const sep = target.endsWith('?') || target.endsWith('&') ? '' : '&';
+		target += target.includes('?') ? (search.length > 1 ? sep + search.slice(1) : '') : search;
 	}
 	let u;
 	try { u = new URL(target); } catch { return null; }
@@ -3049,7 +3081,7 @@ function targetPolicyError(targetUrl, env) {
 	try { target.hostname = normalizeHostname(target.hostname); } catch {}
 	const host = normalizeHostname(target.hostname);
 	if (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host.startsWith('[') ||
-		host === 'localhost' || /\.(localhost|local|internal)$/.test(host)) {
+		host === 'localhost' || host === 'home.arpa' || /\.(localhost|local|internal|home\.arpa)$/.test(host)) {
 		return { status: 403, message: '不允许代理 IP 字面量或本地目标名称' };
 	}
 	const configured = env?.ALLOWED_TARGET_ORIGINS;
@@ -3063,7 +3095,8 @@ function targetPolicyError(targetUrl, env) {
 			if (!/^https?:\/\/[^\s\\/@?#*\x00-\x1f\x7f]+\/?$/i.test(entry)) throw new Error();
 			const u = new URL(entry);
 			if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password ||
-				u.pathname !== '/' || u.search || u.hash) throw new Error();
+				u.pathname !== '/' || u.search || u.hash ||
+				!u.hostname || u.hostname.startsWith('.') || u.hostname.includes('..')) throw new Error();
 			u.hostname = normalizeHostname(u.hostname);
 			return u.origin;
 		});
@@ -3083,7 +3116,10 @@ function documentBase(targetUrl) {
 const STRIP_FORWARDED_HEADERS = new Set([
 	'x-real-ip', 'true-client-ip', 'forwarded',
 	'x-original-host', 'x-host', 'x-http-host-override', 'x-original-url', 'x-rewrite-url', 'x-client-ip', 'via',
-	'cdn-loop', 'x-real-port', 'x-scheme', 'x-forwarded-ssl', 'front-end-https', 'fastly-client-ip',
+	'cdn-loop', 'x-real-port', 'x-scheme', 'x-url-scheme', 'x-forwarded-ssl', 'front-end-https', 'fastly-client-ip',
+	'client-ip', 'x-cluster-client-ip', 'x-originating-ip', 'x-remote-ip', 'x-remote-addr',
+	'fly-client-ip', 'x-envoy-external-address',
+	'available-dictionary', 'dictionary-id',
 ]);
 
 /** 从 Referer 还原发起请求的目标页面 URL（ws/wss 归一为 http/https）；缺失或不是合法代理地址时返回 null */
@@ -3233,7 +3269,7 @@ export default {
 			return new Response(null, { status: 204, headers });
 		}
 
-		const isWebSocket = (request.headers.get('Upgrade') || '').toLowerCase() === 'websocket';
+		const isWebSocket = (request.headers.get('Upgrade') || '').split(',').some(v => v.trim().toLowerCase() === 'websocket');
 
 		// ---- robots.txt：允许收录首页，禁止抓取代理目标路径以防耗尽 Worker 配额 ----
 		if (!isWebSocket && url.pathname === '/robots.txt') {
@@ -3355,7 +3391,11 @@ Disallow: /
 			// 浏览器只看到同一个代理源，不会像真正的跨源重定向那样删除 Authorization。
 			const nextLocation = resp.headers.get('Location');
 			if (nextLocation && fwdHeaders.has('Authorization')) {
-				const next = parseTarget(new URL(nextLocation, workerOrigin));
+				let next = null;
+				try {
+					const nextUrl = new URL(nextLocation, workerOrigin);
+					if (nextUrl.origin === workerOrigin) next = parseTarget(nextUrl);
+				} catch {}
 				if (!next || next.protocol !== targetUrl.protocol || next.origin !== targetUrl.origin) {
 					return new Response('不能跨目标来源重定向带 Authorization 的请求', {
 						status: 502, headers: { 'Cache-Control': 'no-store' },
@@ -3940,7 +3980,7 @@ ${browserPathHelpers()}
         var hIdx=dec.indexOf('#');
         if(hIdx>=0)dec=dec.slice(0,hIdx);
         var sh=sPart.indexOf('#'),sq=sh<0?sPart:sPart.slice(0,sh),sf=sh<0?'':sPart.slice(sh);
-        if(sq&&dec.indexOf('?')>=0)sq=sq.length>1?'&'+sq.slice(1):'';
+        if(sq&&dec.indexOf('?')>=0)sq=sq.length>1?(/[?&]$/.test(dec)?'':'&')+sq.slice(1):'';
         v=dec+sq+sf;
       }
     }
@@ -3960,7 +4000,7 @@ ${browserPathHelpers()}
       input.focus();
       return;
     }
-    if(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(h)||h.charAt(0)==='['||h==='localhost'||/\\.(localhost|local|internal)$/.test(h)){
+    if(/^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(h)||h.charAt(0)==='['||h==='localhost'||h==='home.arpa'||/\\.(localhost|local|internal|home\\.arpa)$/.test(h)){
       window.__peSnack('不允许代理 IP 字面量或本地目标名称');
       input.focus();
       return;

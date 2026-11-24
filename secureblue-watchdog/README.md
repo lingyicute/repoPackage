@@ -208,9 +208,11 @@ python3 sbwatch.py check --image secureblue/silverblue-main-hardened --to latest
 # 使用 state.json 中的上次镜像作基线时，check 保留「上次 → 当前」的实际方向；
 # tag 回滚会报告降级，不会按时间反转成安全升级。显式 --a 仍遵守 --keep-order。
 # 查询失败、预算耗尽或分页截断时，JSON / state 的 analysis_incomplete 为 true；
-# 下次即使摘要未变也会补查，并保留上次完整分析的基线。成功查询的缓存可让小预算逐次完成审计。
+# 下次即使摘要未变也会补查，并保留上次完整分析的基线。成功查询的缓存可让小预算逐次完成审计；
+# 连续且可验证编号的 Bodhi 分页也可续查（缓存有效期从第一页计，发现分页漂移时重查）。
 # 显式 --no-bodhi 与 --backlog-candidates 限定的范围不会导致无限重试。
-# 旧版未记录完成标记的检查点会重查一次，避免继续信任可能未查完整的历史结论。
+# 在同一摘要上更改 --exact、--no-bodhi、--no-audit 或有效的 --backlog-candidates，
+# 会使用已记录的对比基线重查；旧检查点有对比基线但无覆盖信息时也会重查一次。
 
 # 6. 看这个镜像还落后多少安全更新
 python3 sbwatch.py backlog latest --max-bodhi 80
@@ -409,7 +411,8 @@ CI 中由 `test` 作业运行；`watch` 作业**不**依赖 `test`（两者并�
 
 - cache `~/.cache/sbwatch` (pkglist + Bodhi + state.json)，按 image+arch 分命名空间，
   其他 `--image` 拼写彼此隔离；prune 仅清理当前 Git 引用下本命名空间的缓存并保留最新创建的 7 份（防止 `state.json` 被 LRU 挤掉）；
-  结论为 `no-update` 的运行不再重复保存缓存（该路径不往缓存目录写任何东西）
+  结论为 `no-update` 的运行不再重复保存缓存（该路径不往缓存目录写任何东西）。手动指定
+  `from_tag` 只复用包表与 Bodhi 缓存，不会覆盖定时监控的基线
 - `check` 分析完成后会删除超过 14 天的 pkglist 缓存文件（刚对比的两个镜像除外；
   `--prune-days N` 调整，`0` 关闭）：每个分析过的构建会留下约 11 MB 的 pkglist，
   而整个缓存目录每次运行都会被整体恢复、保存；Bodhi 应答过了 6 小时 TTL 就再也不会
@@ -427,7 +430,8 @@ CI 中由 `test` 作业运行；`watch` 作业**不**依赖 `test`（两者并�
   （没有可比基线、registry 探测失败等）。过去它和"这周很安静"长得一模一样，
   监控悄悄失效也发现不了。报告仍会照常上传为 artifact
 - cosign 公钥 `cosign.pub` **入库**并校验 sha256（`COSIGN_PUB_SHA256`），
-  运行时不再从网络取钥；上游换钥会在这里失败，而不是静默改变"已验证"的含义
+  运行时不再从网络取钥；上游换钥会在这里失败，而不是静默改变"已验证"的含义。
+  run summary 的附加历史同样逐条要求签名；不可验证或超时时只提示历史不可用，不影响主报告
 - 若配置了 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` secrets，推送到 Telegram
   （Telegram 单条消息上限 4096 字符，超出部分会被截断并注明，完整报告见 run summary）
   只设置其中一个或发送失败时不会保存检查点；下次会重试，已送达的 issue 评论可能重复。
@@ -474,6 +478,9 @@ still available and maps to the saved platform; otherwise the resolved platform
 manifest is the top-level reference.
 Both `diff` and `check` exports include added and removed packages, old/new
 architectures, available advisory evidence, and any RPM inventory issues.
+For machine use, `changed[].old_nevra`, `changed[].new_nevra`, `added_nevra` and
+`removed_nevra` give the five identity fields, including an unchanged nonzero
+`epoch`. The `old`/`new` display strings and the name-only lists are retained.
 
 Notification levels describe eligibility, not observed delivery. The upstream
 script checks a per-user critical stamp before either update backend and also

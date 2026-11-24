@@ -1589,5 +1589,70 @@ test('弹窗遮罩：按下与点击都落在遮罩上才关闭，pointerdown �
     h.pointerdown({ target: dlg }); h.click({ target: child }); h.click({ target: dlg }); assert.equal(closed, 1, f);
     h.touchmove({ target: dlg, preventDefault: () => prevented++ }); h.touchmove({ target: child, preventDefault: () => prevented++ });
     assert.equal(prevented, 1, f); // 只拦截遮罩上的拖动，弹窗内部照常滚动
+    h.pointerdown({ target: dlg }); h.pointercancel({}); h.click({ target: dlg });
+    assert.equal(closed, 1, f); // pointercancel 清除按下状态
+    const shortModal = { scrollHeight: 200, clientHeight: 200 }, tallModal = { scrollHeight: 500, clientHeight: 200 };
+    const mkTarget = (box, ctrl = false) => ({ closest: s => (s === '.modal' ? box : ctrl ? {} : null) });
+    let blocked = 0;
+    h.touchmove({ target: mkTarget(shortModal), preventDefault: () => blocked++ });
+    h.touchmove({ target: mkTarget(shortModal, true), preventDefault: () => blocked++ });
+    h.touchmove({ target: mkTarget(tallModal), preventDefault: () => blocked++ });
+    assert.equal(blocked, 1, f); // 仅未溢出且非输入控件时拦截背景滚动
+  }
+});
+
+test('文本页并排视图表头随表格输出，折叠条文字使用粘性容器', () => {
+  const s = script('text-compare.html'), d = text.computeDiff('a\nb\nc\nd\ne\nf\ng\nh\ni', 'a\nb\nc\nd\ne\nf\ng\nh\nX', { rules: [] });
+  d.input = { leftName: '<old>.txt', rightName: 'new.txt' };
+  const ctx = { d, opts: { type: 'split', level: 'smart', syntax: '', hideUnchanged: true }, inlineDiff: text.inlineDiff };
+  vm.createContext(ctx);
+  vm.runInContext(`const EQ=0,DEL=1,INS=2,t=k=>k,expanded=new Set();${between(s, 'const SYN=', '/* ===================== state')}${between(s, 'const CTX=', '/* 展开折叠块')}this.sp=diffView(d,'split',false);this.un=diffView(d,'unified',false);`, ctx);
+  assert.match(ctx.sp.html, /<thead><tr><th colspan="2"[^>]*>.*&lt;old&gt;\.txt.*<th colspan="2"[^>]*>.*new\.txt/);
+  assert.doesNotMatch(ctx.un.html, /<thead>/);
+  assert.match(ctx.sp.html, /<tr class="collapsed"[^>]*><td colspan="4"><span class="fold-lbl">/);
+});
+
+test('image.grayPatch: 采样读取像素后立即归零释放临时画布', () => {
+  const patchCode = between(script('image-compare.html'), 'function grayPatch', 'function phaseCorr');
+  const canvases = [];
+  const mk = (w, h) => {
+    const c = {
+      width: w, height: h,
+      getContext: () => ({
+        fillRect() {}, save() {}, restore() {}, translate() {}, scale() {}, rotate() {}, drawImage() {},
+        getImageData: () => ({ data: new Uint8ClampedArray(w * h * 4) }),
+      }),
+    };
+    canvases.push(c);
+    return c;
+  };
+  const ctx = { mk }; vm.createContext(ctx);
+  vm.runInContext(patchCode + ';this.grayPatch=grayPatch;', ctx);
+  ctx.grayPatch({ width: 64, height: 64 }, 32, 1, 0, false, false, 64, 64);
+  assert.equal(canvases.length, 1);
+  assert.equal(canvases[0].width, 0);
+  assert.equal(canvases[0].height, 0);
+});
+
+test('scrollToEl: 在结果容器内定位差异时不拖动外层页面，表格页同时横向滚到改动单元格', () => {
+  for (const [f, end] of [['text-compare.html', '\nfunction goChange'], ['excel-compare.html', "\n$('prevBtn')"]]) {
+    const code = between(script(f), 'const scrollBehavior=', end);
+    const ctx = { matchMedia: () => ({ matches: false }), window: { innerHeight: 800 } };
+    vm.createContext(ctx);
+    vm.runInContext(code + ';this.scrollToEl=scrollToEl;', ctx);
+    let outer = 0, got = null;
+    const box = {
+      scrollTop: 0, scrollLeft: 0, clientHeight: 400, clientWidth: 360,
+      getBoundingClientRect: () => ({ top: 100, bottom: 500, left: 0, right: 360 }),
+      querySelector: s => s === 'thead' ? { getBoundingClientRect: () => ({ height: 36 }) } : s === 'th.num.b' ? { getBoundingClientRect: () => ({ right: 80 }) } : null,
+      scrollTo: o => { got = o; },
+      scrollIntoView: () => { outer++; },
+    };
+    const cell = { getBoundingClientRect: () => ({ left: 620, right: 700 }) };
+    const row = { tagName: 'TR', getBoundingClientRect: () => ({ top: 900, height: 20 }), querySelector: () => cell };
+    ctx.scrollToEl(box, row);
+    assert.equal(outer, 0, f);
+    assert.equal(got.top, 592, f);
+    if (f.startsWith('excel')) assert.equal(got.left, 528);
   }
 });

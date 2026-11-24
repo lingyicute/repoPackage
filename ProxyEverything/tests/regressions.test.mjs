@@ -15,6 +15,10 @@ const {
 	rewriteRefreshContent,
 	rewriteStyleAttr,
 	rewriteSvg, rewriteXmlText,
+	decodeProxiedTarget,
+	decodeProxyPath,
+	resolveTargetBaseUrl,
+	targetPolicyError,
 	rewriteUrl,
 	sniffHtmlCharset,
 	sniffTextCharset,
@@ -24,7 +28,7 @@ const {
 export {
 	getRootHtml, getShimScript, MD3_JS, quoteCssString, rewriteCss,
 	rewriteJsModuleSpecifiers, rewriteRefreshContent, rewriteStyleAttr,
-	rewriteSvg, rewriteXmlText, rewriteUrl, sniffHtmlCharset, sniffTextCharset, stringifyInlineJson
+	decodeProxiedTarget, decodeProxyPath, resolveTargetBaseUrl, targetPolicyError, rewriteSvg, rewriteXmlText, rewriteUrl, sniffHtmlCharset, sniffTextCharset, stringifyInlineJson
 };`).toString('base64')
 );
 
@@ -634,11 +638,13 @@ test('dot segments in already-proxied URLs stay clamped within their target orig
 test('HTML meta charset prescan follows WHATWG pragma and attribute precedence rules', async () => {
 	for (const [html, expected] of [
 		['<meta http-equiv="Content-Type" content="charset=gbk">', 'gbk'],
-		['<meta charset="" http-equiv="content-type" content="text/html; charset=gbk">', 'gbk'],
-		['<meta charset="invalid-label" http-equiv="content-type" content="text/html; charset=gbk">', 'gbk'],
+		['<meta charset="" http-equiv="content-type" content="text/html; charset=gbk"><meta charset="big5">', 'big5'],
+		['<meta charset="invalid-label" http-equiv="content-type" content="text/html; charset=gbk"><meta charset="euc-jp">', 'euc-jp'],
+		['<meta http-equiv="content-type" content="text/html; charset=gbk" charset="invalid-label"><meta charset="shift_jis">', 'shift_jis'],
+		['<meta http-equiv="content-type" content="text/html; charset=gbk" charset="shift_jis">', 'shift_jis'],
 		['<meta content="text/html; charset=gbk" http-equiv="Content-Type">', 'gbk'],
 		['<meta content="text/html; charset=gbk"><meta charset="windows-1252">', 'windows-1252'],
-		['<meta content="text/html; charset=gbk" charset="windows-1252"><meta charset="utf-8">', 'utf-8'],
+		['<meta content="text/html; charset=gbk" charset="windows-1252"><meta charset="utf-8">', 'windows-1252'],
 	]) {
 		const sniffed = await sniffHtmlCharset(new Response(html).body);
 		assert.equal(sniffed.charset, expected, html);
@@ -672,4 +678,57 @@ test('UTF-16 XML declarations in ASCII-compatible bytes fall back to UTF-8', asy
 	// Real UTF-16 documents are still recognized by their byte signature.
 	const utf16 = Buffer.from('<?xml version="1.0" encoding="UTF-16"?><svg/>', 'utf16le');
 	assert.equal(sniffTextCharset(utf16, 'svg', null), 'utf-16le');
+});
+
+test('HTML sniffing detects unbommed UTF-16 XML declarations across chunks', async () => {
+	const le = Buffer.from('<?xml version="1.0"?><html></html>', 'utf16le');
+	const be = Buffer.from(le).swap16();
+	for (const [bytes, expected] of [[le, 'utf-16le'], [be, 'utf-16be']]) {
+		let i = 0;
+		const stream = new ReadableStream({
+			pull(c) { i < bytes.length ? c.enqueue(bytes.subarray(i, ++i)) : c.close(); },
+		});
+		const sniffed = await sniffHtmlCharset(stream);
+		assert.equal(sniffed.charset, expected);
+		await sniffed.body.cancel();
+	}
+	const other = await sniffHtmlCharset(new Response(Buffer.from([0x3c, 0, 0x3f, 0, 0x20, 0])).body);
+	assert.equal(other.charset, null);
+	await other.body.cancel();
+});
+
+test('decoded proxy origins reject embedded userinfo', () => {
+	const tilde = '/~' + encodeURIComponent('https://user@example.com') + '/page';
+	const legacy = '/' + encodeURIComponent('https://user:pass@example.com/page');
+	assert.equal(decodeProxyPath(tilde), '');
+	assert.equal(decodeProxiedTarget(tilde), null);
+	assert.equal(decodeProxiedTarget(legacy), null);
+	assert.equal(resolveTargetBaseUrl(tilde, base, origin, true), 'https://example.com' + tilde);
+});
+
+test('ALLOWED_TARGET_ORIGINS rejects leading or consecutive dot hostnames', () => {
+	const target = new URL('https://example.com/');
+	for (const bad of ['https://example.com..', 'https://.example.com', 'https://a..b.example']) {
+		assert.equal(targetPolicyError(target, { ALLOWED_TARGET_ORIGINS: bad })?.status, 503, bad);
+	}
+	assert.equal(targetPolicyError(target, { ALLOWED_TARGET_ORIGINS: 'https://example.com.' }), null);
+});
+
+test('policy blocks home.arpa special-use local hostnames', () => {
+	const env = { ALLOWED_TARGET_ORIGINS: 'https://home.arpa,https://router.home.arpa' };
+	for (const url of ['https://home.arpa/', 'https://router.home.arpa/', 'https://router.home.arpa./']) {
+		assert.equal(targetPolicyError(new URL(url), env)?.status, 403, url);
+	}
+	assert.ok(getRootHtml().includes('home.arpa'));
+});
+
+test('refresh directives keep original text when the URL does not change', () => {
+	for (const value of [
+		'0; url="mailto:a@example.com"',
+		"5; url='#sec'",
+		'0; url="javascript:void(0)"',
+		`0; url="${proxy('https://example.com/next')}"`,
+	]) {
+		assert.equal(rewriteRefreshContent(value, base, origin), value);
+	}
 });
