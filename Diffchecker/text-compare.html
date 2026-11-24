@@ -8,12 +8,12 @@
 <title>Compare text — Diffchecker</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2320a464'/%3E%3Cpath d='M9 9h6v14H9zM17 9h6v14h-6z' fill='%23fff' opacity='.9'/%3E%3C/svg%3E" />
 <style>
-:root,[data-theme="light"]{--bg:#fff;--bg2:#f6f8f7;--bg3:#eef1f0;--fg:#202329;--fg2:#626971;--fg3:#9aa1a8;--border:#e6e8eb;--border2:#d5d9dd;--accent:#20a464;--accent2:#15834a;--accent-bg:#ecf8f1;--danger:#d13415;
+:root,[data-theme="light"]{color-scheme:light;--bg:#fff;--bg2:#f6f8f7;--bg3:#eef1f0;--fg:#202329;--fg2:#626971;--fg3:#9aa1a8;--border:#e6e8eb;--border2:#d5d9dd;--accent:#20a464;--accent2:#15834a;--accent-bg:#ecf8f1;--danger:#d13415;
 --ins-block:rgba(0,180,144,.12);--ins-hl:rgba(0,180,144,.34);--ins-fg:#0d5c4c;--ins-num:rgba(0,133,115,.6);
 --del-block:rgba(255,46,0,.09);--del-hl:rgba(255,46,0,.3);--del-fg:#6b1a0a;--del-num:rgba(209,52,21,.6);
 --empty-block:rgba(100,110,120,.08);--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;--shadow:0 6px 28px rgba(0,0,0,.08);
 --syn-k:#8250df;--syn-s:#0a3069;--syn-n:#0550ae;--syn-c:#6e7781;--syn-t:#116329;--syn-a:#953800}
-@media not print{[data-theme="dark"]{--bg:#17191c;--bg2:#1f2226;--bg3:#262a2f;--fg:#ebedef;--fg2:#aeb6be;--fg3:#7d858d;--border:#353a3f;--border2:#454a50;--accent:#5bd494;--accent2:#5bd494;--accent-bg:#1c2b23;
+@media not print{[data-theme="dark"]{color-scheme:dark;--bg:#17191c;--bg2:#1f2226;--bg3:#262a2f;--fg:#ebedef;--fg2:#aeb6be;--fg3:#7d858d;--border:#353a3f;--border2:#454a50;--accent:#5bd494;--accent2:#5bd494;--accent-bg:#1c2b23;
 --ins-block:rgba(0,180,144,.16);--ins-hl:rgba(0,200,160,.4);--ins-fg:#c8f5e6;--del-block:rgba(255,80,40,.14);--del-hl:rgba(255,90,50,.42);--del-fg:#ffd7cc;--empty-block:rgba(255,255,255,.04);--shadow:0 6px 28px rgba(0,0,0,.4);--ins-num:rgba(120,225,195,.75);--del-num:rgba(255,150,125,.8);
 --syn-k:#d2a8ff;--syn-s:#a5d6ff;--syn-n:#79c0ff;--syn-c:#8b949e;--syn-t:#7ee787;--syn-a:#ffa657}}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%;text-size-adjust:100%}html,body{margin:0;min-height:100%}
@@ -75,9 +75,9 @@ table.diff td{vertical-align:top;padding:0 10px 0 6px;white-space:pre-wrap;overf
 table.diff.nowrap{table-layout:auto;width:max-content;min-width:100%}
 table.diff.nowrap td.code{white-space:pre;overflow-wrap:normal;word-break:normal}
 table.diff.nowrap tr.split td.code{width:auto}
-table.diff td.num{width:48px;min-width:48px;text-align:right;color:var(--fg3);user-select:none;padding-right:8px;border-right:1px solid var(--border);background:var(--bg2)}
+table.diff td.num{width:48px;min-width:48px;text-align:right;color:var(--fg3);-webkit-user-select:none;user-select:none;padding-right:8px;border-right:1px solid var(--border);background:var(--bg2)}
 table.diff td.code{position:relative}
-table.diff td.sign{width:18px;min-width:18px;padding:0 0 0 6px;color:var(--fg3);user-select:none}
+table.diff td.sign{width:18px;min-width:18px;padding:0 0 0 6px;color:var(--fg3);-webkit-user-select:none;user-select:none}
 table.diff tr.split td.code{width:50%}
 table.diff col.cn{width:48px}table.diff col.cs{width:18px}
 table.diff td.code.del{background:var(--del-block)}table.diff td.code.ins{background:var(--ins-block)}
@@ -99,7 +99,7 @@ tr.focus td.code{box-shadow:inset 3px 0 0 var(--accent)}
 .identical{display:flex;flex-direction:column;align-items:center;gap:6px;padding:54px 20px;text-align:center}
 .identical .ic{width:44px;height:44px;border-radius:50%;background:var(--accent-bg);color:var(--accent2);display:grid;place-items:center;font-size:22px}
 .identical h3{margin:6px 0 0;font-size:18px}.identical p{margin:0;color:var(--fg2)}
-.panel-bg{position:fixed;inset:0;background:rgba(0,0,0,.3);opacity:0;visibility:hidden;transition:opacity .2s,visibility 0s linear .2s;z-index:49}
+.panel-bg{position:fixed;inset:0;touch-action:none;background:rgba(0,0,0,.3);opacity:0;visibility:hidden;transition:opacity .2s,visibility 0s linear .2s;z-index:49}
 .panel-bg.open{opacity:1;visibility:visible;transition-delay:0s}
 .panel{position:fixed;top:0;right:0;height:100%;width:min(320px,100vw);background:var(--bg);border-left:1px solid var(--border);box-shadow:var(--shadow);transform:translateX(100%);visibility:hidden;transition:transform .2s,visibility 0s linear .2s;z-index:50;display:flex;flex-direction:column}
 .panel.open{transform:none;visibility:visible;transition-delay:0s}
@@ -136,6 +136,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 @media (max-width:480px){.offline-navigation{gap:4px 10px;padding:0 max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left))}.offline-tools{gap:10px}.offline-actions{gap:6px}.offline-language{padding:5px 8px;font-size:12px}.choices{grid-template-columns:1fr}}
 @media (max-width:640px){.hero{margin:2px 0 12px}.hero h1{font-size:24px}.input-card textarea{min-height:160px;font-size:16px}.row select,.row input[type=text],.rule input{font-size:16px}.toolbar{position:static}.stats{margin-left:0;width:100%}.diff-head{font-size:12px}.diff-head>div{padding:6px 8px}.diff-scroll{max-height:70vh;max-height:70dvh}table.diff{font-size:12px}table.diff td{padding:0 6px 0 4px}table.diff td.num{width:36px;min-width:36px;padding:0 5px 0 3px;font-size:11px}table.diff col.cn{width:36px}table.diff td.sign,table.diff col.cs{width:14px;min-width:14px;padding-left:3px}table.diff.is-split:not(.nowrap){min-width:580px}.modal{padding:16px}}
 @media (max-height:520px){.toolbar{position:static}}
+@media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.switch::before{content:"";position:absolute;inset:-8px -10px}.input-card textarea,.row select,.row input[type=text],.rule input{font-size:16px}tr.collapsed td{padding:9px 4px}}
 @media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar,.panel,.panel-bg,footer,.modal-bg,.offline-notice,.no-print,.hero{display:none!important}main{padding:0;max-width:none}.diff-scroll{max-height:none;overflow:visible}.diff-wrap{border:0}body{font-size:11px;display:block;height:auto;background:#fff}.printing-text-result #result{display:none!important}.printing-text-result #printResult{display:block}#printResult .preset-redline mark.d{color:#d13415}#printResult .preset-redline mark.i{color:#0f7a4a}table.diff{font-size:10.5px}table.diff tr{break-inside:avoid}table.diff.is-split,table.diff.nowrap{table-layout:fixed;width:100%;min-width:0}table.diff.nowrap td.code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}table.diff.nowrap tr.split td.code{width:50%}}
 </style>
 </head>
@@ -150,11 +151,11 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
   <section class="inputs">
     <div class="input-card" id="cardA">
       <div class="input-head"><span class="title" data-i18n="original">Original text</span><span id="metaA"></span><button class="btn sm" data-open="A" data-i18n="openFile">Open file</button><button class="btn sm ghost" data-copy="A" data-i18n="copy">Copy</button><button class="btn sm ghost" data-clear="A" data-i18n="clear">Clear</button></div>
-      <textarea id="txtA" spellcheck="false" data-i18n-ph="phA" placeholder="Paste or type the original text here…"></textarea>
+      <textarea id="txtA" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" data-i18n-ph="phA" placeholder="Paste or type the original text here…"></textarea>
     </div>
     <div class="input-card" id="cardB">
       <div class="input-head"><span class="title" data-i18n="changed">Changed text</span><span id="metaB"></span><button class="btn sm" data-open="B" data-i18n="openFile">Open file</button><button class="btn sm ghost" data-copy="B" data-i18n="copy">Copy</button><button class="btn sm ghost" data-clear="B" data-i18n="clear">Clear</button></div>
-      <textarea id="txtB" spellcheck="false" data-i18n-ph="phB" placeholder="Paste or type the changed text here…"></textarea>
+      <textarea id="txtB" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" data-i18n-ph="phB" placeholder="Paste or type the changed text here…"></textarea>
     </div>
   </section>
   <input type="file" id="fileInput" class="file-input" tabindex="-1" aria-hidden="true" />
@@ -551,10 +552,10 @@ $('typeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.ty
 $('levelSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.level=b.dataset.level;saveOpts();syncUI();render()};
 /* tools panel */
 function setPanel(open){const panel=$('panel'),bg=$('panelBg'),el=$(open?'panelClose':'toolsBtn');panel.inert=!open;panel.classList.toggle('open',open);if(bg)bg.classList.toggle('open',open);$('toolsBtn').setAttribute('aria-expanded',String(open));try{el.focus({preventScroll:true})}catch(e){el.focus()}}
-$('toolsBtn').onclick=()=>setPanel(!$('panel').classList.contains('open'));$('panelClose').onclick=()=>setPanel(false);$('panelBg').addEventListener('pointerdown',()=>setPanel(false));
+$('toolsBtn').onclick=()=>setPanel(!$('panel').classList.contains('open'));$('panelClose').onclick=()=>setPanel(false);$('panelBg').addEventListener('click',()=>setPanel(false));$('panel').ontouchmove=e=>{if(!e.target.closest('.panel-body'))e.preventDefault()};
 document.querySelectorAll('.switch[data-opt]').forEach(sw=>sw.onclick=()=>{opts[sw.dataset.opt]=!opts[sw.dataset.opt];saveOpts();syncUI();const k=sw.dataset.opt;if(k==='hideUnchanged'){expanded=new Set();if(lastDiff)render()}else if(k==='noWrap'){if(lastDiff)render()}else if(k==='realtime'){if(opts.realtime||rt)run(true)}else if(lastDiff||opts.realtime)run(true)});
 document.querySelectorAll('select[data-sel]').forEach(s=>s.onchange=()=>{opts[s.dataset.sel]=s.value;saveOpts();if(lastDiff)render()});
-function ruleRow(v){const div=document.createElement('div');div.className='rule';div.innerHTML=`<input type="text" value="${esc(v||'')}" placeholder="${esc(t('rulePh'))}" aria-label="${esc(t('rulePh'))}"><button class="btn sm ghost" title="${esc(t('remove'))}" aria-label="${esc(t('remove'))}">✕</button>`;div.querySelector('button').onclick=()=>{div.remove()};return div}
+function ruleRow(v){const div=document.createElement('div');div.className='rule';div.innerHTML=`<input type="text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" value="${esc(v||'')}" placeholder="${esc(t('rulePh'))}" aria-label="${esc(t('rulePh'))}"><button class="btn sm ghost" title="${esc(t('remove'))}" aria-label="${esc(t('remove'))}">✕</button>`;div.querySelector('button').onclick=()=>{div.remove()};return div}
 $('addRule').onclick=()=>$('rules').appendChild(ruleRow(''));
 $('applyRules').onclick=()=>{opts.rules=[...$('rules').querySelectorAll('input')].map(i=>i.value).filter(Boolean);saveOpts();if(lastDiff||opts.realtime)run(true);setPanel(false)};
 function syncUI(withRules){document.querySelectorAll('.switch[data-opt]').forEach(sw=>sw.setAttribute('aria-checked',String(!!opts[sw.dataset.opt])));document.querySelectorAll('select[data-sel]').forEach(s=>s.value=opts[s.dataset.sel]||'');
@@ -717,7 +718,9 @@ $('exampleBtn').onclick=()=>{cancelLoads();txtA.value=EX_A;txtB.value=EX_B;fileN
 /* Esc 关闭侧栏与弹窗 */
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('exportModal').open&&$('panel').classList.contains('open')){e.preventDefault();setPanel(false)}});
 /* 点击导出弹窗的遮罩（而不是弹窗本身）即可关闭，与 Esc 一致 */
-$('exportModal').addEventListener('pointerdown',e=>{if(e.target===e.currentTarget)e.currentTarget.close()});
+/* 按下时就关闭会让触屏随后合成的 click 落到遮罩下面的页面上：按下与点击都落在遮罩上才关闭；在遮罩上拖动也不去滚动背后的页面 */
+function closeOnBackdrop(dlg,close){let down=false;dlg.addEventListener('pointerdown',e=>{down=e.target===dlg});dlg.addEventListener('click',e=>{const hit=down&&e.target===dlg;down=false;if(hit)close()});dlg.addEventListener('touchmove',e=>{if(e.target===dlg)e.preventDefault()},{passive:false})}
+closeOnBackdrop($('exportModal'),()=>$('exportModal').close());
 applyTheme();syncUI(true);applyLang();updateMeta();
 </script>
 </body>

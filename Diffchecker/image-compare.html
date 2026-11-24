@@ -8,8 +8,8 @@
 <title>Compare images — Diffchecker</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2320a464'/%3E%3Cpath d='M9 9h6v14H9zM17 9h6v14h-6z' fill='%23fff' opacity='.9'/%3E%3C/svg%3E" />
 <style>
-:root{--bg:#fff;--bg2:#f6f8f7;--bg3:#eef1f0;--fg:#202329;--fg2:#626971;--fg3:#9aa1a8;--border:#e6e8eb;--border2:#d5d9dd;--accent:#20a464;--accent2:#15834a;--accent-bg:#ecf8f1;--danger:#d13415;--shadow:0 6px 28px rgba(0,0,0,.08);--checker:#e9ebee;--mono:ui-monospace,Menlo,Consolas,monospace}
-@media not print{[data-theme="dark"]{--bg:#17191c;--bg2:#1f2226;--bg3:#262a2f;--fg:#ebedef;--fg2:#aeb6be;--fg3:#7d858d;--border:#353a3f;--border2:#454a50;--accent:#5bd494;--accent2:#5bd494;--accent-bg:#1c2b23;--danger:#ff9680;--shadow:0 6px 28px rgba(0,0,0,.4);--checker:#2a2e33}}
+:root{color-scheme:light;--bg:#fff;--bg2:#f6f8f7;--bg3:#eef1f0;--fg:#202329;--fg2:#626971;--fg3:#9aa1a8;--border:#e6e8eb;--border2:#d5d9dd;--accent:#20a464;--accent2:#15834a;--accent-bg:#ecf8f1;--danger:#d13415;--shadow:0 6px 28px rgba(0,0,0,.08);--checker:#e9ebee;--mono:ui-monospace,Menlo,Consolas,monospace}
+@media not print{[data-theme="dark"]{color-scheme:dark;--bg:#17191c;--bg2:#1f2226;--bg3:#262a2f;--fg:#ebedef;--fg2:#aeb6be;--fg3:#7d858d;--border:#353a3f;--border2:#454a50;--accent:#5bd494;--accent2:#5bd494;--accent-bg:#1c2b23;--danger:#ff9680;--shadow:0 6px 28px rgba(0,0,0,.4);--checker:#2a2e33}}
 *{box-sizing:border-box}html{-webkit-text-size-adjust:100%;text-size-adjust:100%}html,body{margin:0;min-height:100%}
 body{background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;min-height:100vh;min-height:100dvh}
 html[lang="zh"] body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif}
@@ -51,12 +51,13 @@ main{flex:1;width:100%;max-width:1600px;margin:0 auto;padding:22px 28px 50px}
 .spacer{flex:1}
 .work{display:grid;grid-template-columns:1fr 320px;gap:14px;margin-top:14px;min-height:520px}
 .work.collapsed{grid-template-columns:1fr 44px}
-.viewport{position:relative;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--checker);background-image:linear-gradient(45deg,rgba(128,128,128,.12) 25%,transparent 25%,transparent 75%,rgba(128,128,128,.12) 75%),linear-gradient(45deg,rgba(128,128,128,.12) 25%,transparent 25%,transparent 75%,rgba(128,128,128,.12) 75%);background-size:20px 20px;background-position:0 0,10px 10px;height:calc(100vh - 230px);height:calc(100dvh - 230px);min-height:480px;cursor:grab;user-select:none;touch-action:none}
+.viewport{position:relative;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--checker);background-image:linear-gradient(45deg,rgba(128,128,128,.12) 25%,transparent 25%,transparent 75%,rgba(128,128,128,.12) 75%),linear-gradient(45deg,rgba(128,128,128,.12) 25%,transparent 25%,transparent 75%,rgba(128,128,128,.12) 75%);background-size:20px 20px;background-position:0 0,10px 10px;height:calc(100vh - 230px);height:calc(100dvh - 230px);min-height:480px;cursor:grab;-webkit-user-select:none;user-select:none;touch-action:none}
 .viewport.panning{cursor:grabbing}
 .stage{position:absolute;left:0;top:0;transform-origin:0 0;will-change:transform}
 .stage canvas{display:block;image-rendering:auto}
 .stage.pix canvas{image-rendering:pixelated}
 .split-pair{display:flex;gap:16px;padding-top:calc(24px * var(--iz,1))}
+.split-pair.v{flex-direction:column;gap:calc(30px * var(--iz,1))}
 .split-pair>div{position:relative}.split-pair .tag{position:absolute;bottom:100%;left:0;margin-bottom:calc(6px * var(--iz,1));transform:scale(var(--iz,1));transform-origin:0 100%;font-size:12px;line-height:1.2;font-weight:600;color:var(--fg2);white-space:nowrap}
 #overlay{position:absolute;left:0;top:0;pointer-events:none}
 .sl-handle{position:absolute;top:0;width:calc(44px * var(--iz,1));margin-left:calc(-22px * var(--iz,1));cursor:ew-resize;pointer-events:auto;touch-action:none}
@@ -108,9 +109,11 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 .hidden{display:none!important}
 .file-input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;overflow:hidden;clip-path:inset(50%);pointer-events:none}
 #report{display:none}
-@media (max-width:1000px){.inputs{grid-template-columns:1fr}.work,.work.collapsed{grid-template-columns:1fr;min-height:0}.viewport{height:min(62vh,460px);height:min(62dvh,460px);min-height:240px}.align-grid{grid-template-columns:1fr}.align-view{height:min(44vh,300px);height:min(44dvh,300px);min-height:200px}.sidebar{height:auto;min-height:0;max-height:420px}.work.collapsed .sb-head{border-bottom:0}.work.collapsed .sb-head span{display:inline}.offline-navigation{min-height:52px;gap:8px 14px;padding:0 max(14px,env(safe-area-inset-right)) 0 max(14px,env(safe-area-inset-left));flex-wrap:wrap}.offline-tools{gap:14px}.offline-tools a{min-height:44px}.offline-actions{gap:8px}.offline-brand>span{display:none}.offline-badge{display:none}main{padding:14px max(14px,env(safe-area-inset-right)) 32px max(14px,env(safe-area-inset-left))}}
+@media (max-width:1000px){.inputs{grid-template-columns:1fr}.work,.work.collapsed{grid-template-columns:1fr;min-height:0}.viewport{height:min(62vh,460px);height:min(62dvh,460px);min-height:240px}.align-grid{grid-template-columns:1fr}.align-view{height:min(44vh,300px);height:min(44dvh,300px);min-height:200px}.sidebar{height:auto;min-height:0;max-height:420px}.sb-body{overscroll-behavior:auto}.work.collapsed .sb-head{border-bottom:0}.work.collapsed .sb-head span{display:inline}.offline-navigation{min-height:52px;gap:8px 14px;padding:0 max(14px,env(safe-area-inset-right)) 0 max(14px,env(safe-area-inset-left));flex-wrap:wrap}.offline-tools{gap:14px}.offline-tools a{min-height:44px}.offline-actions{gap:8px}.offline-brand>span{display:none}.offline-badge{display:none}main{padding:14px max(14px,env(safe-area-inset-right)) 32px max(14px,env(safe-area-inset-left))}}
 @media (max-width:480px){.offline-navigation{gap:4px 10px;padding:0 max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left))}.offline-tools{gap:10px}.offline-actions{gap:6px}.offline-language{padding:5px 8px;font-size:12px}.choices{grid-template-columns:1fr}}
 @media (max-width:640px){.hero{margin:2px 0 12px}.hero h1{font-size:24px}.drop{min-height:150px}.drop img{max-height:160px}.toolbar .spacer,.modal-actions .spacer{display:none}#modeSeg{display:grid;grid-template-columns:repeat(3,1fr);width:100%}#modeSeg button{padding:8px 6px;border-left:0;border-right:1px solid var(--border2);border-bottom:1px solid var(--border2);text-align:center}#modeSeg button:nth-child(3n){border-right:0}#modeSeg button:nth-child(n+4){border-bottom:0}.hud{font-size:11px;padding:3px 6px}.modal{padding:16px}.ctl select,.row select,.align-ctl .row input[type=number]{font-size:16px}}
+@media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.switch::before{content:"";position:absolute;inset:-8px -10px}.ctl select,.row select,.align-ctl .row input[type=number]{font-size:16px}.chk{padding:7px 0}}
+@media (pointer:coarse) and (min-width:1001px){.work.collapsed .sb-head{padding:10px 2px}}
 @media print{html,body{background:#fff!important;color:#000!important}body.printing-image-report{display:block;height:auto}body.printing-image-report>*{display:none!important}body.printing-image-report>#report{display:block!important;font-family:system-ui,sans-serif;color:#000}#report h1{font-size:18px}#report h2{font-size:14px;margin:18px 0 6px;page-break-after:avoid}#report img{max-width:100%;max-height:85vh;display:block;border:1px solid #ccc}#report .srcs{display:grid;grid-template-columns:1fr 1fr;gap:12px}#report .crops{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-items:start}#report .crop{page-break-inside:avoid;border:1px solid #ddd;padding:6px;font-size:11px}#report .crop img{max-height:220px;margin:4px auto}#report table{border-collapse:collapse;font-size:11px}#report td,#report th{border:1px solid #ccc;padding:3px 6px}}
 </style>
 </head>
@@ -233,6 +236,7 @@ I18N.zh.invalidAlignment='请输入有效的对齐数值，缩放比例必须为
 Object.assign(I18N.en,{pauseFlicker:'Pause',resumeFlicker:'Resume',flickSpeed:'Flicker speed',shiftX:'Horizontal shift (pixels)',shiftY:'Vertical shift (pixels)'});
 Object.assign(I18N.zh,{pauseFlicker:'暂停',resumeFlicker:'继续',flickSpeed:'闪烁速度',shiftX:'水平平移（像素）',shiftY:'垂直平移（像素）'});
 let lang=lsGet('offline-lang'),theme=lsGet('offline-theme');if(theme!=='dark'&&theme!=='light')theme=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';if(lang!=='en'&&lang!=='zh')lang=/^zh/i.test(navigator.language||'')?'zh':'en';
+if(matchMedia('(pointer:coarse)').matches){I18N.en.browse='or tap to choose an image';I18N.zh.browse='或点击选择图片'}// 触屏设备没有 Ctrl+V
 const t=(k,v)=>{let s=(I18N[lang][k]??I18N.en[k]??k);if(v)for(const x in v)s=s.split('{'+x+'}').join(v[x]);return s};
 const $=id=>document.getElementById(id);
 const labeledControls={fadeRange:'opacity',flickRange:'flickSpeed',hlMode:'hlStyle',hlThr:'threshold',zoomRange:'zoom',alDx:'shiftX',alDy:'shiftY',alRot:'rotate',alScale:'scale',alOpacity:'opacity'};
@@ -263,6 +267,8 @@ function comparisonFrame(a,b,al){
 let baseA,baseB,dataA,dataB,diffMap,signMap,diffCount=0,holdSide=0,flickTimer=null,flickState=0,scanTimer=0,highlightTimer=0,lastVpW=0;
 const mk=(w,h)=>{const c=document.createElement('canvas');c.width=Math.max(1,Math.round(w));c.height=Math.max(1,Math.round(h));return c};
 const dropCanvas=c=>{if(c){c.width=0;c.height=0}};
+// 差异列表每项带两张裁剪画布：重绘或清空时立即归零，不等垃圾回收（移动端的画布总内存有上限）。
+const clearList=el=>{for(const c of el.querySelectorAll('canvas'))dropCanvas(c);el.replaceChildren()};
 
 /* ===================== loading ===================== */
 let openTarget='A',alignJob=0;
@@ -279,7 +285,7 @@ function clearComparison(){
   S.W=S.H=0;lastVpW=0;S.frame=null;S.regions=[];S.active=-1;diffCount=0;
   dropCanvas(baseA);dropCanvas(baseB);dropCanvas(overlay);dropCanvas(mainCanvas);
   baseA=baseB=dataA=dataB=diffMap=signMap=overlay=sliderEl=mainCanvas=null;
-  stage.replaceChildren();$('chgList').replaceChildren();$('result').classList.add('hidden');
+  stage.replaceChildren();clearList($('chgList'));$('result').classList.add('hidden');
   for(const id of ['alignA','alignB']){$(id).width=$(id).height=1}
 }
 const hasFiles=e=>!!e.dataTransfer&&Array.from(e.dataTransfer.types||[]).includes('Files');
@@ -294,17 +300,22 @@ document.addEventListener('paste',e=>{
 });
 async function loadFile(f,side){
   cancelLoad(side);const version=loadVersion[side],current=()=>version===loadVersion[side];
-  if(!f.type.startsWith('image/')&&!/\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|tiff?)$/i.test(f.name)){notice(t('decodeFail',{name:f.name}));return}
   pending[side]=true;notice(t('loading'));const url=URL.createObjectURL(f);
   try{const img=await new Promise((res,rej)=>{const i=new Image();i.onload=()=>res(i);i.onerror=rej;i.src=url});if(current())setImage(side,img,f.name)}
   catch(e){if(current()){console.error(e);notice(t(e.message==='imageTooLarge'?'imageTooLarge':'decodeFail',{name:f.name}))}}
   finally{if(current())pending[side]=false;URL.revokeObjectURL(url)}
 }
+// iOS Safari 等浏览器的单张画布面积上限更小（约 1677 万像素），超出时不报错，只得到一张画不上任何内容的画布：
+// 先画一个不透明像素再读回来探测，不可用就按面积减半逐级缩小，避免载入后缩略图与对比结果全是空白。
+function canvasUsable(c){try{const x=c.getContext('2d');x.fillStyle='#000';x.fillRect(0,0,1,1);const ok=x.getImageData(0,0,1,1).data[3]===255;x.clearRect(0,0,1,1);return ok}catch(e){return false}}
+function sourceCanvas(img,w,h){
+  for(let k=1;k>.2;k*=Math.SQRT1_2){const c=mk(w*k,h*k);if(canvasUsable(c)){c.getContext('2d').drawImage(img,0,0,c.width,c.height);return c}dropCanvas(c)}
+  throw new Error('imageTooLarge');
+}
 function setImage(side,img,name,quiet,keepOld){
   const w=img.naturalWidth||img.width||1024,h=img.naturalHeight||img.height||768;
   if(!fitsCanvas(w,h,MAX_SOURCE_PIXELS))throw new Error('imageTooLarge');
-  const c=img instanceof HTMLCanvasElement?img:mk(w,h);
-  if(c!==img)c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+  const c=img instanceof HTMLCanvasElement?img:sourceCanvas(img,w,h);
   const k=Math.min(1,600/Math.max(c.width,c.height)),th=mk(c.width*k,c.height*k);let thumb;
   try{th.getContext('2d').drawImage(c,0,0,th.width,th.height);thumb=th.toDataURL('image/png')}finally{dropCanvas(th)}
   if(thumb==='data:,'){if(c!==img)dropCanvas(c);throw new Error('Could not render the image thumbnail')}
@@ -433,7 +444,11 @@ function paintOverlay(cx,zoom){cx.clearRect(0,0,S.W,S.H);if(!S.regions.length)re
   if(S.darken){cx.fillStyle='rgba(0,0,0,.5)';cx.fillRect(0,0,S.W,S.H);cx.globalCompositeOperation='destination-out';cx.fillStyle='#000';for(const r of S.regions){cx.fillRect(r.x,r.y,r.w,r.h)}cx.globalCompositeOperation='source-over'}
   if(S.boxes){const lw=Math.max(1,2/zoom);S.regions.forEach((r,i)=>{cx.lineWidth=i===S.active?lw*2:lw;cx.strokeStyle=i===S.active?'#ffb400':'#ff3b30';cx.strokeRect(r.x-lw,r.y-lw,r.w+2*lw,r.h+2*lw);cx.font=`${Math.max(10,14/zoom)}px system-ui`;const lbl=String(i+1);const tw=cx.measureText(lbl).width+6/zoom;const th=Math.max(12,16/zoom),ly=Math.max(0,r.y-lw-th);cx.fillStyle=i===S.active?'#ffb400':'#ff3b30';cx.fillRect(r.x-lw,ly,tw,th);cx.fillStyle='#fff';cx.fillText(lbl,r.x-lw+3/zoom,ly+th*0.78)})}}
 function applyTransform(){stage.classList.toggle('pix',S.zoom>=3);stage.style.transform=`translate(${S.px}px,${S.py}px) scale(${S.zoom})`;stage.style.setProperty('--iz',String(1/S.zoom));const pad=Math.min(S.H/2,24/S.zoom),midY=(viewport.clientHeight/2-S.py)/S.zoom;stage.style.setProperty('--ky',Math.max(pad,Math.min(S.H-pad,midY))+'px');$('zoomRange').value=Math.round(S.zoom*100);$('zoomVal').textContent=Math.round(S.zoom*100)+'%';$('hud').textContent=`${S.W}×${S.H}${S.scale<1?t('hudScale',{s:S.scale.toFixed(2)}):''} · ${t('hudDiff',{p:(100*diffCount/(S.W*S.H)).toFixed(2)})}`}
-function fit(){const vw=viewport.clientWidth,vh=viewport.clientHeight;if(!vw||!vh||!S.W||!S.H)return;lastVpW=vw;const sp=S.mode==='split',sw=sp?S.W*2+16:S.W,tag=sp?24:0;S.zoom=Math.min(1,Math.max(.05,Math.min(Math.max(1,vw-24)/sw,Math.max(1,vh-24-tag)/S.H)));S.px=(vw-sw*S.zoom)/2;S.py=(vh-(S.H*S.zoom+tag))/2;applyTransform();drawOverlay()}
+// 并排模式：竖屏窄视口里左右排布时每张图只剩一半宽度，上下叠放能明显显示得更大时改为上下排布（两个标签共占 54px）。
+function fit(){const vw=viewport.clientWidth,vh=viewport.clientHeight;if(!vw||!vh||!S.W||!S.H)return;lastVpW=vw;const aw=Math.max(1,vw-24),ah=Math.max(1,vh-24);let sw=S.W,sh=S.H,tag=0;
+  if(S.mode==='split'){const zh=Math.min(aw/(S.W*2+16),Math.max(1,ah-24)/S.H),zv=Math.min(aw/S.W,Math.max(1,ah-54)/(S.H*2)),v=zv>zh*1.15;
+    stage.querySelector('.split-pair')?.classList.toggle('v',v);if(v){sh=S.H*2;tag=54}else{sw=S.W*2+16;tag=24}}
+  S.zoom=Math.min(1,Math.max(.05,Math.min(aw/sw,Math.max(1,ah-tag)/sh)));S.px=(vw-sw*S.zoom)/2;S.py=(vh-(sh*S.zoom+tag))/2;applyTransform();drawOverlay()}
 $('fitBtn').onclick=fit;
 $('zoomRange').oninput=e=>{setZoom(e.target.value/100,viewport.clientWidth/2,viewport.clientHeight/2)};
 function setZoom(z,cx,cy){z=Math.max(.05,Math.min(8,z));const k=z/S.zoom;S.px=cx-(cx-S.px)*k;S.py=cy-(cy-S.py)*k;S.zoom=z;applyTransform();drawOverlay()}
@@ -535,7 +550,7 @@ function renderPasses(){const el=$('passes');$('addPass').disabled=S.passes.leng
     d.querySelectorAll('input[type=range]').forEach(r=>{r.oninput=()=>{const k=r.dataset.k;p.options[k]=k==='maxBlobAreaFraction'?r.value/100:+r.value;p.linked=false;r.nextElementSibling.textContent=k==='maxBlobAreaFraction'?r.value+'%':r.value;d.querySelector('select').value='__custom__';clearTimeout(scanTimer);scanTimer=setTimeout(()=>scan(true),120)}});el.appendChild(d)});if(fq&&el.children[fi])el.children[fi].querySelector(fq).focus()}
 $('addPass').onclick=()=>{if(S.passes.length>=MAX_PASSES)return;S.passes.push(newPass(S.passes.length%2?'graphics-large-blocks':'tiny-specks'));scan()};
 function cropCanvas(src,r,maxW=112,maxH=84){const s=Math.min(maxW/r.w,maxH/r.h,4);const c=mk(Math.max(1,r.w*s),Math.max(1,r.h*s));const cx=c.getContext('2d');cx.imageSmoothingEnabled=s<1;cx.drawImage(src,r.x,r.y,r.w,r.h,0,0,c.width,c.height);return c}
-function renderList(){const el=$('chgList');el.innerHTML='';$('chgCount').textContent=S.regions.length;$('expListLbl').textContent=t('chgList',{n:S.regions.length});if(!S.W)return;
+function renderList(){const el=$('chgList');clearList(el);$('chgCount').textContent=S.regions.length;$('expListLbl').textContent=t('chgList',{n:S.regions.length});if(!S.W)return;
   if(!S.regions.length){el.innerHTML=`<div class="tip">${t(diffCount?'noMatchingRegions':'noChanges')}</div>`;return}
   if(S.truncated)el.innerHTML=`<div class="tip">${t('truncatedRegions')}</div>`;
   S.regions.forEach((r,i)=>{const d=document.createElement('div');d.className='chg-item'+(i===S.active?' active':'');d.title=t('focus');d.innerHTML=`<div class="info"><b>${t('change',{n:i+1})}</b><span>${r.w}×${r.h} @ ${r.x},${r.y} · ${r.px}px</span></div>`;d.prepend(cropCanvas(baseB,r));d.prepend(cropCanvas(baseA,r));
@@ -749,9 +764,11 @@ window.addEventListener('resize',()=>{if(AL.open){const v=$('alignView'),w=v.cli
 // 原生对话框处理焦点与 Esc；对齐取消和跳过提示仍走各自的业务逻辑。
 AL.addEventListener('cancel',e=>{e.preventDefault();closeAlign()});
 $('promptModal').addEventListener('cancel',e=>{e.preventDefault();$('pmSkip').click()});
-$('exportModal').addEventListener('pointerdown',e=>{if(e.target===e.currentTarget)e.currentTarget.close()});
-AL.addEventListener('pointerdown',e=>{if(e.target===e.currentTarget)closeAlign()});
-$('promptModal').addEventListener('pointerdown',e=>{if(e.target===e.currentTarget)$('pmSkip').click()});
+/* 按下时就关闭会让触屏随后合成的 click 落到遮罩下面的页面上：按下与点击都落在遮罩上才关闭；在遮罩上拖动也不去滚动背后的页面 */
+function closeOnBackdrop(dlg,close){let down=false;dlg.addEventListener('pointerdown',e=>{down=e.target===dlg});dlg.addEventListener('click',e=>{const hit=down&&e.target===dlg;down=false;if(hit)close()});dlg.addEventListener('touchmove',e=>{if(e.target===dlg)e.preventDefault()},{passive:false})}
+closeOnBackdrop($('exportModal'),()=>$('exportModal').close());
+closeOnBackdrop(AL,closeAlign);
+closeOnBackdrop($('promptModal'),()=>$('pmSkip').click());
 applyTheme();applyLang();
 </script>
 </body>
