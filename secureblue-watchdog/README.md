@@ -25,7 +25,7 @@ secureblue 镜像由 blue-build + `chunkah` 构建，每层都有注解：
 }
 ```
 
-1. **manifest 是包→chunk 的映射**：对比两个 manifest 就知道哪些包内容变了，哪些 chunk 要重下 → 真实下载量。
+1. **manifest 是包→chunk 的映射**：对比两个 manifest 就知道哪些包内容变了，哪些 chunk 要重下 → 以 blob digest 按唯一的新增压缩层估算下载量。删除、重排或重复引用旧层可改变最终文件，即使不增加下载；`layers` 和 diff JSON 分别记录 `chunks_removed` 与 `reused_layer_sequence_changed`。
 2. **RPM 数据库是独立 chunk** (`bigfiles/rpmdb.sqlite`)：只拉这一个 blob (~33MB 代替 ~4GB) 就能拿到 2200+ 包的精确 NEVRA + changelog (Fedora 会在 changelog 写 `Fix CVE-YYYY-NNNNN`)，结合 Fedora Bodhi API 就能做安全分类。
 
 ## secureblue 通知预测
@@ -40,7 +40,7 @@ secureblue 更新后会弹通知，判定逻辑在一个 shell 脚本里
 否则：不弹任何通知
 ```
 
-`sbwatch` 按同一条规则预测，结果放在 `verdict.secureblue_notification`（报告里是「secureblue notification 桌面通知预测」小节）：
+`sbwatch` 按同一条规则预测，结果放在 `verdict.secureblue_notification`（报告里是「secureblue 桌面通知预测」/「secureblue Notification Prediction」小节）：
 
 > [!important]
 > **勘误这一支只对叠加了软件包的系统成立。** rpm-ostree 只有在持有本次更新的 rpm-md
@@ -107,7 +107,7 @@ Important=112、**Critical=13**（含 2026-09-22 的 chromium）。
 trivalent 是 secureblue 自己的包，不是 Fedora Bodhi 发布的源码构建。无 dist tag 本身
 并不排除勘误匹配（例如 shim 也可没有 `.fcNN`）；这里不能依赖 Bodhi 的原因是构建来源不同。
 而上游把**任何** trivalent 升级都判为重大通知（secureblue FAQ：Trivalent 是在上游
-Chromium CVE 修复后才推的）。因此 `sbwatch` 直接按包名判断，不依赖勘误。
+Chromium CVE 修复后才推的）。因此 `sbwatch` 直接按包名判断，不依赖勘误。 实镜像中的 Trivalent RPM 即使未写入 `Vendor`，也不占用 Fedora 勘误查询预算。
 
 > 预测为 `major` 时，verdict 会被强制抬到 `update-now`——厂商用 critical 紧急度 +
 > Reboot 动作提示的东西，不该停留在 `consider`。
@@ -171,6 +171,8 @@ sbwatch check                 # 有状态的 digest watch，用于 CI/cron -> re
 
 >[!tip]
 > 先用 `sbwatch.py history` 或 `sbwatch.py tags` 确认哪个 tag 更新。
+
+`layers` / `pkgs` 的 `--json -` 与 `diff` / `backlog` 的 `--json-out -` 会向标准输出写入单独的 JSON 文档；也支持 `/dev/stdout`。诊断仍发往标准错误。
 
 ### 示例
 
@@ -250,10 +252,11 @@ Bodhi 的多源码包**安全**勘误（例如依赖库更新与批量重建）�
   紧随其后的小节会列出**全部**编号；`--json-out` 与 GITHUB_OUTPUT 始终是完整数据（另附计数）
 - 下载量：`download_bytes / total_size_b / download_pct`
 - `secureblue_notification`：桌面会弹哪个通知 + 触发原因（见上文）
-- `silent_rebuilds`：版本没变但 chunk 变了。Fedora 不会以同一版本重建软件包，所以多半是包名下
-  在镜像构建时生成的文件变了（实测 `glibc` 的 chunk 仅 `etc/ld.so.cache` 不同）；secureblue 自有的包也可能是重建
+- `silent_rebuilds`：版本没变但压缩层摘要变了。可能是文件在镜像构建时生成（曾实测 `glibc` 层内
+  的 `etc/ld.so.cache` 不同）、归档或压缩有变化，或第三方 RPM 重建。工具不判断具体原因。
 - `downgrades`：这次更新把某个包**降级**了（真证据，会抬高级别；报告点名「回退」的是**被离开的构建**或**回滚越过的中间构建**
-  的已发布安全勘误，而不是降级目标自己的勘误）；`cves_dropped`：
+  的已发布安全勘误，而不是降级目标自己的勘误。跨 Fedora 版本或源码包的降级也查离开的构建，
+  但不在不同版本分支之间推算中间构建）；`cves_dropped`：
   新版更新日志不再提到的 CVE 编号（通常是日志被编辑，只作提示、不再抬高级别）；`cves_reverted`：
   其中出自**被降级的包**的编号，报告改用警告指出降级很可能回退了这些修复
 - `backlog`：候选池内，镜像源码构建与已发布 stable 安全勘误之间的差距；版本保留已知 epoch，
@@ -392,7 +395,7 @@ python3 tests/run_offline.py
 
 - `test_bodhi_build_epochs.py`：Bodhi 的 `builds[].epoch` 为 0 不代表该构建没有 epoch（实测 `re2-20251105-19.fc45`、`netavark-2.1.0-1.fc45` 等已安装构建实为 Epoch 2，Bodhi 却给出 0），因此只记录 Bodhi 明确给出的非零 epoch；0 不得让已安装构建匹配不上自己的勘误，也不得让 backlog 看不到更新的构建。
 
-- `test_unowned_bigfiles_note.py`：无归属文件与软件包共用 chunk 时（实测 `policy.kern`、`hwdb.bin` 等与数十个 rpm 组件同层），「未检查」的字节数按上限表述，并注明其中几个 chunk 还含有软件包内容；整层都是无归属文件时措辞不变。
+- `test_unowned_bigfiles_note.py`：无归属文件与软件包共用 chunk 时（实测 `policy.kern`、`hwdb.bin` 等与数十个 rpm 组件同层），「未检查」的字节数明确指有无归属组件的压缩层总量，不是变更文件的大小。
 
 - `test_rollback_erratum_wording.py`：差异含降级时，headline 不得一边写「此差异未发现 CVE/勘误」一边点名被回退的安全勘误，改称「升级部分未发现」；没有降级时措辞不变。
 
@@ -412,7 +415,8 @@ CI 中由 `test` 作业运行；`watch` 作业**不**依赖 `test`（两者并�
 - cache `~/.cache/sbwatch` (pkglist + Bodhi + state.json)，按 image+arch 分命名空间，
   其他 `--image` 拼写彼此隔离；prune 仅清理当前 Git 引用下本命名空间的缓存并保留最新创建的 7 份（防止 `state.json` 被 LRU 挤掉）；
   结论为 `no-update` 的运行不再重复保存缓存（该路径不往缓存目录写任何东西）。手动指定
-  `from_tag` 只复用包表与 Bodhi 缓存，不会覆盖定时监控的基线
+  `from_tag` 只复用包表与 Bodhi 缓存，不会覆盖定时监控的基线，也不会把一次性对比发到
+  sticky issue 或 Telegram；仍生成运行摘要及报告 artifact
 - `check` 分析完成后会删除超过 14 天的 pkglist 缓存文件（刚对比的两个镜像除外；
   `--prune-days N` 调整，`0` 关闭）：每个分析过的构建会留下约 11 MB 的 pkglist，
   而整个缓存目录每次运行都会被整体恢复、保存；Bodhi 应答过了 6 小时 TTL 就再也不会

@@ -23,7 +23,7 @@ class TestBodhiSizeCap(unittest.TestCase):
 
         bodhi = S.Bodhi(cache_dir=None, max_calls=2, sleep=0)
         with patch.object(S, "MAX_JSON_BYTES", 64), \
-                patch.object(S.urllib.request, "urlopen", return_value=_Huge()), \
+                patch.object(S._OPENER, "open", return_value=_Huge()), \
                 contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(bodhi.updates_for_src("kernel", "F45"), [])
         self.assertEqual(bodhi.failed, 1)
@@ -31,3 +31,9 @@ class TestBodhiSizeCap(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_content_length_handles_whitespace_and_non_ascii_digits(self):
+        self.assertEqual(S._content_length({"Content-Length": " 42 "}), 42)
+        self.assertIsNone(S._content_length({"Content-Length": "\u00b2"}))
+        self.assertIsNone(S._content_length({"Content-Length": "\u0661\u0660"}))
+        self.assertIsNone(S._content_length({"Content-Length": "-1"}))
