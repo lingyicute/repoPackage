@@ -13,19 +13,35 @@ const origin = 'https://proxy.example';
 const proxy = path => origin + '/~' + encodeURIComponent('https://example.com') + path;
 
 /** HTMLRewriter 只在 Workers 运行时存在：记录各选择器的处理器，直接驱动元素回调。 */
-function collectHandlers(contentType = 'text/html') {
+function collectHandlers(contentType = 'text/html', sourceCharset = null) {
 	const handlers = {};
 	globalThis.HTMLRewriter = class {
 		on(selector, handler) { (handlers[selector] ||= []).push(handler); return this; }
 		transform(response) { return response; }
 	};
 	try {
-		transformHtml(new Response('', { headers: { 'content-type': contentType } }), base, origin, null);
+		transformHtml(new Response('', { headers: { 'content-type': contentType } }), base, origin, null, sourceCharset);
 	} finally {
 		delete globalThis.HTMLRewriter;
 	}
 	return handlers;
 }
+
+test('html: external scripts keep the source document encoding after transcoding to UTF-8', () => {
+	const run = (handlers, attrs) => {
+		const el = element('script', attrs);
+		for (const h of handlers.script) h.element(el);
+		return el.getAttribute('charset');
+	};
+	const legacy = collectHandlers('text/html', 'gbk');
+	assert.equal(run(legacy, { src: 'a.js' }), 'gbk');
+	assert.equal(run(legacy, { src: 'a.js', charset: 'utf-8' }), 'utf-8', 'an explicit charset wins');
+	assert.equal(run(legacy, {}), null, 'inline scripts are not fetched');
+	assert.equal(run(collectHandlers('application/xhtml+xml', 'windows-1252'), { src: 'a.js' }), 'windows-1252');
+	for (const charset of [null, 'utf-8']) {
+		assert.equal(run(collectHandlers('text/html', charset), { src: 'a.js' }), null, String(charset));
+	}
+});
 
 function element(tag, attrs) {
 	const map = new Map(Object.entries(attrs));
@@ -120,6 +136,12 @@ test('srcset preserves internal commas, data URLs and candidate separators', () 
 	assert.equal(image.getAttribute('srcset'), `${proxy('/dir/first,a.png')} 1x, data:image/gif;base64,token 2x, ${proxy('/dir/last.png')},, `);
 });
 
+test('srcset descriptor parentheses do not nest, so a stray "(" cannot hide later candidates', () => {
+	const image = element('img', { srcset: 'a.png w((x) 1x, b.png 2x' });
+	collectHandlers().img[0].element(image);
+	assert.equal(image.getAttribute('srcset'), `${proxy('/dir/a.png')} w((x) 1x, ${proxy('/dir/b.png')} 2x`);
+});
+
 test('HTML image start tags are parsed as img and their sources stay proxied', () => {
 	const handlers = collectHandlers();
 	const el = element('image', { src: '/leak.png', srcset: 'a.png 1x, b.png 2x' });
@@ -155,4 +177,20 @@ test('HTML base freezes at the first base element with href even when disallowed
 	const link = element('a', { href: 'rel.html' });
 	handlers.a[0].element(link);
 	assert.equal(link.getAttribute('href'), proxy('/dir/rel.html'));
+});
+
+test('HTML base unwraps already-proxied and proxy-host URLs to their target base', () => {
+	for (const [href, expectedBase, expectedLink] of [
+		['/~https%3A%2F%2Fother.example/sub/', 'https://other.example/sub/', origin + '/~' + encodeURIComponent('https://other.example') + '/sub/rel.html'],
+		[proxy('/sub/'), 'https://example.com/sub/', proxy('/sub/rel.html')],
+		[origin + '/sub/', 'https://example.com/sub/', proxy('/sub/rel.html')],
+	]) {
+		const handlers = collectHandlers();
+		const baseEl = element('base', { href });
+		handlers.base[0].element(baseEl);
+		assert.equal(baseEl.getAttribute('data-pe-base'), expectedBase, href);
+		const link = element('a', { href: 'rel.html' });
+		handlers.a[0].element(link);
+		assert.equal(link.getAttribute('href'), expectedLink, href);
+	}
 });

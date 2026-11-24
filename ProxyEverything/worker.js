@@ -30,6 +30,10 @@ const STRIP_RESPONSE_HEADERS = [
 	'cross-origin-opener-policy',
 	'cross-origin-embedder-policy',
 	'cross-origin-resource-policy',
+	'cross-origin-opener-policy-report-only',
+	'cross-origin-embedder-policy-report-only',
+	'document-isolation-policy',        // 与 COEP 同样要求子资源带 CORP/CORS；代理已剥除 CORP，保留会拦截全部跨源子资源
+	'document-isolation-policy-report-only',
 	'link',               // preload/preconnect 指向原站，无意义
 	'alt-svc',
 	'report-to',
@@ -220,9 +224,28 @@ function decodeProxyPath(pathname) {
 	return origin + (cut === -1 ? '/' : raw.slice(cut));
 }
 
+function decodeProxiedTarget(rawPath, suffix = '') {
+	const decoded = decodeProxyPath(rawPath);
+	if (!decoded) return null;
+	const hashCut = suffix.indexOf('#');
+	const query = hashCut < 0 ? suffix : suffix.slice(0, hashCut);
+	const hash = hashCut < 0 ? '' : suffix.slice(hashCut);
+	const baseTarget = decoded.split('#', 1)[0];
+	try {
+		const target = new URL(baseTarget + (query ? (baseTarget.includes('?') ? '&' : '?') + query.slice(1) : '') + hash);
+		if (!['http:', 'https:', 'ws:', 'wss:'].includes(target.protocol)) return null;
+		const host = normalizeHostname(target.hostname);
+		if (!host) return null;
+		target.hostname = host;
+		return target;
+	} catch {
+		return null;
+	}
+}
+
 // 这些纯函数也供无依赖的浏览器脚本使用，避免引入不同的编解码规则。
 function browserPathHelpers() {
-	return [safeDecode, trimUrlSpace, urlSuffix, encodeProxyPath, isProxiedPath, decodeProxyPath].map(fn => fn.toString()).join('\n');
+	return [safeDecode, trimUrlSpace, normalizeHostname, urlSuffix, encodeProxyPath, isProxiedPath, decodeProxyPath, decodeProxiedTarget].map(fn => fn.toString()).join('\n');
 }
 
 /** 判断 URL 是否指向代理 Worker 自身主机与端口（忽略协议差异与尾点） */
@@ -240,28 +263,51 @@ function isWorkerHost(u, workerOrigin) {
 
 /** 已代理 URL 中的 .. 不能越过 /~来源 段逃逸成其它目标主机。 */
 function normalizeProxiedUrl(raw, workerOrigin, keepOrigin, parsed = null) {
-	const u = parsed || new URL(raw, workerOrigin);
+	const clean = raw.replace(/[\t\r\n]/g, '');
+	const u = parsed || new URL(clean, workerOrigin);
 	const prefix = keepOrigin
 		? (u.protocol === 'ws:' || u.protocol === 'wss:' ? `${u.protocol}//${new URL(workerOrigin).host}` : workerOrigin)
 		: '';
-	const cut = raw.search(/[?#]/);
-	const rawPath = (cut < 0 ? raw : raw.slice(0, cut))
+	const cut = clean.search(/[?#]/);
+	const rawPath = (cut < 0 ? clean : clean.slice(0, cut))
 		.replace(/^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})[^\/\\?#]*/i, '')
 		.replace(/\\/g, '/');
+	const target = decodeProxiedTarget(rawPath, cut < 0 ? '' : clean.slice(cut));
+	if (!target) return null;
 	if (!/\/(?:\.|%2e){2}(?:\/|$)/i.test(rawPath) && isProxiedPath(u.pathname)) {
 		return `${prefix}${u.pathname}${urlSuffix(u)}`;
 	}
-	const suffix = cut < 0 ? '' : raw.slice(cut);
-	const decoded = decodeProxyPath(rawPath);
-	if (!decoded) return `${prefix}${u.pathname}${urlSuffix(u)}`;
-	const hashCut = suffix.indexOf('#');
-	const query = hashCut < 0 ? suffix : suffix.slice(0, hashCut);
-	const hash = hashCut < 0 ? '' : suffix.slice(hashCut);
-	const baseTarget = decoded.split('#', 1)[0];
-	const target = new URL(baseTarget + (query ? (baseTarget.includes('?') ? '&' : '?') + query.slice(1) : '') + hash);
-	const host = normalizeHostname(target.hostname);
-	if (host) target.hostname = host;
 	return prefix + encodeProxyPath(target);
+}
+
+/** 将 <base href> 或 xml:base 解析为真实目标基地址，解包已代理路径或代理域自身地址。 */
+function resolveTargetBaseUrl(raw, fallbackBase, workerOrigin, httpOnly = false) {
+	if (!fallbackBase) return '';
+	const clean = trimUrlSpace(String(raw)).replace(/[\t\r\n]/g, '');
+	const allow = (u) => !httpOnly || u.protocol === 'http:' || u.protocol === 'https:';
+	if (isProxiedPath(clean)) {
+		const cut = clean.search(/[?#]/);
+		const target = decodeProxiedTarget(cut < 0 ? clean : clean.slice(0, cut), cut < 0 ? '' : clean.slice(cut));
+		if (target && allow(target)) return target.href;
+	}
+	try {
+		const u = new URL(raw, fallbackBase);
+		if (!allow(u)) return '';
+		if (isWorkerHost(u, workerOrigin)) {
+			const rawSelf = clean
+				.replace(/^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})[^\/\\?#]*/i, '')
+				.replace(/\\/g, '/');
+			if (isProxiedPath(rawSelf)) {
+				const cut = clean.search(/[?#]/);
+				const target = decodeProxiedTarget(rawSelf, cut < 0 ? '' : clean.slice(cut));
+				if (target && allow(target)) return target.href;
+			}
+			return new URL(new URL(fallbackBase).origin + u.pathname + urlSuffix(u)).href;
+		}
+		return u.href;
+	} catch {
+		return '';
+	}
 }
 
 function rewriteUrl(value, baseUrl, workerOrigin, resolveEmptyOrFragment = false) {
@@ -269,12 +315,19 @@ function rewriteUrl(value, baseUrl, workerOrigin, resolveEmptyOrFragment = false
 	const v = trimUrlSpace(String(value));
 	// 资源中的页内锚点保持原样；需要完整 URL 的标识符或作用域例外。
 	if (!resolveEmptyOrFragment && (!v || v.startsWith('#'))) return v;
+	const clean = v.replace(/[\t\r\n]/g, '');
 	// 已经是本站代理 URL：经 URL 规范化以编码裸 <、> 等字符，避免透传进内联 raw-text
-	if (isProxiedPath(v)) {
-		try { return normalizeProxiedUrl(v, workerOrigin, false); } catch { return v; }
+	if (isProxiedPath(clean)) {
+		try {
+			const norm = normalizeProxiedUrl(clean, workerOrigin, false);
+			if (norm) return norm;
+		} catch { return v; }
 	}
-	if (v.startsWith(workerOrigin + '/') && isProxiedPath(v.slice(workerOrigin.length))) {
-		try { return normalizeProxiedUrl(v, workerOrigin, true); } catch { return v; }
+	if (clean.startsWith(workerOrigin + '/') && isProxiedPath(clean.slice(workerOrigin.length))) {
+		try {
+			const norm = normalizeProxiedUrl(clean, workerOrigin, true);
+			if (norm) return norm;
+		} catch { return v; }
 	}
 	try {
 		const abs = new URL(v, baseUrl);
@@ -283,13 +336,14 @@ function rewriteUrl(value, baseUrl, workerOrigin, resolveEmptyOrFragment = false
 			return v;
 		}
 		if (isWorkerHost(abs, workerOrigin)) {
-			const hasOrigin = /^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})/i.test(v);
+			const hasOrigin = /^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})/i.test(clean);
 			const rawSelfPath = hasOrigin
-				? v.replace(/^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})[^\/\\?#]*/i, '').replace(/\\/g, '/')
+				? clean.replace(/^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})[^\/\\?#]*/i, '').replace(/\\/g, '/')
 				: '';
 			// 已代理（同源主机且路径是编码后的目标 URL）
-			if (isProxiedPath(abs.pathname) || isProxiedPath(rawSelfPath)) {
-				return hasOrigin ? normalizeProxiedUrl(v, workerOrigin, true, abs) : abs.pathname + urlSuffix(abs);
+			if (hasOrigin ? isProxiedPath(rawSelfPath) : isProxiedPath(abs.pathname)) {
+				const norm = hasOrigin ? normalizeProxiedUrl(clean, workerOrigin, true, abs) : abs.pathname + urlSuffix(abs);
+				if (norm) return norm;
 			}
 			// 落到代理域自身的非代理路径：回退按目标基地址解析，避免触发自代理拦截
 			const rebound = new URL(new URL(baseUrl).origin + abs.pathname + urlSuffix(abs));
@@ -343,14 +397,14 @@ function mapSrcset(s, rewrite) {
 		out += rewrite(s.slice(urlStart, end)) + s.slice(end, i);
 		if (end < i) continue; // 该候选项没有描述符，直接进入下一轮
 
-		// 4. 描述符段（括号内的逗号不算分隔符，兼容未来的描述符语法）
+		// 4. 描述符段（括号内的逗号不算分隔符；规范的 in parens 状态不嵌套，遇到第一个 ')' 即退出）
 		const descStart = i;
-		let depth = 0;
+		let inParens = false;
 		while (i < n) {
 			const ch = s[i];
-			if (ch === '(') depth++;
-			else if (ch === ')') { if (depth > 0) depth--; }
-			else if (ch === ',' && depth === 0) break;
+			if (inParens) { if (ch === ')') inParens = false; }
+			else if (ch === '(') inParens = true;
+			else if (ch === ',') break;
 			i++;
 		}
 		out += s.slice(descStart, i);
@@ -959,7 +1013,11 @@ function xmlDeclaredCharset(text) {
 	const m = /^<\?xml[ \t\r\n][^?]*\?>/.exec(text);
 	if (!m) return null;
 	for (const [, , name, , double, single] of m[0].matchAll(XML_ATTR)) {
-		if (name === 'encoding') return normalizeCharsetLabel(double ?? single);
+		if (name !== 'encoding') continue;
+		// 声明能按 ASCII 读出，正文就不可能是 UTF-16（真正的 UTF-16 已由 BOM 或字节签名识别）；
+		// 与浏览器一致，把这种错误声明当作 UTF-8，而不是把整篇按 UTF-16 解成乱码。
+		const encoding = normalizeCharsetLabel(double ?? single);
+		return encoding && /^utf-16(?:le|be)$/.test(encoding) ? 'utf-8' : encoding;
 	}
 	return null;
 }
@@ -1170,6 +1228,30 @@ var full=DEC+(search?(DEC.indexOf('?')>=0?'&':'?')+search.substring(1):'');
 try{var u=new URL(full);if(u.protocol==='ws:')u.protocol='http:';else if(u.protocol==='wss:')u.protocol='https:';u.username='';u.password='';u.hostname=u.hostname.toLowerCase().replace(/\\.+$/,'');return u.href;}catch(e){return full;}
 }
 var SKIP_RE=/^(data:|blob:|javascript:|mailto:|tel:|sms:|about:|#)/i;
+function resolveBase(h,target){
+  var clean=trimUrlSpace(String(h)).replace(/[\\t\\r\\n]/g,'');
+  if(!clean)return target;
+  if(SKIP_RE.test(clean)&&clean.charAt(0)!=='#')return '';
+  if(isProxiedPath(clean)){
+    var cut0=clean.search(/[?#]/);
+    var t0=decodeProxiedTarget(cut0<0?clean:clean.slice(0,cut0),cut0<0?'':clean.slice(cut0));
+    if(t0&&(t0.protocol==='http:'||t0.protocol==='https:'))return t0.href;
+  }
+  try{
+    var u=new URL(h,target);
+    if(u.protocol!=='http:'&&u.protocol!=='https:')return '';
+    if(isSelfHost(u)){
+      var rawSelf=clean.replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
+      if(isProxiedPath(rawSelf)){
+        var cut1=clean.search(/[?#]/);
+        var t1=decodeProxiedTarget(rawSelf,cut1<0?'':clean.slice(cut1));
+        if(t1&&(t1.protocol==='http:'||t1.protocol==='https:'))return t1.href;
+      }
+      return new URL(new URL(target).origin+u.pathname+urlSuffix(u)).href;
+    }
+    return u.href;
+  }catch(e){return '';}
+}
 function base(){
   var target=currentTarget();
   var list=document.querySelectorAll?document.querySelectorAll('base[data-pe-base],base[href]'):[];
@@ -1180,16 +1262,19 @@ function base(){
     var pe=b.getAttribute('data-pe-base');
     var h=pe!==null?pe:b.getAttribute('href');
     if(h===null)continue;
-    if(h){try{var u=new URL(h,target);if(u.protocol==='http:'||u.protocol==='https:')return u.href;}catch(e){}}
+    if(h){var rb=resolveBase(h,target);if(rb)return rb;}
     return target;
   }
   return target;
 }
 function normProxied(raw,keepOrigin,parsed){
-  var pu=parsed||new URL(raw,WO);
+  var clean=raw.replace(/[\\t\\r\\n]/g,'');
+  var pu=parsed||new URL(clean,WO);
   var isWs=pu.protocol==='ws:'||pu.protocol==='wss:';
-  var cut=raw.search(/[?#]/);
-  var rawPath=(cut<0?raw:raw.slice(0,cut)).replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
+  var cut=clean.search(/[?#]/);
+  var rawPath=(cut<0?clean:clean.slice(0,cut)).replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
+  var tu=decodeProxiedTarget(rawPath,cut<0?'':clean.slice(cut));
+  if(!tu)return null;
   if(!/\\/(?:\\.|%2e){2}(?:\\/|$)/i.test(rawPath)&&isProxiedPath(pu.pathname)){
     if(!keepOrigin)return pu.pathname+urlSuffix(pu);
     if(isWs){
@@ -1199,16 +1284,6 @@ function normProxied(raw,keepOrigin,parsed){
     }
     return WO+pu.pathname+urlSuffix(pu);
   }
-  var suffix=cut<0?'':raw.slice(cut);
-  var dec=decodeProxyPath(rawPath);
-  if(!dec)return keepOrigin?WO+pu.pathname+urlSuffix(pu):pu.pathname+urlSuffix(pu);
-  var hCut=suffix.indexOf('#');
-  var q=hCut<0?suffix:suffix.slice(0,hCut);
-  var h=hCut<0?'':suffix.slice(hCut);
-  var baseDec=dec.split('#',1)[0];
-  var tu=new URL(baseDec+(q?(baseDec.indexOf('?')>=0?'&':'?')+q.slice(1):'')+h);
-  var th=tu.hostname.toLowerCase().replace(/\\.+$/,'');
-  if(th){try{tu.hostname=th;}catch(e){}}
   var prefix=keepOrigin?(isWs?pu.protocol+'//'+(location.host||WOU.host):WO):'';
   return prefix+encodeProxyPath(tu);
 }
@@ -1217,17 +1292,21 @@ function rp(v){
   if(v instanceof URL)return rp(v.href);
   var s=trimUrlSpace(String(v));
   if(!s||SKIP_RE.test(s))return s;
-  if(isProxiedPath(s)){try{return normProxied(s,false);}catch(e){return s;}}
+  var clean=s.replace(/[\\t\\r\\n]/g,'');
+  if(isProxiedPath(clean)){try{var np=normProxied(clean,false);if(np)return np;}catch(e){return s;}}
   var forcedWs='';
   var b;try{b=base();}catch(e){return s;}
   try{
-    if(s===WO)s='/';
+    if(clean===WO)s='/';
     else{
       /* 与服务端一致：先按文档基址解析，再判断是否落回代理域；反斜线或省略斜线的写法同样指向代理自身 */
       var pu=new URL(s,b);
       if((pu.protocol==='http:'||pu.protocol==='https:'||pu.protocol==='ws:'||pu.protocol==='wss:')&&isSelfHost(pu)){
-        var rawSelf=s.replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
-        if(isProxiedPath(pu.pathname)||isProxiedPath(rawSelf))return normProxied(s,true,pu);
+        var rawSelf=clean.replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
+        if(isProxiedPath(rawSelf)){
+          var selfNorm=normProxied(clean,true,pu);
+          if(selfNorm)return selfNorm;
+        }
         if(pu.protocol==='ws:'||pu.protocol==='wss:')forcedWs=pu.protocol;
         // 用完整来源拼接：已解析路径开头的双斜线不是新的主机名。
         s=new URL(b).origin+pu.pathname+urlSuffix(pu);
@@ -1235,10 +1314,9 @@ function rp(v){
     }
   }catch(e){}
   var u;try{u=new URL(s,b);}catch(e){return s;}
-  if(u.origin===WO&&isProxiedPath(u.pathname))return u.href;
   var p=forcedWs?(u.protocol==='http:'?'ws:':'wss:'):u.protocol;
   if(p!=='http:'&&p!=='https:'&&p!=='ws:'&&p!=='wss:')return s;
-  var uh=u.hostname.toLowerCase().replace(/\\.+$/,'');
+  var uh=normalizeHostname(u.hostname);
   if(uh){try{u.hostname=uh;}catch(e){}}
   return WO+encodeProxyPath(u,p);
 }
@@ -1250,10 +1328,7 @@ function rwUrlArg(a){
 }
 function rpBase(a){
   if(a instanceof URL)return new URL(rp(a.href),location.href||WO);
-  if(typeof a!=='symbol'){
-    var s=String(a);
-    return !trimUrlSpace(s)?rp(base()):rp(s);
-  }
+  if(typeof a!=='symbol')return rwNavigation(String(a),true);
   return a;
 }
 function isProxyRequestUrl(value){
@@ -1262,7 +1337,7 @@ function isProxyRequestUrl(value){
 function rwInit(init,stripIntegrity){
   if(init!=null&&typeof init!=='object'&&typeof init!=='function')return init;
   var ref=init?.referrer;
-  var next=ref!==undefined&&ref!==null&&ref!==''&&ref!=='about:client'?rp(String(ref)):ref;
+  var next=ref!==undefined&&ref!==''&&ref!=='about:client'?rwNavigation(String(ref),false):ref;
   if(next===ref&&!stripIntegrity)return init;
   // Fetch reads RequestInit as a dictionary, including inherited and non-enumerable
   // properties. Do not copy it with Object.assign or mutate the caller's object.
@@ -1380,7 +1455,7 @@ function wrapHistory(fn){return function(st,t,u){
 if(history.pushState)history.pushState=wrapHistory(history.pushState);
 if(history.replaceState)history.replaceState=wrapHistory(history.replaceState);
 var oWo=window.open;
-if(oWo)window.open=function(u){try{if(arguments.length&&u!==undefined&&typeof u!=='symbol')arguments[0]=rwUrlArg(String(u));}catch(e){}return oWo.apply(this,arguments);};
+if(oWo)window.open=function(u){try{if(arguments.length&&u!==undefined&&typeof u!=='symbol')arguments[0]=rwNavigation(String(u),false);}catch(e){}return oWo.apply(this,arguments);};
 try{var oAs=location.assign.bind(location);location.assign=function(u){return arguments.length?oAs(typeof u!=='symbol'?rpBase(String(u)):u):oAs();};}catch(e){}
 try{var oRe=location.replace.bind(location);location.replace=function(u){return arguments.length?oRe(typeof u!=='symbol'?rpBase(String(u)):u):oRe();};}catch(e){}
 /* Location 的 href/assign/replace 不可配置，上面两行在真实浏览器中不会生效。支持 Navigation API 时在此兜底：
@@ -1462,8 +1537,8 @@ try{
           var pe=this.getAttribute('data-pe-base');
           var h=pe!==null?pe:this.getAttribute('href');
           if(h!==null){
-            if(h){try{var u=new URL(h,currentTarget());if(u.protocol==='http:'||u.protocol==='https:')return u.href;}catch(e){}}
-            return currentTarget();
+            var target=currentTarget();
+            return (h&&resolveBase(h,target))||target;
           }
           return base();
         },
@@ -1519,12 +1594,7 @@ if(window.Element){
           return;
         }
         if(ln==='href'&&tag==='BASE'&&isHtmlEl(this)){
-          var nextBase='';
-          try{
-            var bUrl=new URL(sv,currentTarget());
-            if(bUrl.protocol==='http:'||bUrl.protocol==='https:')nextBase=bUrl.href;
-          }catch(e){}
-          oSA.call(this,'data-pe-base',nextBase);
+          oSA.call(this,'data-pe-base',resolveBase(sv,currentTarget()));
           if(oRA)oRA.call(this,'href');
           return;
         }
@@ -1550,12 +1620,7 @@ if(window.Element){
           return;
         }
         if(local==='href'&&tag==='BASE'&&isHtmlEl(this)){
-          var nextBase='';
-          try{
-            var bUrl=new URL(sv,currentTarget());
-            if(bUrl.protocol==='http:'||bUrl.protocol==='https:')nextBase=bUrl.href;
-          }catch(e){}
-          oSA.call(this,'data-pe-base',nextBase);
+          oSA.call(this,'data-pe-base',resolveBase(sv,currentTarget()));
           if(oRA)oRA.call(this,'href');
           return;
         }
@@ -2144,8 +2209,10 @@ function bufferedTextHandler(rewrite, matches = () => true) {
 	};
 }
 
-function transformHtml(response, baseUrl, workerOrigin, ck) {
+function transformHtml(response, baseUrl, workerOrigin, ck, sourceCharset = null) {
 	const rewriter = new HTMLRewriter();
+	// 输出统一为 UTF-8。未声明编码的外部经典脚本原本按文档编码解码，透传时需要显式保留原编码。
+	const scriptCharset = sourceCharset && !isUtf8Charset(sourceCharset) ? sourceCharset : null;
 	const isXml = mimeType(response.headers.get('Content-Type')) === 'application/xhtml+xml';
 	const rawText = (text, transform) => isXml ? rewriteXmlText(text, transform) : transform(text);
 	let baseHref = baseUrl;
@@ -2191,13 +2258,7 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 			if (templateDepth || el.namespaceURI !== htmlNamespace) return;
 			if (el.hasAttribute('href')) {
 				const h = getHtmlAttribute(el, 'href', isXml);
-				let nextBase = '';
-				if (h != null) {
-					try {
-						const u = new URL(h, baseUrl);
-						if (u.protocol === 'http:' || u.protocol === 'https:') nextBase = u.href;
-					} catch {}
-				}
+				const nextBase = h != null ? resolveTargetBaseUrl(h, baseUrl, workerOrigin, true) : '';
 				if (!sawBaseHref) {
 					sawBaseHref = true;
 					if (nextBase) {
@@ -2258,6 +2319,11 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 			element(el) {
 				// 内容被我们改写过的资源必须去掉 SRI，否则哈希校验失败被浏览器拦截
 				if (tag === 'script' || tag === 'link') el.removeAttribute('integrity');
+				// 改写后的脚本带 charset=UTF-8 响应头，优先于此属性；它只影响原样透传的脚本。
+				if (tag === 'script' && scriptCharset && el.namespaceURI === htmlNamespace &&
+					el.hasAttribute('src') && !el.hasAttribute('charset')) {
+					setHtmlAttribute(el, 'charset', scriptCharset, isXml);
+				}
 				for (const [attr, kind] of attrs) {
 					const v = getHtmlAttribute(el, attr, isXml);
 					if (v == null) continue;
@@ -2349,7 +2415,10 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 // CSS Syntax §3.2 指定字节签名而非一般 at-rule；含终止符最多 1024 字节。
 const CSS_CHARSET_SIGNATURE = /^@charset "([\x00-\x21\x23-\x7f]{0,1012})";/;
 
-/** 整体缓冲文本的编码：BOM > HTTP charset > CSS @charset 或 XML 声明，默认 UTF-8。 */
+/**
+ * 整体缓冲文本的编码：BOM > HTTP charset > CSS @charset 或 XML 声明，默认 UTF-8。
+ * JavaScript 没有任何声明时返回 null：经典脚本原本沿用引用文档的编码，交由调用方校验。
+ */
 function sniffTextCharset(bytes, kind, declaredCharset = null) {
 	const head = bytes.subarray(0, kind === 'css' ? 1024 : kind === 'svg' ? 4096 : 256);
 	if (head[0] === 0xff && head[1] === 0xfe) return 'utf-16le';
@@ -2364,7 +2433,7 @@ function sniffTextCharset(bytes, kind, declaredCharset = null) {
 	if (kind === 'svg') {
 		return utf16XmlSignature(head) || xmlDeclaredCharset(new TextDecoder().decode(head)) || 'utf-8';
 	}
-	return 'utf-8';
+	return kind === 'js' ? null : 'utf-8';
 }
 
 function replayBody(reader, prefix, tail) {
@@ -2426,7 +2495,15 @@ async function readTransformText(body, kind = '', declaredCharset = null) {
 			size = nextSize;
 		}
 		const bytes = buffer.subarray(0, size);
-		return { text: new TextDecoder(sniffTextCharset(bytes, kind, declaredCharset)).decode(bytes), passthrough: null };
+		const charset = sniffTextCharset(bytes, kind, declaredCharset);
+		if (charset) return { text: new TextDecoder(charset).decode(bytes), passthrough: null };
+		// 未声明编码的经典脚本由浏览器按 <script charset> 或文档编码解码，代理无从得知。
+		// 不是合法 UTF-8 时保留原始字节，不能把 GBK 等旧编码的文本替换成 U+FFFD 后再标成 UTF-8。
+		try {
+			return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), passthrough: null };
+		} catch {
+			return { text: null, passthrough: bytes };
+		}
 	} catch (error) {
 		reader.cancel(error).catch(() => {});
 		throw error;
@@ -2490,12 +2567,22 @@ return parse;
 
 /** HTML 的 URL-like module specifier：只有 /、./、../ 开头才带基址解析。 */
 function rewriteModuleSpecifier(specifier, baseUrl, workerOrigin) {
+	const clean = trimUrlSpace(String(specifier)).replace(/[\t\r\n]/g, '');
 	// 为保持幂等，已是代理路径的说明符不能按目标站点路径再次包装。
-	if (isProxiedPath(specifier)) return rewriteUrl(specifier, baseUrl, workerOrigin);
+	if (isProxiedPath(clean)) return rewriteUrl(specifier, baseUrl, workerOrigin);
 	try {
-		const resolved = /^(?:\/|\.\.?\/)/.test(specifier)
-			? new URL(specifier, baseUrl) : new URL(specifier);
+		const isRel = /^(?:\/|\.\.?\/)/.test(specifier);
+		const resolved = isRel ? new URL(specifier, baseUrl) : new URL(specifier);
 		if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return specifier;
+		if (isWorkerHost(resolved, workerOrigin)) {
+			const rawSelfPath = clean
+				.replace(/^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})[^\/\\?#]*/i, '')
+				.replace(/\\/g, '/');
+			if (isProxiedPath(rawSelfPath)) {
+				const norm = normalizeProxiedUrl(clean, workerOrigin, true, resolved);
+				if (norm) return norm;
+			}
+		}
 		return rewriteUrl(resolved.href, baseUrl, workerOrigin);
 	} catch {
 		// 裸说明符和无法解析的 URL 交给浏览器及 import map 原样处理。
@@ -2780,10 +2867,7 @@ const rewriteSvg = capRewriteGrowth((account, source, baseUrl, workerOrigin) => 
 				}
 				if (name !== 'xml:base' || sawBase) continue;
 				sawBase = true;
-				try {
-					if (hasCustomXmlEntity(raw)) throw new Error();
-					elementBase = new URL(decodeXmlAttribute(raw), elementBase ?? undefined).href;
-				} catch { elementBase = null; }
+				elementBase = hasCustomXmlEntity(raw) ? null : (resolveTargetBaseUrl(decodeXmlAttribute(raw), elementBase, workerOrigin) || null);
 			}
 		}
 		const rw = v => elementBase === null ? v : rewriteUrl(v, elementBase, workerOrigin);
@@ -2802,10 +2886,10 @@ const rewriteSvg = capRewriteGrowth((account, source, baseUrl, workerOrigin) => 
 			if (name === 'xml:base' && localName) next = rewriteUrl(elementBase, baseUrl, workerOrigin);
 			else if (XML_REFERENCE_ATTRS.has(name) || xlinkHref ||
 				(name === 'data' && localName === 'object') ||
-				(name === 'action' && localName === 'form') ||
-				(name === 'formaction' && (localName === 'input' || localName === 'button'))) next = rw(decoded);
+				(((name === 'action' && localName === 'form') ||
+				(name === 'formaction' && (localName === 'input' || localName === 'button'))) && trimUrlSpace(decoded))) next = rw(decoded);
 			else if (name === 'srcset' || name === 'imagesrcset') next = rewriteSrcset(decoded, elementBase, workerOrigin);
-			else if (name === 'ping') next = rewritePing(decoded, elementBase, workerOrigin);
+			else if (name === 'ping' && (localName === 'a' || localName === 'area')) next = rewritePing(decoded, elementBase, workerOrigin);
 			else if (SVG_CSS_ATTRS.has(name)) next = rewriteStyleAttr(decoded, elementBase, workerOrigin);
 			return next === undefined || next === decoded ? m : account(m.length, `${space}${name}${equals}"${escapeXmlAttr(next)}"`);
 		}));
@@ -3308,7 +3392,7 @@ Disallow: /
 				stripHopByHop(interim.headers);
 				stripTransformedHeaders(interim.headers);
 				interim.headers.set('Content-Type', mimeType(contentType) + '; charset=UTF-8');
-				return applyCommon(transformHtml(interim, baseUrl, workerOrigin, ck), request, ck);
+				return applyCommon(transformHtml(interim, baseUrl, workerOrigin, ck, sniffed.charset), request, ck);
 			}
 			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, kind, request, charset), request, ck);
 		} catch {
@@ -3802,14 +3886,15 @@ ${browserPathHelpers()}
   });
   form.addEventListener('submit',function(e){
     e.preventDefault();
-    var v=input.value.trim();
-    var selfH=location.hostname.toLowerCase().replace(/\\.+$/,'');
-    if(/^(?:https?:)?\\/\\//i.test(v)){
+    var v=input.value.trim().replace(/[\\t\\r\\n]/g,'');
+    var selfH=normalizeHostname(location.hostname);
+    if(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})/i.test(v)){
       try{
         var u0=new URL(v,location.href);
-        if(u0.hostname.toLowerCase().replace(/\\.+$/,'')===selfH&&u0.port===location.port&&
-           isProxiedPath(u0.pathname)){
-          v=u0.pathname+urlSuffix(u0);
+        var rawSelf=v.replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
+        if(normalizeHostname(u0.hostname)===selfH&&u0.port===location.port&&
+           isProxiedPath(rawSelf)){
+          v=rawSelf+urlSuffix(u0);
         }
       }catch(_){}
     }

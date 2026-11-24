@@ -15,7 +15,11 @@ const rewrite = svg => rewriteSvg(svg, base, origin);
 
 test('SVG xml:base scopes references and restores the parent base after closing tags', () => {
 	const input = '<svg xml:base="/assets/"><g xml:base="icons/"><image href="one.png"/></g><image href="two.png"/></svg>';
-	assert.equal(rewrite(input), `<svg xml:base="${proxy('/assets/')}"><g xml:base="${proxy('/assets/icons/')}"><image href="${proxy('/assets/icons/one.png')}"/></g><image href="${proxy('/assets/two.png')}"/></svg>`);
+	const expected = `<svg xml:base="${proxy('/assets/')}"><g xml:base="${proxy('/assets/icons/')}"><image href="${proxy('/assets/icons/one.png')}"/></g><image href="${proxy('/assets/two.png')}"/></svg>`;
+	assert.equal(rewrite(input), expected);
+	assert.equal(rewrite(expected), expected);
+	const proxiedBase = `<svg xml:base="${proxy('/assets/')}"><g xml:base="/sub/"><image href="one.png"/></g></svg>`;
+	assert.equal(rewrite(proxiedBase), `<svg xml:base="${proxy('/assets/')}"><g xml:base="${proxy('/sub/')}"><image href="${proxy('/sub/one.png')}"/></g></svg>`);
 });
 
 test('SVG xml:base on a self-closing element cannot affect its siblings', () => {
@@ -67,9 +71,9 @@ test('SVG resolves XLink href by namespace URI rather than a fixed prefix', () =
 });
 
 test('SVG rewrites object data attributes without touching custom data attributes', () => {
-	const input = '<svg><g data="raw" action="save" formaction="next"/><foreignObject><object xmlns="http://www.w3.org/1999/xhtml" data="embed.html"/><form xmlns="http://www.w3.org/1999/xhtml" action="submit"><button formaction="go"/></form></foreignObject></svg>';
+	const input = '<svg><g data="raw" action="save" formaction="next" ping="1"/><foreignObject><object xmlns="http://www.w3.org/1999/xhtml" data="embed.html"/><form xmlns="http://www.w3.org/1999/xhtml" action="submit"><button formaction="go"/><button formaction=" "/></form></foreignObject></svg>';
 	assert.equal(
 		rewrite(input),
-		`<svg><g data="raw" action="save" formaction="next"/><foreignObject><object xmlns="http://www.w3.org/1999/xhtml" data="${proxy('/dir/embed.html')}"/><form xmlns="http://www.w3.org/1999/xhtml" action="${proxy('/dir/submit')}"><button formaction="${proxy('/dir/go')}"/></form></foreignObject></svg>`
+		`<svg><g data="raw" action="save" formaction="next" ping="1"/><foreignObject><object xmlns="http://www.w3.org/1999/xhtml" data="${proxy('/dir/embed.html')}"/><form xmlns="http://www.w3.org/1999/xhtml" action="${proxy('/dir/submit')}"><button formaction="${proxy('/dir/go')}"/><button formaction=" "/></form></foreignObject></svg>`
 	);
 });

@@ -71,8 +71,17 @@ test('shim: every spelling of a proxy-host URL is rebound to the target like on 
 		'\\\\proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
 		'https:\\\\proxy.example\\~https%3A%2F%2Fcdn.example\\..\\asset.js',
 		'http:proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
+		'ht\ttps://proxy.example/~\thttps%3A%2F%2Fcdn.example/.\n./asset.js',
 	]) {
 		assert.equal(rp(input), cdnAsset, input);
+	}
+	for (const input of [
+		'https://proxy.example/foo/../~https%3A%2F%2Fother.example/secret',
+		'https://proxy.example/./~https%3A%2F%2Fother.example/secret',
+		'/~https%3A%2F%2F/../~https%3A%2F%2Fother.example/secret',
+		'/~https%3A%2F%2F[invalid]/../~https%3A%2F%2Fother.example/secret',
+	]) {
+		assert.equal(rp(input), proxy('/~https%3A%2F%2Fother.example/secret'), input);
 	}
 	assert.equal(rp('wss://proxy.example/live'), origin + '/~' + encodeURIComponent('wss://example.com') + '/live');
 	// 其它协议即使主机名相同也不是代理地址。
@@ -232,6 +241,13 @@ test('shim srcset uses the same URL boundaries and leaves data candidates alone'
 	assert.equal(image.getAttribute('srcset'), `${proxy('/dir/first,a.png')} 1x, data:image/gif;base64,token 2x, ${proxy('/dir/last.png')},, `);
 });
 
+test('shim srcset ends a parenthesised descriptor at the first closing parenthesis', () => {
+	const { ctx } = createBrowser();
+	const image = new ctx.Element('img');
+	image.setAttribute('srcset', 'a.png w((x) 1x, b.png 2x');
+	assert.equal(image.getAttribute('srcset'), `${proxy('/dir/a.png')} w((x) 1x, ${proxy('/dir/b.png')} 2x`);
+});
+
 test('document.cookie shares protected cookie names without accepting HTTP-only writes', () => {
 	const ns = '__pe_fixture_';
 	let last = '';
@@ -360,6 +376,8 @@ test('history state updates resolve empty URLs against base and block dot-segmen
 	assert.equal(calls[3], '/~https%3A%2F%2Fexample.com/~https%3A%2F%2Fother.example/inside');
 	ctx.history.pushState(null, '', '/~https%3A%2F%2Fexample.com/sub/%2e%2e/inside');
 	assert.equal(calls[4], '/~https%3A%2F%2Fexample.com/inside');
+	ctx.history.pushState(null, '', '/~https%3A%2F%2Fexample.com/.\t./~https%3A%2F%2Fother.example/inside');
+	assert.equal(calls[5], '/~https%3A%2F%2Fexample.com/~https%3A%2F%2Fother.example/inside');
 	assert.throws(() => ctx.history.pushState(null, '', '/~https%3A%2F%2Fother.example/x'), { name: 'SecurityError' });
 });
 
@@ -378,10 +396,20 @@ test('shim ignores foreign base elements and freezes at the first HTML base with
 	assert.equal(ctx.window.__PE__.rp('rel.js'), proxy('/dir/rel.js'));
 	firstBase.removeAttribute('href');
 	assert.equal(ctx.window.__PE__.rp('rel.js'), origin + '/~' + encodeURIComponent('https://other.example') + '/sub/rel.js');
+
+	for (const [href, expectedBase, expectedRootRel] of [
+		['/~https%3A%2F%2Fother.example/sub/', 'https://other.example/sub/', origin + '/~' + encodeURIComponent('https://other.example') + '/api'],
+		[proxy('/sub/'), 'https://example.com/sub/', proxy('/api')],
+		[origin + '/sub/', 'https://example.com/sub/', proxy('/api')],
+	]) {
+		secondBase.setAttribute('href', href);
+		assert.equal(secondBase.getAttribute('data-pe-base'), expectedBase, href);
+		assert.equal(ctx.window.__PE__.rp('/api'), expectedRootRel, href);
+	}
 });
 
 test('shim coerces non-string URL objects, WebSocket empty base, and null attribute values', () => {
-	let beaconUrl = null, assignedUrl = null, fetchedUrl = null;
+	let beaconUrl = null, assignedUrl = null, fetchedUrl = null, fetchedInit = null, openedUrl = null;
 	class WebSocket { constructor(u) { this.url = u; } }
 	class Audio { constructor(u) { this.src = u; } }
 	class HTMLImageElement { set src(v) { this.value = v; } set srcset(v) { this.srcsetValue = v; } }
@@ -393,7 +421,8 @@ test('shim coerces non-string URL objects, WebSocket empty base, and null attrib
 		HTMLImageElement,
 		HTMLAnchorElement,
 		XMLHttpRequest,
-		fetch: async u => { fetchedUrl = u; },
+		open(u) { openedUrl = u; },
+		fetch: async (u, init) => { fetchedUrl = u; fetchedInit = init; },
 		navigator: { sendBeacon(u) { beaconUrl = u; return true; } },
 		location: {
 			href: proxy('/dir/page'), origin, protocol: 'https:', hostname: 'proxy.example', port: '',
@@ -405,20 +434,33 @@ test('shim coerces non-string URL objects, WebSocket empty base, and null attrib
 	ctx.document.querySelectorAll = () => [{ getAttribute: name => name === 'data-pe-base' ? 'https://example.com/sub/' : null }];
 
 	assert.equal(new ctx.WebSocket('').url, 'wss://proxy.example/~https%3A%2F%2Fexample.com/sub/');
+	assert.equal(new ctx.WebSocket('#live').url, 'wss://proxy.example/~https%3A%2F%2Fexample.com/sub/#live');
 	assert.equal(new ctx.WebSocket(null).url, 'wss://proxy.example/~https%3A%2F%2Fexample.com/sub/null');
 	assert.equal(new ctx.Audio(null).src, proxy('/sub/null'));
 	const urlLike = { toString: () => '/api/v1' };
 	const xhr = new ctx.XMLHttpRequest();
 	xhr.open('GET', urlLike);
 	assert.equal(xhr.url, proxy('/api/v1'));
+	xhr.open('GET', '#part');
+	assert.equal(xhr.url, proxy('/sub/#part'));
 	xhr.open('GET', null);
 	assert.equal(xhr.url, proxy('/sub/null'));
-	ctx.fetch(null);
+	ctx.fetch(null, { referrer: null });
 	assert.equal(fetchedUrl, proxy('/sub/null'));
+	assert.equal(fetchedInit.referrer, proxy('/sub/null'));
+	ctx.fetch('#frag', { referrer: '#ref' });
+	assert.equal(fetchedUrl, proxy('/sub/#frag'));
+	assert.equal(fetchedInit.referrer, proxy('/sub/#ref'));
 	ctx.navigator.sendBeacon(urlLike);
 	assert.equal(beaconUrl, proxy('/api/v1'));
+	ctx.location.assign('#section');
+	assert.equal(assignedUrl, proxy('/sub/#section'));
 	ctx.location.assign(urlLike);
 	assert.equal(assignedUrl, proxy('/api/v1'));
+	ctx.window.open('');
+	assert.equal(openedUrl, '');
+	ctx.window.open('#popup');
+	assert.equal(openedUrl, proxy('/sub/#popup'));
 
 	const imageProp = new ctx.HTMLImageElement();
 	imageProp.src = null;
