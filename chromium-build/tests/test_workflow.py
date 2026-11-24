@@ -16,6 +16,8 @@ import time
 import unittest
 import urllib.error
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.github/scripts'))
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -236,6 +238,48 @@ class Checkpoint(unittest.TestCase):
     def consume(self, expected, **kwargs):
         return self.cli('restore-stream', str(self.root), env=dict(EXPECTED_SHA256=expected), **kwargs)
 
+    def test_short_reads_keep_the_manifest_and_chunk_boundaries(self):
+        import random
+        rng = random.Random(2026)
+
+        class ShortReader(io.BytesIO):
+            def readinto(self, view):
+                return super().readinto(view[:rng.randint(1, len(view))])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            for size in (1, 2, 3, 7, 16, 31, 64, 129, 1024):
+                for chunk_size in (1, 3, 8, 31, 128):
+                    payload = rng.randbytes(size)
+                    chunks = [payload[i:i + chunk_size] for i in range(0, size, chunk_size)]
+                    raw = ''.join(f'{hashlib.sha256(block).hexdigest()} {len(block)} {checkpoint.part_name(i)}\n'
+                                  for i, block in enumerate(chunks)).encode('ascii')
+                    sha, count, total = checkpoint.pack_stream(dest, ShortReader(payload), chunk_size)
+                    self.assertEqual((count, total), (len(chunks), size))
+                    self.assertEqual((dest / checkpoint.MANIFEST).read_bytes(), raw)
+                    self.assertEqual(sha, hashlib.sha256(raw).hexdigest())
+                    out = io.BytesIO()
+                    checkpoint.restore_stream(dest, sha, out)
+                    self.assertEqual(out.getvalue(), payload)
+                    self.assertEqual(list(dest.iterdir()), [])
+
+    def test_downstream_failure_keeps_current_part_and_closes_files(self):
+        class BrokenOutput(io.BytesIO):
+            def write(self, data):
+                raise OSError('downstream failed')
+
+        class BrokenFlush(io.BytesIO):
+            def flush(self):
+                raise OSError('downstream failed')
+
+        for output in (BrokenOutput(), BrokenFlush()):
+            with self.subTest(output=type(output).__name__):
+                before = set(Path('/proc/self/fd').iterdir())
+                with self.assertRaisesRegex(OSError, 'downstream failed'):
+                    checkpoint.restore_stream(self.root, self.expected, output)
+                self.assertEqual(set(Path('/proc/self/fd').iterdir()), before)
+                self.assertEqual(len(self.names()), 3)
+
     def test_cli_reports_throughput_to_job_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
             summary = Path(tmp) / 'summary'
@@ -290,7 +334,7 @@ class Checkpoint(unittest.TestCase):
                 checkpoint.restore_stream(dest, sha, out)
             self.assertEqual(out.getvalue(), b'')
 
-    def test_part_hashed_ahead_is_checked_before_streaming(self):
+    def test_each_part_is_authenticated_before_streaming(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)
             sha, _, _ = checkpoint.pack_stream(dest, io.BytesIO(b'aaaabbbbcccc'), chunk_size=4)
@@ -378,6 +422,12 @@ class Deadline(unittest.TestCase):
 
     def test_success(self):
         self.assertEqual(self.run_command('pass'), 'completed')
+
+    def test_unsolicited_interrupted_exit_is_not_resumable(self):
+        for code in build.NINJA_INTERRUPTED:
+            with self.subTest(code=code):
+                status = build.supervise([sys.executable, '-c', f'raise SystemExit({code})'], 2, grace=0.1)
+                self.assertEqual(status, f'failed:{code}')
 
     def test_compile_error(self):
         self.assertEqual(self.run_command('raise SystemExit(1)'), 'failed:1')
@@ -584,6 +634,15 @@ class Retry(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.strip(), 'attempts=3')
         self.assertEqual(p.stderr.count('::warning::'), 2)
+
+    def test_restores_callers_signal_traps_after_success(self):
+        for command in ('true', 'flaky'):
+            with self.subTest(command=command):
+                p = self.run_retry(
+                    "trap 'echo caller-int' INT; trap 'echo caller-term' TERM; "
+                    'before=$(trap -p); n=0; flaky() { n=$((n + 1)); (( n == 3 )); }; '
+                    f'retry {command}; [[ "$(trap -p)" == "$before" ]]')
+                self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_gives_up_after_three_attempts(self):
         p = self.run_retry('broken() { echo try; return 1; }; retry broken; echo unreachable')
@@ -800,6 +859,20 @@ class ResultVerdict(unittest.TestCase):
         self.assertTrue(ok, summary)
         self.assertIn('APK completed in `part-01`', summary)
         self.assertIn('| `part-02` | `skipped` | `-` |', summary)
+
+    def test_every_terminal_stage_requires_the_entire_valid_chain(self):
+        for idx, terminal in enumerate(self.ORDER):
+            jobs = {name: ('success', 'running') for name in self.ORDER[:idx]}
+            jobs[terminal] = ('success', 'completed')
+            with self.subTest(terminal=terminal):
+                ok, summary = self.verdict(**jobs)
+                self.assertTrue(ok, summary)
+                for name in self.ORDER:
+                    if name == terminal:
+                        continue
+                    invalid = dict(jobs, **{name: ('success', 'completed')})
+                    ok, summary = self.verdict(**invalid)
+                    self.assertFalse(ok, summary)
 
     def test_artifact_outputs_are_required_to_pass(self):
         ok, summary = self.verdict({'prepare': {'apk-id': ''}}, prepare=('success', 'completed'))

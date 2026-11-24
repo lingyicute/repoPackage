@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Stream-split a checkpoint into hashed parts; verify each part BEFORE tar consumes it."""
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 import hashlib
 import hmac
 import os
@@ -9,6 +9,8 @@ import re
 import stat
 import sys
 import time
+
+from files import open_regular_file
 
 CHUNK_SIZE = 1024 * 1024 * 1024  # 1 GiB
 IO_BUFFER = 8 * 1024 * 1024      # 8 MiB
@@ -60,21 +62,10 @@ def parts(directory):
 
 
 def _open_regular_ro(path):
-    # If a regular file was replaced by a FIFO, fail fstat instead of blocking.
-    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW
     try:
-        fd = os.open(path, flags)
-    except OSError as exc:
+        return open_regular_file(path)
+    except (OSError, ValueError) as exc:
         raise ValueError(BAD_LAYOUT) from exc
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise ValueError(BAD_LAYOUT)
-        os.set_blocking(fd, True)
-        return os.fdopen(fd, 'rb')
-    except BaseException:
-        os.close(fd)
-        raise
 
 
 def _read_exact(stream, buf):
@@ -202,60 +193,48 @@ def pack_stream(directory, in_stream, chunk_size=CHUNK_SIZE):
     dest = _require_real_dir(directory, 'Checkpoint output directory does not exist')
     if any(dest.iterdir()):
         raise ValueError('Checkpoint output must be empty')
+    view = memoryview(bytearray(min(IO_BUFFER, chunk_size)))
 
-    buf = bytearray(min(IO_BUFFER, chunk_size))
-    view = memoryview(buf)
-    lines = []
-    created = []
+    def read_block(remaining):
+        block = view[:min(len(view), remaining)]
+        n = in_stream.readinto(block)
+        if n is None or not 0 <= n <= len(block):
+            raise OSError('Invalid read from checkpoint stream')
+        return block[:n]
+
+    lines, created = [], []
     total_bytes = 0
-    out = h = name = None
-    written = 0
     try:
-        while True:
-            room = chunk_size - written if out is not None else chunk_size
-            read_slice = view[:min(len(buf), room)]
-            n = in_stream.readinto(read_slice)
-            if n == 0:
-                break
-            if n is None or not 0 < n <= len(read_slice):
-                raise OSError('Invalid read from checkpoint stream')
-            if out is None:
-                if len(lines) >= MAX_PARTS:
-                    raise ValueError('Checkpoint exceeded maximum part count')
-                name = part_name(len(lines))
-                part_path = dest / name
-                out = _open_exclusive_wo(part_path)
-                created.append(part_path)
-                h = hashlib.sha256()
-                written = 0
-            chunk = read_slice[:n]
-            _write_all(out, chunk)
-            h.update(chunk)
-            written += n
-            total_bytes += n
-            if written == chunk_size:
-                out.close()
-                out = None
-                lines.append(f'{h.hexdigest()} {written} {name}\n')
-        if out is not None:
-            out.close()
-            out = None
+        block = read_block(chunk_size)
+        while block:
+            if len(lines) >= MAX_PARTS:
+                raise ValueError('Checkpoint exceeded maximum part count')
+            name = part_name(len(lines))
+            path = dest / name
+            out = _open_exclusive_wo(path)
+            created.append(path)
+            with closing(out):
+                h, written = hashlib.sha256(), 0
+                while block:
+                    _write_all(out, block)
+                    h.update(block)
+                    written += len(block)
+                    if written == chunk_size:
+                        break
+                    block = read_block(chunk_size - written)
             lines.append(f'{h.hexdigest()} {written} {name}\n')
-        if total_bytes == 0:
+            total_bytes += written
+            if block:
+                block = read_block(chunk_size)
+        if not lines:
             raise ValueError('Empty checkpoint stream')
         data = ''.join(lines).encode('ascii')
         manifest_path = dest / MANIFEST
         out = _open_exclusive_wo(manifest_path)
         created.append(manifest_path)
-        _write_all(out, data)
-        out.close()
-        out = None
+        with closing(out):
+            _write_all(out, data)
     except BaseException:
-        if out is not None:
-            try:
-                out.close()
-            except OSError:
-                pass
         for path in created:
             try:
                 path.unlink()
@@ -267,46 +246,33 @@ def pack_stream(directory, in_stream, chunk_size=CHUNK_SIZE):
 
 def restore_stream(directory, expected, out_stream):
     entries = manifest(directory, expected)
-    buf = bytearray(IO_BUFFER)
-    view = memoryview(buf)
+    view = memoryview(bytearray(IO_BUFFER))
     total_bytes = 0
-    # Unlink each compressed chunk after it is consumed to reduce peak disk.
-    # Downstream failure loses this disposable local copy, NOT the artifact.
-    # Check the next part in the background. The current part is read a second
-    # time (usually from the cache); rehash it block by block before writing.
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        next_check = pool.submit(_verify_and_open, *entries[0])
-        try:
-            for n, (path, (_, expected_size)) in enumerate(entries):
-                f, prefixes = next_check.result()
-                next_check = None
-                with f:
-                    if n + 1 < len(entries):
-                        next_check = pool.submit(_verify_and_open, *entries[n + 1])
-                    if os.fstat(f.fileno()).st_size != expected_size:
-                        raise ValueError(MISMATCH)
-                    h = hashlib.sha256()
-                    remaining = expected_size
-                    for prefix in prefixes:
-                        block = view[:min(remaining, len(view))]
-                        if not _read_exact(f, block):
-                            raise ValueError(MISMATCH)
-                        h.update(block)
-                        if not hmac.compare_digest(h.copy().digest(), prefix):
-                            raise ValueError(MISMATCH)
-                        _write_all(out_stream, block)
-                        remaining -= len(block)
-                    if remaining or f.read(1):
-                        raise ValueError(MISMATCH)
-                total_bytes += expected_size
-                out_stream.flush()
-                path.unlink()
-        finally:
-            if next_check is not None:
-                try:
-                    next_check.result()[0].close()
-                except Exception:
-                    pass
+    # Keep only the current part open. Authenticate it, then recheck each prefix
+    # from that descriptor before streaming; an open fd alone cannot pin bytes.
+    for path, entry in entries:
+        _, expected_size = entry
+        f, prefixes = _verify_and_open(path, entry)
+        with f:
+            if os.fstat(f.fileno()).st_size != expected_size:
+                raise ValueError(MISMATCH)
+            h = hashlib.sha256()
+            remaining = expected_size
+            for prefix in prefixes:
+                block = view[:min(remaining, len(view))]
+                if not _read_exact(f, block):
+                    raise ValueError(MISMATCH)
+                h.update(block)
+                if not hmac.compare_digest(h.copy().digest(), prefix):
+                    raise ValueError(MISMATCH)
+                _write_all(out_stream, block)
+                remaining -= len(block)
+            if remaining or f.read(1):
+                raise ValueError(MISMATCH)
+        total_bytes += expected_size
+        # Never delete the current part until the downstream writer accepted it.
+        out_stream.flush()
+        path.unlink()
     (Path(directory) / MANIFEST).unlink()
     return len(entries), total_bytes
 
