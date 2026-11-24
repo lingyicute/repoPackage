@@ -34,8 +34,10 @@ public class MainActivity extends Activity implements View.OnClickListener {
     private boolean requestingFromRationale;
     private int displayedOrientation = Integer.MIN_VALUE;
     private final SharedPreferences.OnSharedPreferenceChangeListener selectionListener = (store, key) -> {
-        if (PreferenceManager.KEY_ORIENTATION.equals(key)) {
-            showSelection(preferenceManager.getOrientation());
+        if (key == null || PreferenceManager.KEY_ORIENTATION.equals(key)) {
+            showSelection(PermissionUtils.isDrawOverlaysPermissionGranted(this)
+                    ? preferenceManager.getOrientation()
+                    : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         }
     };
     private Integer pendingOrientation;
@@ -159,6 +161,11 @@ public class MainActivity extends Activity implements View.OnClickListener {
                                 preferenceManager.setNotificationRationaleShown(true))
                         .setOnCancelListener(dialog ->
                                 preferenceManager.setNotificationRationaleShown(true))
+                        .setOnDismissListener(dialog -> {
+                            if (rationaleDialog == dialog) {
+                                rationaleDialog = null;
+                            }
+                        })
                         .show();
             } else {
                 // First request, or a retry after an earlier prompt was dismissed unanswered.

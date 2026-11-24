@@ -57,7 +57,7 @@ def run(cmd, timeout=40):
     if IN_FLATPAK:
         return None, ""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout)
         return p.returncode, p.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired, PermissionError, OSError):
         return None, ""
@@ -209,6 +209,10 @@ def _flags_to_set(v):
     if isinstance(v, bool):
         return s
     if isinstance(v, int):
+        # fwupd exports an unsigned 64-bit flag mask. Negative Python ints
+        # otherwise set success/obsoleted through sign extension.
+        if not 0 <= v < (1 << 64):
+            return s
         for bit, name in data.HSI_FLAG_BITS.items():
             if v & bit:
                 s.add(name)
@@ -469,6 +473,12 @@ _SYSTEMD_BOOL_FALSE = {"0", "off", "n", "no", "false", "f"}
 _MITIGATIONS_RANK = {"off": 0, "auto": 1, "auto,nosmt": 2}
 # fs/proc/base.c proc_mem.force_override：never 彻底禁止 FOLL_FORCE，严格强于 ptrace。
 _PROC_MEM_RANK = {"always": 0, "ptrace": 1, "never": 2}
+# 裸出现即无条件禁用对应缓解的参数（内核 cmdline_find_option_bool，顺序无关）。
+_CMDLINE_FORCE_DISABLE = {
+    "nopti": "pti",
+    "nospectre_v2": "spectre_v2",
+    "nospec_store_bypass_disable": "spec_store_bypass_disable",
+}
 
 
 def _iter_cmdline_tokens(cmdline):
@@ -672,8 +682,16 @@ def get_cmdline_report() -> CmdlineReport:
     cmdline = read("/proc/cmdline").strip()
     present = {}
     efi_tokens = []
+    forced_off = {}
     for k, v in _iter_cmdline_tokens(cmdline):
         nk = _CMDLINE_KEY_ALIASES.get(_norm_key(k), _norm_key(k))
+        if v is None and nk in _CMDLINE_FORCE_DISABLE:
+            forced_off[_CMDLINE_FORCE_DISABLE[nk]] = nk
+            continue
+        # mm/slab_common.c：slab_merge / slub_merge 按顺序重新允许合并，覆盖先前的 slab_nomerge。
+        if v is None and nk in ("slab_merge", "slub_merge"):
+            present.pop("slab_nomerge", None)
+            continue
         # lib/vsprintf.c no_hash_pointers_enable()：仅接受无值的裸 token（带 = 返回 -EINVAL）。
         if nk == "no_hash_pointers":
             if v is not None:
@@ -707,6 +725,8 @@ def get_cmdline_report() -> CmdlineReport:
                     and nk != "hash_pointers"):
                 continue
             present[nk] = None
+    for target, flag in forced_off.items():
+        present[target] = flag
     ar, cv = arch(), cpu_vendor()
     running = kernelver.parse_release(platform.release())
     items = []
@@ -886,6 +906,36 @@ def _sysctl_from_proc(key):
     return actual, denied
 
 
+def _sysctl_effective_values(key, actual):
+    """Preserve raw readings for display, but compare effective rp_filter modes."""
+    if key != "net.ipv4.conf.*.rp_filter" or not actual:
+        return actual
+    all_key = "net.ipv4.conf.all.rp_filter"
+    default_key = "net.ipv4.conf.default.rp_filter"
+    effective = {}
+    if default_key not in actual:
+        effective[default_key] = None
+    if not any(k not in (all_key, default_key) for k in actual):
+        # All/default alone cannot rule out a loose-mode existing interface.
+        effective[key] = None
+    try:
+        global_mode = int(actual.get(all_key))
+    except (TypeError, ValueError):
+        global_mode = None
+    # all=0 can still be strict if every current/default interface is strict.
+    effective[all_key] = "1" if global_mode == 0 else actual.get(all_key)
+    for k, value in actual.items():
+        if k == all_key:
+            continue
+        try:
+            mode = int(value)
+            effective[k] = ("2" if mode == 2 else
+                            str(max(mode, global_mode)) if global_mode is not None else None)
+        except (TypeError, ValueError):
+            effective[k] = None
+    return effective
+
+
 def get_sysctl_report() -> SysctlReport:
     hd = hostdata.CURRENT
     user_values = hd.sysctl_values
@@ -951,7 +1001,7 @@ def get_sysctl_report() -> SysctlReport:
                     age = hd.step_age_text("sysctl")
                     source = f"用户提供（{age}）" if age else "用户提供"
                     if denied_keys is not None and any(k in denied_keys for k in actual):
-                        unreadable = bool(denied_keys - set(filled))
+                        unreadable = bool((denied_keys & actual.keys()) - set(filled))
                     else:
                         unreadable = any(v is None for v in actual.values())
             elif IN_FLATPAK and user_values and not (
@@ -964,14 +1014,21 @@ def get_sysctl_report() -> SysctlReport:
                 # 这种情况落到下面的 unknown，界面才会给出「可能没有加 sudo」的提示。
                 actual, source, snapshot_gap = {}, "快照缺失", "快照缺失"
                 unreadable = False
+            if e.get("skip_ifaces"):
+                # Some per-interface settings have no effective conf/all value.
+                actual = {k: v for k, v in actual.items()
+                          if k.split(".")[-2] not in e["skip_ifaces"]}
+                if denied_keys is not None:
+                    unreadable = unreadable and bool(denied_keys.intersection(actual))
+            compared = _sysctl_effective_values(key, actual)
             if snapshot_gap:
                 status = "unverified"
             elif not actual:
                 status = "unknown" if unreadable else "na"
             elif any(v is not None and not _sysctl_value_ok(v, e["value"], cmp)
-                     for v in actual.values()):
+                     for v in compared.values()):
                 status = "missing"
-            elif unreadable or any(v is None for v in actual.values()):
+            elif unreadable or any(v is None for v in compared.values()):
                 # 部分接口读不到时，不能凭其余接口的正确值宣称整项已加固；非权限错误（如 EIO）单独标记来源。
                 status = "unknown"
                 if not unreadable:
@@ -1403,8 +1460,13 @@ def _ntfs_partitions():
                 devname = f"/dev/{devname}"
             elif not devname:
                 devname = f
-            links = re.search(r"^E:DEVLINKS=([^\r\n]+)$", content, re.M)
             dev_aliases = {devname} if devname else set()
+            # systemd-udev 在 /run/udev/data/b* 中以逐行 S:<相对路径> 记录设备软链，而非 E:DEVLINKS=。
+            for m_sym in re.finditer(r"^S:([^\r\n]+)$", content, re.M):
+                lnk = m_sym.group(1).strip()
+                if lnk:
+                    dev_aliases.add(lnk if lnk.startswith("/") else f"/dev/{lnk}")
+            links = re.search(r"^E:DEVLINKS=([^\r\n]+)$", content, re.M)
             if links:
                 for lnk in links.group(1).split():
                     dev_aliases.add(lnk if lnk.startswith("/") else f"/dev/{lnk}")
@@ -1465,10 +1527,13 @@ def _windows_installed():
 def check_ntfs() -> HabitCheck:
     parts, source = _ntfs_partitions()
     win = _windows_installed()
-    if not parts and not win and (not source or source == "/proc/mounts" or (
+    # udev may contain only some disks; mounted filesystems are not a full
+    # inventory either. Positive evidence is useful, absence is not proof.
+    complete = source in ("lsblk", "lsblk（用户提供）")
+    if not parts and not win and (not complete or (
             IN_FLATPAK and hostdata.CURRENT.lsblk is None)):
         detail = ("Flatpak 沙箱内看不到宿主机的块设备信息。" if IN_FLATPAK else
-                  "未能取得完整的块设备信息；挂载表无法排除未挂载的 Windows 分区。")
+                  "未能取得完整的块设备信息；udev 记录与挂载表无法排除未枚举的 Windows 分区。")
         return HabitCheck("ntfs", "NTFS / Windows 检测", "unknown", "未能完整枚举磁盘分区",
                           [detail],
                           "请从主菜单选择「重新采集系统数据」，按向导执行 lsblk 并粘贴结果，即可完成此项检测。")
@@ -1511,6 +1576,17 @@ class Report:
     identity: object = None         # hostinfo.HostIdentity
     hostdata: object = None         # hostdata.HostData
     kernel_support: object = None   # kernelver.KernelSupport（联网检查失败时为 None 或已知的缓存值）
+
+    @property
+    def incomplete(self):
+        """A high partial score must not be presented as complete assurance."""
+        ks = self.kernel_support
+        return (self.hsi.score is None or bool(self.hsi.undetermined)
+                or self.cmdline.score is None or self.sysctl.score is None
+                or bool(self.sysctl.unknown or self.sysctl.unverified)
+                or not self.hardware.matched_on or self.habits.score is None
+                or any(c.status == "unknown" for c in self.habits.checks)
+                or ks is None or not ks.known or ks.stale or not ks.supported)
 
     @staticmethod
     def _mean(values):

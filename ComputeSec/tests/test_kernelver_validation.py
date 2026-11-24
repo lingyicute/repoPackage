@@ -39,7 +39,14 @@ def test_unusable_cache_does_not_suppress_fetch(tmp_path):
         calls.append(1)
         return json.dumps({"releases": [{"moniker": "mainline", "version": "7.3"}]})
 
-    status = kv.get_status("7.2", now=1001, fetcher=fetch, cache_path=str(cache))
+    status = kv.get_status("7.3", now=1001, fetcher=fetch, cache_path=str(cache))
     assert calls == [1]
     assert status.known
     assert status.mainline == "7.3"
+
+
+def test_kernel_support_clears_invalid_upstream_version_strings():
+    st = kv.KernelSupport(release="6.12.1", mainline="not-a-version", stable="7.2.12")
+    assert st.mainline == ""
+    assert st.stable == "7.2.12"
+    assert st.tier == "older"

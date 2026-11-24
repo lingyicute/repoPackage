@@ -356,6 +356,18 @@ footer a{color:var(--primary);font-weight:500}
 .palette{display:none}
 }
 </style>
+<script>
+/* Apply the saved/system theme before first paint: doing it only from the script
+   at the end of <body> flashes the light theme (and fades into dark over .4s). */
+(function(){
+  var r = document.documentElement, t = null, h = null;
+  try { t = localStorage.getItem('ad-theme'); h = localStorage.getItem('ad-hue'); } catch (e) {}
+  if (t !== 'dark' && t !== 'light') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  r.setAttribute('data-theme', t);
+  if (h && /^\d+(\.\d+)?$/.test(h.trim())) r.style.setProperty('--hue', h.trim());
+})();
+</script>
+<noscript><style>.reveal{opacity:1;transform:none}</style></noscript>
 <style>
 @font-face {
     font-family: 'Nebulove';
@@ -522,7 +534,7 @@ footer a{color:var(--primary);font-weight:500}
         <div class="num"><svg><use href="#i-cloud"/></svg></div>
         <h3>Runner 端 wget 下载</h3>
         <p class="body-md">在 ubuntu-latest 上安装 wget、tree、coreutils，把文件抓取到 <em>downloads/down</em>。GitHub 到海外源站的链路又快又稳。</p>
-        <code>wget -O downloads/down '$LINK'</code>
+        <code>wget -O downloads/down -- "$LINK"</code>
       </article>
       <article class="flow-card reveal">
         <div class="num"><svg><use href="#i-cut"/></svg></div>
@@ -648,7 +660,8 @@ footer a{color:var(--primary);font-weight:500}
         <span class="k">required</span>: true
 
 <span class="k">steps</span>:
-  - <span class="k">run</span>: wget -O downloads/down '${{ github.event.inputs.LINK }}'
+  - <span class="k">env</span>: { LINK: ${{ github.event.inputs.LINK }} }
+    <span class="k">run</span>: wget -O downloads/down -- "$LINK"
   - <span class="k">run</span>: |   <span class="c"># ≥ 2GiB 自动分卷</span>
       split -b 2046M -d down down.part
   - <span class="k">run</span>: gh release create "downloader-${{ github.run_number }}" *
@@ -740,16 +753,26 @@ footer a{color:var(--primary);font-weight:500}
   const $$ = (s, r=document) => [...r.querySelectorAll(s)];
   const root = document.documentElement;
 
+  /* ---------- storage ---------- */
+  // Touching localStorage throws SecurityError when storage is blocked (browser
+  // privacy settings, sandboxed iframes). Left unguarded, that aborts this whole
+  // script before the reveal observer runs and every .reveal section stays
+  // invisible. Treat storage as best-effort.
+  const store = {
+    get(k){ try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v){ try { localStorage.setItem(k, v); } catch { /* not persisted */ } }
+  };
+
   /* ---------- 主题：深浅色 ---------- */
   const themeIcon = $('#themeIcon use');
   function applyTheme(t){
     root.setAttribute('data-theme', t);
     themeIcon.setAttribute('href', t === 'dark' ? '#i-light' : '#i-dark');
-    localStorage.setItem('ad-theme', t);
+    store.set('ad-theme', t);
   }
   // Only accept values this page itself wrote: localStorage is shared per-origin,
   // and a foreign "ad-theme" would set a data-theme matching neither rule.
-  const savedTheme = localStorage.getItem('ad-theme');
+  const savedTheme = store.get('ad-theme');
   applyTheme(savedTheme === 'dark' || savedTheme === 'light'
     ? savedTheme
     : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
@@ -760,11 +783,11 @@ footer a{color:var(--primary);font-weight:500}
   function applyHue(h){
     root.style.setProperty('--hue', h);
     $$('.sw').forEach(b => b.classList.toggle('on', b.dataset.hue == h));
-    localStorage.setItem('ad-hue', h);
+    store.set('ad-hue', h);
   }
   // Same for the hue: it is fed straight into oklch(), so a foreign value would
   // poison --hue. Only digits are accepted here.
-  const savedHue = localStorage.getItem('ad-hue');
+  const savedHue = store.get('ad-hue');
   if (savedHue && /^\d+(\.\d+)?$/.test(savedHue.trim())) applyHue(savedHue.trim());
   $('#paletteBtn').addEventListener('click', e => { e.stopPropagation(); swatches.classList.toggle('open'); });
   swatches.addEventListener('click', e => { const b = e.target.closest('.sw'); if (b) applyHue(b.dataset.hue); });
@@ -785,6 +808,9 @@ footer a{color:var(--primary);font-weight:500}
     ink.style.cssText = `width:${size}px;height:${size}px;left:${e.clientX - r.left - size/2}px;top:${e.clientY - r.top - size/2}px`;
     el.appendChild(ink);
     ink.addEventListener('animationend', () => ink.remove());
+    // With prefers-reduced-motion the CSS disables animations, so animationend
+    // never fires and every click would leave an orphan span behind.
+    setTimeout(() => ink.remove(), 700);
   });
 
   /* ---------- Reveal & 速度条 ---------- */

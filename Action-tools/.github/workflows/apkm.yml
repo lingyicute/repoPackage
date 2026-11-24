@@ -76,10 +76,13 @@ jobs:
           cd work
           curl -L --fail --retry 3 --retry-delay 5 --connect-timeout 30 \
             -A "Mozilla/5.0 (X11; Linux x86_64)" \
-            -o input.apkm "${APKM_URL}"
+            -o input.apkm --url "${APKM_URL}"
           ls -lh input.apkm
           # 校验确实是 zip 文件 (apkm 本质是 zip)
-          unzip -l input.apkm | head -n 30
+          # 不要写成 `unzip -l ... | head`：条目多（语言分包多）时 head 先退出，
+          # unzip 收到 SIGPIPE，在 pipefail 下整步被误判为失败。
+          unzip -l input.apkm > apkm-listing.txt
+          head -n 30 apkm-listing.txt
 
       - name: Merge splits into a single APK
         run: |
@@ -146,7 +149,9 @@ jobs:
         run: |
           set -euo pipefail
           cd work
-          SAFE_NAME="$(printf '%s' "${OUTPUT_NAME:-app}" | tr -c 'A-Za-z0-9._-' '_' | sed 's/^_*//; s/_*$//')"
+          # 开头的 - 会让 mv/sha256sum 把文件名当成选项；开头的 . 会变成隐藏文件，
+          # upload-artifact 默认不收，所以这两类字符一并从开头剥掉。
+          SAFE_NAME="$(printf '%s' "${OUTPUT_NAME:-app}" | tr -c 'A-Za-z0-9._-' '_' | sed 's/^[_.-]*//; s/_*$//')"
           [ -n "${SAFE_NAME}" ] || SAFE_NAME="app"
           FILE="${SAFE_NAME}-run${RUN_NUMBER}.apk"
           mv final.apk "${FILE}"
@@ -175,11 +180,18 @@ jobs:
           name: ${{ steps.prep.outputs.name }}
           path: ${{ steps.prep.outputs.file }}
           if-no-files-found: error
+          overwrite: true
 
       - name: Publish GitHub Release
         run: |
           set -euo pipefail
           TAG="run-${RUN_NUMBER}"
+          # 重跑 (Re-run jobs) 时 run_number 不变，同名 Release 已存在会让 gh 报错退出；
+          # 与其他工作流一致，先删旧的再建。
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            echo "Release ${TAG} already exists (re-run), deleting it first."
+            gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --cleanup-tag --yes
+          fi
           gh release create "${TAG}" "${{ steps.prep.outputs.file }}" \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \

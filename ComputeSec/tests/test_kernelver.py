@@ -123,6 +123,13 @@ def test_classify_without_upstream_data():
     # 只拿到 stable 也能判断
     assert kv.classify("6.1.158", "", "7.2.12") == "older"
     assert kv.classify("7.2.12", "", "7.2.12") == "stable"
+    # 只拿到 mainline 而缺少 stable 时，低于 mainline 的内核无法区分 stable 与 older
+    assert kv.classify("7.3.0", "7.3", "") == "mainline"
+    assert kv.classify("7.2.12", "7.3", "") == "unknown"
+    st = kv.KernelSupport(release="7.2.12", mainline="7.3", stable="")
+    assert not st.known and st.tier == "unknown"
+    assert "stable" in kv.fetch_failed_text(st)
+    assert "stable" in kv.recheck_result_text(st)
 
 
 # ---------------------------------------------------------------------------
@@ -599,3 +606,21 @@ def test_negative_float_timestamp_and_subsecond_or_bool_now_rejected(tmp_path):
     assert kv.load_cache(str(cache), now="bad") is None
     st = kv.get_status("7.2.12", now=float("nan"), fetcher=_fetcher_returning(RELEASES_JSON), cache_path=str(cache))
     assert st.known and st.supported
+
+
+def test_load_cache_reads_raw_utf8(tmp_path):
+    cache = tmp_path / "kernelver.json"
+    doc = {"release": "7.2", "mainline": "7.3", "stable": "7.2.1", "tier": "stable", "checked_at": 1000, "error": "连接超时"}
+    cache.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    loaded = kv.load_cache(str(cache))
+    assert loaded is not None and loaded.error == "连接超时"
+
+
+def test_parse_releases_json_prefers_latest_maintained_mainline():
+    doc = {"releases": [
+        {"moniker": "mainline", "version": "7.4-rc1", "iseol": True},
+        {"moniker": "mainline", "version": "7.2", "iseol": False},
+        {"moniker": "mainline", "version": "7.3-rc2", "iseol": False},
+        {"moniker": "stable", "version": "7.1.4", "iseol": False},
+    ]}
+    assert kv.parse_releases_json(json.dumps(doc)) == ("7.3-rc2", "7.1.4")

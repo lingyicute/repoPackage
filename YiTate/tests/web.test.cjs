@@ -794,3 +794,47 @@ test('layer diagram labels stay readable on touch screens that cannot hover', ()
   assert.match(layer, /align-items:\s*flex-end/, 'a centred label is covered by the layer above');
   assert.match(layer, /padding-bottom:\s*\d+px/);
 });
+
+test('the hero chip dot does not shrink when the label wraps on narrow screens', () => {
+  const dot = html.match(/\.chip \.dot\s*\{([^}]*)\}/)[1];
+  assert.match(dot, /flex:\s*none|flex-shrink:\s*0/);
+});
+
+test('body prefers overflow-x clip so sticky positioning is not affected', () => {
+  assert.match(html, /@supports \(overflow: clip\)\s*\{\s*body\s*\{\s*overflow-x:\s*clip;/);
+});
+
+test('the layer diagram scales and stays contained on narrow screens', () => {
+  const layers = html.match(/\n  \.layers\s*\{([^}]*)\}/)[1];
+  assert.match(layers, /overflow:\s*hidden/);
+  const mobile = html.match(/@media \(max-width: 560px\)\s*\{([\s\S]*?)\n  \}/)[1];
+  assert.match(mobile, /\.layer\s*\{[^}]*width:\s*184px/);
+});
+
+test('footer note and links align with the start edge on narrow screens', () => {
+  const mobile = html.match(/@media \(max-width: 560px\)\s*\{([\s\S]*?)\n  \}/)[1];
+  assert.match(mobile, /\.foot \.foot-end\s*\{\s*align-items:\s*flex-start/);
+  assert.match(mobile, /\.foot \.foot-note\s*\{[^}]*text-align:\s*left/);
+});
+
+test('reveal observer triggers with minimal intersection for short viewports', () => {
+  const page = boot();
+  assert.ok(page.observers[0].options.threshold <= 0.01);
+});
+
+test('reveal focus handler ignores targets without closest()', () => {
+  const page = boot();
+  assert.doesNotThrow(() => {
+    page.document.listeners.focusin({ target: null });
+    page.document.listeners.focusin({ target: {} });
+  });
+});
+
+test('all decorative inline SVG icons are hidden from assistive technology', () => {
+  const body = html.slice(html.indexOf('<body>'));
+  const svgs = [...body.matchAll(/<svg\b[^>]*>/g)].map(m => m[0]);
+  assert.equal(svgs.length, 15);
+  for (const tag of svgs) {
+    assert.match(tag, /aria-hidden="true"/, tag);
+  }
+});

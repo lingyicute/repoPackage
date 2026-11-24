@@ -43,7 +43,7 @@ jobs:
           echo "::error::PART 是空的，请至少填写一个分区名（例如 boot）"
           exit 1
         fi
-        payload_dumper --partitions "$PART_CLEAN" "$LINK"
+        payload_dumper --partitions "$PART_CLEAN" -- "$LINK"
 
     - name: Upload Artifact (universal)
       uses: actions/upload-artifact@v4
@@ -53,3 +53,4 @@ jobs:
         # 一个分区都没导出（分区名写错、payload 不含该分区）时，
         # 默认只会 warn，job 仍然显示成功；这里改成 error，避免「成功但其实没产物」。
         if-no-files-found: error
+        overwrite: true

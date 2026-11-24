@@ -30,13 +30,15 @@ jobs:
       # LINK 通过环境变量传入，避免链接中的引号被拼进 shell 代码
       env:
         LINK: ${{ github.event.inputs.LINK }}
-      run: wget -O "$WORK_DIR/a.tar.gz" "$LINK"
+      # 压缩包放在 RUNNER_TEMP 而不是 $WORK_DIR：归档里若有顶层的 a.tar.gz，
+      # 解压后会覆盖同名文件，随后清理步骤会把它当成压缩包一并删掉。
+      run: wget -O "$RUNNER_TEMP/a.tar.gz" -- "$LINK"
 
-    - name: Tree after wget
-      run: tree -ash "$GITHUB_WORKSPACE/$WORK_DIR"
+    - name: Show downloaded archive
+      run: ls -lh "$RUNNER_TEMP/a.tar.gz"
 
     - name: Unzip
-      run: tar -zxvf "$WORK_DIR/a.tar.gz" -C "$WORK_DIR"
+      run: tar -zxvf "$RUNNER_TEMP/a.tar.gz" -C "$WORK_DIR"
 
     - name: Tree after unzip
       run: tree -ash "$GITHUB_WORKSPACE/$WORK_DIR"
@@ -45,7 +47,10 @@ jobs:
       run: |
         set -euo pipefail
         cd "$WORK_DIR"
-        rm -f a.tar.gz
+
+        # 归档里的目录/文件可能没有属主权限位（如 0555、000）：不先恢复，
+        # find 进不去、mv 搬不出、rm 删不掉、gh 也读不了。-R 不会跟随软链接。
+        chmod -R u+rwX .
 
         # 1) 软链接一律删除，不做实体化：软链接无法可靠地作为 Release 资产
         #    （悬空的会 ENOENT、指向目录的会 EISDIR），而且目标若在本归档内，
@@ -65,11 +70,14 @@ jobs:
         moved=0
         renamed=0
         while IFS= read -r -d '' f; do
-          name=${f##*/}          #  basename
+          orig=${f##*/}          #  basename
           rel=${f#./}            # 相对 a/ 的路径，只用于打日志
+          # `gh release create FILE#LABEL` 会把 # 之后的内容当作资产标签，名字里带 #
+          # 的文件会被截成一个不存在的路径而让发布失败，所以统一把 # 换成 _。
+          name=${orig//#/_}
           case $rel in
             */*) ;;              # 子目录里的文件需要搬运
-            *)   continue ;;     # 顶层文件原地不动
+            *)   [ "$name" != "$orig" ] || continue ;;  # 顶层文件原地不动（除非要改名）
           esac
 
           # 重名时自动改名：foo.txt -> foo.1.txt -> foo.2.txt，绝不覆盖。
@@ -89,9 +97,9 @@ jobs:
             dest="${stem}.${i}${ext}"
             i=$((i + 1))
           done
-          if [ "$dest" != "$name" ]; then
+          if [ "$dest" != "$orig" ]; then
             renamed=$((renamed + 1))
-            echo "重名冲突：$rel 已另存为 $dest"
+            echo "重名冲突或名字含 #：$rel 已另存为 $dest"
           fi
 
           mv -- "$f" "$dest"
@@ -106,8 +114,10 @@ jobs:
           printf '%s\n' "$leftover"
           exit 1
         fi
-        find . -mindepth 1 -type d -exec rm -rf {} +
-        echo "扁平化完成：搬运 $moved 个文件（其中 $renamed 个因重名改名）。"
+        # 只删顶层目录：嵌套目录随之消失。遍历全部层级时 -exec ... + 在条目很多时会
+        # 分批执行，先删了父目录，find 再往里走就会报 No such file 而整步失败。
+        find . -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+        echo "扁平化完成：搬运 $moved 个文件（其中 $renamed 个因重名或含 # 改名）。"
 
     - name: Tree after process
       run: tree -ash "$GITHUB_WORKSPACE/$WORK_DIR"

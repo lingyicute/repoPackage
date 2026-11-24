@@ -981,7 +981,8 @@ def test_sysctl_flatpak_without_host_network_marks_net_unverified(monkeypatch):
 def _fake_sysctl_reader(value_for_key):
     """伪造 _sysctl_from_proc：按 sysctl 表里的期望值返回"已加固"的读数。"""
     expected = {e["key"]: e["value"] for _, entries in data.SYSCTL_GROUPS for e in entries}
-    return lambda key: ({key.replace("*", "all"): str(expected.get(key, value_for_key))}, False)
+    return lambda key: ({key.replace("*", name): str(expected.get(key, value_for_key))
+                         for name in ("all", "default", "eth0")}, False)
 
 
 def test_sysctl_flatpak_with_shared_network_trusts_sandbox(monkeypatch):
@@ -1700,3 +1701,61 @@ def test_udev_devlinks_dedup_and_usb_camera_exclusion(monkeypatch):
     found, _ = checks._ntfs_partitions()
     assert len(found) == 1
     assert found[0].startswith("/dev/sda2 ")
+
+
+def test_udev_s_symlinks_dedup_and_filter_fuseblk(monkeypatch):
+    """真实的 /run/udev/data/b* 以逐行 S: 记录设备软链。"""
+    monkeypatch.setattr(checks.hostdata, "CURRENT", hostdata.HostData())
+    monkeypatch.setattr(checks, "run", lambda *_: (None, ""))
+    monkeypatch.setattr(checks.glob, "glob", lambda _: ["/run/udev/data/b8:1", "/run/udev/data/b8:2"])
+
+    def fake_read(path, default=""):
+        if path == "/run/udev/data/b8:1":
+            return "S:disk/by-uuid/AAAA-1111\nS:mapper/exfat-vol\nE:ID_FS_TYPE=exfat\n"
+        if path == "/sys/dev/block/8:1/uevent":
+            return "DEVNAME=sda1\n"
+        if path == "/run/udev/data/b8:2":
+            return "S:disk/by-uuid/BBBB-2222\nE:ID_FS_TYPE=ntfs\nE:ID_FS_LABEL=Win\n"
+        if path == "/sys/dev/block/8:2/uevent":
+            return "DEVNAME=sda2\n"
+        if path == "/proc/mounts":
+            return (
+                "/dev/mapper/exfat-vol /mnt/exfat fuseblk rw 0 0\n"
+                "/dev/disk/by-uuid/BBBB-2222 /mnt/win ntfs3 rw 0 0\n"
+            )
+        return default
+
+    monkeypatch.setattr(checks, "read", fake_read)
+    found, _ = checks._ntfs_partitions()
+    assert len(found) == 1
+    assert found[0].startswith("/dev/sda2 ")
+
+
+@pytest.mark.parametrize("cmdline,key,flag", [
+    ("pti=on nopti", "pti", "nopti"),
+    ("nopti pti=on", "pti", "nopti"),
+    ("spectre_v2=on nospectre_v2", "spectre_v2", "nospectre_v2"),
+    ("nospectre-v2 spectre_v2=on", "spectre_v2", "nospectre_v2"),
+    ("spec_store_bypass_disable=on nospec_store_bypass_disable", "spec_store_bypass_disable", "nospec_store_bypass_disable"),
+])
+def test_cmdline_force_disable_flags_override_enabled_params(monkeypatch, cmdline, key, flag):
+    monkeypatch.setattr(checks, "arch", lambda: "x86_64")
+    monkeypatch.setattr(checks, "cpu_vendor", lambda: "intel")
+    monkeypatch.setattr(checks, "read", lambda p, d="": cmdline if p == "/proc/cmdline" else d)
+    item = next(i for i in checks.get_cmdline_report().items if i.key == key)
+    assert item.status == "wrong"
+    assert item.actual == flag
+
+
+@pytest.mark.parametrize("cmdline,want", [
+    ("slab_nomerge slab_merge", "missing"),
+    ("slub_nomerge slub_merge", "missing"),
+    ("slab_merge slab_nomerge", "ok"),
+    ("slab_nomerge slab_merge=0", "ok"),
+])
+def test_cmdline_slab_merge_overrides_earlier_nomerge(monkeypatch, cmdline, want):
+    monkeypatch.setattr(checks, "arch", lambda: "x86_64")
+    monkeypatch.setattr(checks, "cpu_vendor", lambda: "intel")
+    monkeypatch.setattr(checks, "read", lambda p, d="": cmdline if p == "/proc/cmdline" else d)
+    item = next(i for i in checks.get_cmdline_report().items if i.key == "slab_nomerge")
+    assert item.status == want

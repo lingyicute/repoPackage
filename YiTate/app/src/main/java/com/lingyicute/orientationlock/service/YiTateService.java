@@ -46,7 +46,7 @@ public class YiTateService extends Service {
     private String lastNotificationTitle;
     private String lastNotificationText;
     private final SharedPreferences.OnSharedPreferenceChangeListener orientationListener = (store, key) -> {
-        if (PreferenceManager.KEY_ORIENTATION.equals(key)
+        if ((key == null || PreferenceManager.KEY_ORIENTATION.equals(key))
                 && currentOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 && preferences.getOrientation() == ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
             stopLock();
@@ -94,7 +94,11 @@ public class YiTateService extends Service {
         filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.addAction(Intent.ACTION_SCREEN_ON);
         // These are protected system broadcasts, not app-defined broadcasts.
-        registerReceiver(screenReceiver, filter);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(screenReceiver, filter);
+        }
         AppOpsManager appOps = (AppOpsManager) getSystemService(APP_OPS_SERVICE);
         // On API 21-22 the integer watcher can register, but Android only dispatches
         // this listener for ops with a public string name. Overlay has none until M.
@@ -174,7 +178,11 @@ public class YiTateService extends Service {
         if (appOps != null) appOps.stopWatchingMode(overlayListener);
         mainHandler.removeCallbacks(checkOverlayPermission);
         removeOrientationLayout();
-        stopForeground(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE);
+        } else {
+            stopForeground(true);
+        }
         super.onDestroy();
     }
 
@@ -190,8 +198,12 @@ public class YiTateService extends Service {
                 return;
             }
             NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (manager == null) {
+                return;
+            }
             NotificationChannel channel = new NotificationChannel(CHANNEL_ID,
                     channelName, NotificationManager.IMPORTANCE_LOW);
+            channel.setShowBadge(false);
             manager.createNotificationChannel(channel);
             lastChannelName = channelName;
         }
@@ -215,9 +227,11 @@ public class YiTateService extends Service {
                 .setContentText(text)
                 .setSmallIcon(R.drawable.ic_stat_orientation)
                 .setContentIntent(pendingIntent)
-                .setPriority(Notification.PRIORITY_LOW)
                 .setOnlyAlertOnce(true)
                 .setOngoing(true);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            builder.setPriority(Notification.PRIORITY_LOW);
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
         }
@@ -255,11 +269,15 @@ public class YiTateService extends Service {
             return false;
         }
         PowerManager powerManager = (PowerManager) getSystemService(POWER_SERVICE);
-        if (!powerManager.isInteractive()) {
+        if (powerManager != null && !powerManager.isInteractive()) {
             removeOrientationLayout();
             return true; // Keep the requested orientation for SCREEN_ON.
         }
         WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        if (windowManager == null) {
+            failLock();
+            return false;
+        }
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(0, 0,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                         ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
@@ -307,7 +325,10 @@ public class YiTateService extends Service {
         mainHandler.removeCallbacks(pollOverlayPermission);
         if (holderView == null) return;
         try {
-            ((WindowManager) getSystemService(WINDOW_SERVICE)).removeViewImmediate(holderView);
+            WindowManager windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+            if (windowManager != null) {
+                windowManager.removeViewImmediate(holderView);
+            }
         } catch (IllegalArgumentException e) {
             Log.w(TAG, "Overlay was already detached", e);
         } finally {

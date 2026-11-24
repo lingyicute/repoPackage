@@ -120,6 +120,20 @@ public class MainActivityTest {
         }
     }
 
+    @Test
+    @Config(sdk = 34)
+    public void activeActivityResetsSelectionWhenPreferencesAreCleared() {
+        ShadowSettings.setCanDrawOverlays(true);
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            MainActivity activity = controller.get();
+            activity.findViewById(R.id.tv_orientation_landscape).performClick();
+            assertTrue(activity.findViewById(R.id.tv_orientation_landscape).isSelected());
+            activity.getSharedPreferences("settings", Context.MODE_PRIVATE).edit().clear().commit();
+            assertTrue(activity.findViewById(R.id.tv_orientation_default).isSelected());
+            assertFalse(activity.findViewById(R.id.tv_orientation_landscape).isSelected());
+        }
+    }
+
     public static class RejectingActivity extends MainActivity {
         @Override
         public ComponentName startForegroundService(Intent intent) {
@@ -192,6 +206,19 @@ public class MainActivityTest {
                     (LinearLayout.LayoutParams) about.getLayoutParams();
             assertEquals(endParams.width, startParams.width);
             assertEquals(endParams.getMarginEnd(), startParams.getMarginStart());
+        }
+    }
+
+    @Test
+    public void aboutButtonHasRoomForItsIconWithoutClipping() {
+        try (ActivityController<MainActivity> controller = Robolectric.buildActivity(MainActivity.class).setup()) {
+            ImageButton about = controller.get().findViewById(R.id.iv_about);
+            Drawable icon = about.getDrawable();
+            assertNotNull(icon);
+            int width = about.getLayoutParams().width - about.getPaddingLeft() - about.getPaddingRight();
+            int height = about.getLayoutParams().height - about.getPaddingTop() - about.getPaddingBottom();
+            assertTrue(width >= icon.getIntrinsicWidth());
+            assertTrue(height >= icon.getIntrinsicHeight());
         }
     }
 
@@ -285,6 +312,7 @@ public class MainActivityTest {
             // AlertDialog delivers button clicks through a Handler message.
             shadowOf(Looper.getMainLooper()).idle();
             assertTrue(preferences.isNotificationRationaleShown());
+            assertNull(ReflectionHelpers.getField(first.get(), "rationaleDialog"));
         }
         try (ActivityController<MainActivity> second = Robolectric.buildActivity(MainActivity.class).setup()) {
             assertNull(ReflectionHelpers.getField(second.get(), "rationaleDialog"));

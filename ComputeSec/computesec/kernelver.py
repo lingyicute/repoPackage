@@ -24,6 +24,7 @@ mainline 或 stable 内核。
 """
 
 import json
+import math
 import os
 import platform
 import re
@@ -95,7 +96,7 @@ def parse_releases_json(text):
     releases = doc.get("releases")
     if not isinstance(releases, list):
         return "", ""
-    mainline = ""
+    mainlines, active_mainlines = [], []
     stables, maintained = [], []
     for rel in releases:
         if not isinstance(rel, dict):
@@ -104,12 +105,16 @@ def parse_releases_json(text):
         version = rel.get("version")
         if not _upstream_version_ok(version):
             continue
-        if moniker == "mainline" and not mainline:
-            mainline = version
+        if moniker == "mainline":
+            mainlines.append(version)
+            if rel.get("iseol") is not True:
+                active_mainlines.append(version)
         elif moniker == "stable":
             stables.append(version)
             if rel.get("iseol") is not True:
                 maintained.append(version)
+    mainline = (max(active_mainlines, key=parse_release) if active_mainlines
+                else (max(mainlines, key=parse_release) if mainlines else ""))
     # stable 可能同时有两条：新分支出了 .1 之后，上一条还会再维护两三周才标成 EOL
     # （iseol=true）。classify() 拿这里的 stable 当「受支持」的门槛，所以取仍在维护的
     # 最旧一条；只认最新一条会把还在上游维护期内的内核判成「旧分支」——Fedora 等
@@ -133,7 +138,9 @@ def classify(release, mainline, stable):
     cur_mm = cur[:2]
     if ml is not None and cur_mm >= ml[:2]:
         return "mainline"
-    if st is not None and cur_mm >= st[:2]:
+    if st is None:
+        return "unknown"
+    if cur_mm >= st[:2]:
         return "stable"
     return "older"
 
@@ -154,8 +161,8 @@ class KernelSupport:
     def __init__(self, release="", mainline="", stable="", tier="unknown", checked_at=0,
                  error="", stale=False):
         self.release = release if isinstance(release, str) else ""
-        self.mainline = mainline if isinstance(mainline, str) else ""
-        self.stable = stable if isinstance(stable, str) else ""
+        self.mainline = mainline if _upstream_version_ok(mainline) else ""
+        self.stable = stable if _upstream_version_ok(stable) else ""
         if self.have_upstream and self.parsed:
             self.tier = tier if tier in ("mainline", "stable", "older") else classify(
                 self.release, self.mainline, self.stable)
@@ -203,19 +210,17 @@ class KernelSupport:
     def age_text(self, now=None):
         """版本号是多久以前拿到的；没有时间戳或数值非法时返回空串。"""
         ts = self.checked_at
-        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts <= 0:
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts) or ts < 1:
             return ""
-        if isinstance(now, bool) or (now is not None and not isinstance(now, (int, float))):
+        if isinstance(now, bool) or (now is not None and (
+                not isinstance(now, (int, float)) or not math.isfinite(now))):
             return ""
         try:
-            ts_int = int(ts)
-            if ts_int <= 0:
+            diff = (time.time() if now is None else now) - ts
+            if diff < 0:
                 return ""
-            cur = int(time.time()) if now is None else int(now)
-            secs = cur - ts_int
+            secs = int(diff)
         except (TypeError, ValueError, OverflowError):
-            return ""
-        if secs < 0:
             return ""
         if secs < 60:
             return "刚刚"
@@ -268,7 +273,8 @@ class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         if not newurl.lower().startswith("https://"):
-            fp.close()
+            if fp is not None:
+                fp.close()
             raise urllib.error.URLError(f"拒绝跟随到非 https 地址的重定向：{newurl}")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -293,6 +299,8 @@ def _default_fetcher(url, timeout):
     """
     if not isinstance(url, str) or not url.lower().startswith("https://"):
         raise ValueError(f"拒绝请求非 https 地址：{url}")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"无效的请求超时时间：{timeout}")
     req = urllib.request.Request(url, headers={"User-Agent": "ComputeSec"})
     deadline = time.monotonic() + timeout
     with _urlopen(req, timeout) as resp:
@@ -344,7 +352,7 @@ def load_cache(path=None, now=None):
     """
     path = path or os.path.join(_data_dir(create=False), CACHE_NAME)
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             st = KernelSupport.from_dict(json.load(f))
     except (OSError, ValueError, TypeError):
         return None
@@ -421,6 +429,8 @@ def fetch_failed_text(st):
         if st.release:
             return f"无法解析本机内核版本串「{st.release}」，因此无法判断它属于哪条版本线。"
         return "未能读取本机内核版本号，因此无法判断它属于哪条版本线。"
+    if st.have_upstream and st.parsed and not st.stable:
+        return "未能从 kernel.org 取得 stable 版本号，因此无法判断当前内核是否属于受支持分支。"
     return ("无法从 kernel.org 取得 mainline / stable 版本号"
             "（离线、代理拦截，或 Flatpak 的 network 权限已被收回）。")
 
@@ -433,6 +443,10 @@ def recheck_result_text(st):
         prefix = "未能连上 kernel.org，且" if st.error else "已取得上游版本号，但"
         target = f"无法解析本机内核「{st.release}」" if st.release else "未能读取本机内核版本号"
         return f"{prefix}{target}，版本线仍未核对"
+    if not st.known:
+        if st.error:
+            return "未能连上 kernel.org，且缓存缺少 stable 版本号，版本线仍未核对"
+        return "未能从 kernel.org 取得 stable 版本号，版本线仍未核对"
     if st.error:
         return f"未能连上 kernel.org，继续沿用 {st.age_text() or '较早'}取得的版本号"
     return f"已重新核对内核版本线：{st.tier_text}"
