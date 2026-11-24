@@ -43,7 +43,6 @@ function loadEngine(disable) {
 const FULL = loadEngine([]);                                   // 全部开关开启（出货形态）
 const NO_LEAF = loadEngine(['AI_FAST_LEAF', 'AI_LINE_CAND']);                  // 关滑动窗口/stamp
 const NO_TT = loadEngine(['AI_TT']);                           // 关置换表
-const NO_INC = loadEngine(['AI_INC_EVAL']);                    // 关增量方向评估
 
 let seed = 20261009;
 function rnd() { seed ^= seed << 13; seed >>>= 0; seed ^= seed >>> 17; seed ^= seed << 5; seed >>>= 0; return seed / 4294967296; }
@@ -100,12 +99,12 @@ for (let t = 0; t < BOARDS; t++) {
     for (const side of [FULL.BLACK, FULL.WHITE])
       ck(FULL.evalLeaf(b, ai, side, ply) === NO_LEAF.evalLeaf(b, ai, side, ply), 'evalLeaf 等价 t=' + t);
   }
-  for (const r of [undefined, 1, 2]) {
+  for (const r of [undefined, 1, 2, 3]) {
     const c1 = FULL.candidateList(b, r);
-    // r=1 时两版严格逐位一致；r=2 时 AI_LINE_CAND 收紧了马步无威胁格
-    if (r === 1) {
+    // r=1 与 r>=3 时两版严格逐位一致；仅 r=2 时 AI_LINE_CAND 收紧了马步无威胁格
+    if (r === 1 || r === 3) {
       const c2 = NO_LEAF.candidateList(b, r);
-      ck(c1.length === c2.length && c1.every((v, i) => v === c2[i]), 'candidateList r=1 等价 t=' + t);
+      ck(c1.length === c2.length && c1.every((v, i) => v === c2[i]), 'candidateList r=' + r + ' 等价 t=' + t);
     } else {
       // 验证收紧后的每一个候选确实都是原版候选的子集
       const c2 = NO_LEAF.candidateList(b, r);

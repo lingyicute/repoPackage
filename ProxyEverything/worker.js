@@ -39,6 +39,7 @@ const STRIP_RESPONSE_HEADERS = [
 	'report-to',
 	'nel',
 	'permissions-policy',
+	'permissions-policy-report-only',
 	'feature-policy',     // Permissions-Policy 的旧名，同样按原站来源声明
 	'integrity-policy',   // 要求脚本带 SRI；代理已移除改写后失效的 integrity，保留会拦截全部脚本
 	'integrity-policy-report-only',
@@ -57,9 +58,13 @@ const STRIP_RESPONSE_HEADERS = [
 	'reporting-endpoints',
 	// 以下作用于整个代理源并被浏览器持久化，会串到其它目标站点
 	'accept-ch',          // Client Hints 偏好按源保存，其它目标也会收到高熵 UA 提示
+	'accept-ch-lifetime',
 	'critical-ch',        // 配合 Accept-CH 触发导航重试
 	'origin-agent-cluster', // 首个目标的选择会锁定整个代理源的 agent cluster 键
 	'set-login',          // FedCM 登录状态记在代理源上
+	'activate-storage-access', // Storage Access 状态作用于整个代理源
+	'observe-browsing-topics', // 避免代表代理源记录上游的 Topics 观测
+	'supports-loading-mode',
 ];
 
 // 仅正文变换时移除；透传响应必须保留其表示元数据。
@@ -139,7 +144,8 @@ function stripResponseHeaders(headers, request, baseUrl) {
 			// mailto:、应用深链等交给浏览器的外部协议处理，与 meta refresh 和链接一致；
 			// 浏览器本身拒绝跟随指向 javascript:、data: 等的重定向。
 			if (['http:', 'https:'].includes(target.protocol)) {
-				headers.set('Location', rewriteUrl(target.href, baseUrl, origin));
+				const raw = isWorkerHost(target, origin) ? location : target.href;
+				headers.set('Location', rewriteUrl(raw, baseUrl, origin, true));
 			}
 		} catch { headers.delete('Location'); }
 	}
@@ -232,7 +238,8 @@ function decodeProxiedTarget(rawPath, suffix = '') {
 	const hash = hashCut < 0 ? '' : suffix.slice(hashCut);
 	const baseTarget = decoded.split('#', 1)[0];
 	try {
-		const target = new URL(baseTarget + (query ? (baseTarget.includes('?') ? '&' : '?') + query.slice(1) : '') + hash);
+		const extraQuery = query ? (baseTarget.includes('?') ? (query.length > 1 ? '&' + query.slice(1) : '') : query) : '';
+		const target = new URL(baseTarget + extraQuery + hash);
 		if (!['http:', 'https:', 'ws:', 'wss:'].includes(target.protocol)) return null;
 		const host = normalizeHostname(target.hostname);
 		if (!host) return null;
@@ -282,7 +289,6 @@ function normalizeProxiedUrl(raw, workerOrigin, keepOrigin, parsed = null) {
 
 /** 将 <base href> 或 xml:base 解析为真实目标基地址，解包已代理路径或代理域自身地址。 */
 function resolveTargetBaseUrl(raw, fallbackBase, workerOrigin, httpOnly = false) {
-	if (!fallbackBase) return '';
 	const clean = trimUrlSpace(String(raw)).replace(/[\t\r\n]/g, '');
 	const allow = (u) => !httpOnly || u.protocol === 'http:' || u.protocol === 'https:';
 	if (isProxiedPath(clean)) {
@@ -291,18 +297,18 @@ function resolveTargetBaseUrl(raw, fallbackBase, workerOrigin, httpOnly = false)
 		if (target && allow(target)) return target.href;
 	}
 	try {
-		const u = new URL(raw, fallbackBase);
+		const u = fallbackBase ? new URL(raw, fallbackBase) : new URL(raw);
 		if (!allow(u)) return '';
 		if (isWorkerHost(u, workerOrigin)) {
-			const rawSelf = clean
+			const cut = clean.search(/[?#]/);
+			const rawSelf = (cut < 0 ? clean : clean.slice(0, cut))
 				.replace(/^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})[^\/\\?#]*/i, '')
 				.replace(/\\/g, '/');
 			if (isProxiedPath(rawSelf)) {
-				const cut = clean.search(/[?#]/);
 				const target = decodeProxiedTarget(rawSelf, cut < 0 ? '' : clean.slice(cut));
 				if (target && allow(target)) return target.href;
 			}
-			return new URL(new URL(fallbackBase).origin + u.pathname + urlSuffix(u)).href;
+			return fallbackBase ? new URL(new URL(fallbackBase).origin + u.pathname + urlSuffix(u)).href : '';
 		}
 		return u.href;
 	} catch {
@@ -666,23 +672,25 @@ function rewriteLazyValue(attr, value, baseUrl, workerOrigin) {
 	return urlLike ? rewriteUrl(value, baseUrl, workerOrigin) : value;
 }
 
-/** 重写 <meta http-equiv="refresh" content="0; url=...">（兼容省略 url= 的规范写法，避免误匹配查询串内 url= 或空 url= 回溯） */
-function rewriteRefreshContent(content, baseUrl, workerOrigin) {
-	const stripQuotes = (s) => {
-		const t = s.trim();
-		if (t[0] === "'" || t[0] === '"') {
-			const end = t.indexOf(t[0], 1);
-			return (end >= 0 ? t.slice(1, end) : t.slice(1)).trim();
-		}
-		return t;
-	};
-	return String(content).replace(
-		/^(\s*(?:\d+(?:\.\d*)?|\.\d+)(?:\s*[;,]\s*|\s+))(?:url\s*=\s*|(?!url\s*=))([\s\S]*)$/i,
-		(m, prefix, u) => {
-			const cleaned = stripQuotes(u);
-			return cleaned ? prefix + 'url=' + rewriteUrl(cleaned, baseUrl, workerOrigin) : m;
-		}
-	);
+/** 按 HTML 规范重写 Refresh / meta refresh（支持多点延迟与省略 url= 的写法）。 */
+function rewriteRefreshContent(content, baseUrl, workerOrigin, resolveBase = false) {
+	const raw = String(content);
+	const m = /^([ \t\r\n\f]*[0-9.]+(?:[ \t\r\n\f]*[;,][ \t\r\n\f]*|[ \t\r\n\f]+))([\s\S]*)$/.exec(raw);
+	if (!m || !m[2]) return raw;
+	const [, prefix, rest] = m;
+	const urlPrefix = /^url[ \t\r\n\f]*=[ \t\r\n\f]*/i.exec(rest);
+	const tail = urlPrefix ? rest.slice(urlPrefix[0].length) : rest;
+	let url = tail;
+	let quoted = false;
+	if (tail[0] === "'" || tail[0] === '"') {
+		quoted = true;
+		const end = tail.indexOf(tail[0], 1);
+		url = end >= 0 ? tail.slice(1, end) : tail.slice(1);
+	}
+	const cleaned = trimUrlSpace(url);
+	if (!cleaned && !(resolveBase && (quoted || urlPrefix))) return raw;
+	const rewritten = rewriteUrl(cleaned, baseUrl, workerOrigin, resolveBase);
+	return !cleaned && rewritten === cleaned ? raw : prefix + 'url=' + rewritten;
 }
 
 // Cookie 命名空间（不提供浏览器安全隔离）
@@ -723,7 +731,10 @@ function originalCookieName(stored, ns) {
  * 返回 null 表示这条 cookie 无效、应丢弃。
  */
 function scopeSetCookie(c, ns, workerIsHttps, fromScript = false) {
-	const parts = String(c).split(';');
+	const rawCookie = String(c);
+	// RFC 6265bis 拒绝除水平制表符外的控制字符（含 NUL/CR/LF/DEL）。
+	if (/[\x00-\x08\x0a-\x1f\x7f]/.test(rawCookie)) return null;
+	const parts = rawCookie.split(';');
 	const head = parts[0];
 	const eq = head.indexOf('=');
 	if (eq < 0) return null;
@@ -936,7 +947,15 @@ function prescanHtmlCharset(text) {
 		}
 		tag.lastIndex = start;
 		const match = tag.exec(text);
-		if (!match) { start++; continue; }
+		if (!match) {
+			// 与 <! 和 <? 一样，</ 后不跟字母时跳到下一个 '>'（分词器也把它当伪注释）。
+			if (text[start + 1] === '/') {
+				const end = text.indexOf('>', start + 2);
+				if (end < 0) return null;
+				start = end + 1;
+			} else start++;
+			continue;
+		}
 		const meta = match[1].toLowerCase() === 'meta' && text[start + 1] !== '/';
 		const scanned = scanHtmlPrescanAttrs(text, tag.lastIndex, meta);
 		if (!scanned) return null;
@@ -1224,7 +1243,7 @@ var DEC=trimUrlSpace(decodeProxyPath(location.pathname)).replace(/^\\/+/,'');
 if(!/^[a-z][a-z0-9+.-]*:\\/\\//i.test(DEC))DEC='https://'+DEC;
 var hIdx=DEC.indexOf('#');if(hIdx>=0)DEC=DEC.substring(0,hIdx);
 var search=urlSuffix(new URL(location.href)).split('#',1)[0];
-var full=DEC+(search?(DEC.indexOf('?')>=0?'&':'?')+search.substring(1):'');
+var full=DEC+(search?(DEC.indexOf('?')>=0?(search.length>1?'&'+search.substring(1):''):search):'');
 try{var u=new URL(full);if(u.protocol==='ws:')u.protocol='http:';else if(u.protocol==='wss:')u.protocol='https:';u.username='';u.password='';u.hostname=u.hostname.toLowerCase().replace(/\\.+$/,'');return u.href;}catch(e){return full;}
 }
 var SKIP_RE=/^(data:|blob:|javascript:|mailto:|tel:|sms:|about:|#)/i;
@@ -1241,9 +1260,9 @@ function resolveBase(h,target){
     var u=new URL(h,target);
     if(u.protocol!=='http:'&&u.protocol!=='https:')return '';
     if(isSelfHost(u)){
-      var rawSelf=clean.replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
+      var cut1=clean.search(/[?#]/);
+      var rawSelf=(cut1<0?clean:clean.slice(0,cut1)).replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
       if(isProxiedPath(rawSelf)){
-        var cut1=clean.search(/[?#]/);
         var t1=decodeProxiedTarget(rawSelf,cut1<0?'':clean.slice(cut1));
         if(t1&&(t1.protocol==='http:'||t1.protocol==='https:'))return t1.href;
       }
@@ -1337,7 +1356,7 @@ function isProxyRequestUrl(value){
 function rwInit(init,stripIntegrity){
   if(init!=null&&typeof init!=='object'&&typeof init!=='function')return init;
   var ref=init?.referrer;
-  var next=ref!==undefined&&ref!==''&&ref!=='about:client'?rwNavigation(String(ref),false):ref;
+  var next=ref!==undefined&&ref!==''&&ref!=='about:client'?rwNavigation(String(ref),true):ref;
   if(next===ref&&!stripIntegrity)return init;
   // Fetch reads RequestInit as a dictionary, including inherited and non-enumerable
   // properties. Do not copy it with Object.assign or mutate the caller's object.
@@ -1446,7 +1465,8 @@ function wrapHistory(fn){return function(st,t,u){
       var dec=isProxiedPath(link.pathname)?decodeProxyPath(link.pathname):'';
       var dest=null;
       if(dec){try{dest=new URL(dec);var dh=dest.hostname.toLowerCase().replace(/\\.+$/,'');if(dh)dest.hostname=dh;}catch(e){dest=null;}}
-      if(!dest||dest.origin!==new URL(currentTarget()).origin)throw new DOMException('History URL has a different target origin','SecurityError');
+      var curTarget=new URL(currentTarget());
+      if(!dest||dest.protocol!==curTarget.protocol||dest.origin!==curTarget.origin)throw new DOMException('History URL has a different target origin','SecurityError');
     }
     arguments[2]=next;
   }
@@ -2140,7 +2160,7 @@ function getHtmlAttribute(el, name, isXml = false) {
 
 // XHTML 的属性值按 XML 规范化，制表符和换行必须写成字符引用才能保留。
 function setHtmlAttribute(el, name, value, isXml = false) {
-	el.setAttribute(name, isXml ? escapeXmlAttr(value) : escapeHtml(value), isXml);
+	el.setAttribute(name, isXml ? escapeXmlAttr(value) : escapeHtml(value));
 }
 
 const HANDLERS = {
@@ -2280,17 +2300,18 @@ function transformHtml(response, baseUrl, workerOrigin, ck, sourceCharset = null
 			const he = (getHtmlAttribute(el, 'http-equiv', isXml) || '').trim().toLowerCase();
 			const name = (getHtmlAttribute(el, 'name', isXml) || '').trim().toLowerCase();
 			if (he === 'content-security-policy' || he === 'content-security-policy-report-only' ||
-				he === 'set-cookie' || he === 'x-frame-options' || name === 'referrer') {
+				he === 'set-cookie' || he === 'x-frame-options' || he === 'accept-ch' ||
+				he === 'delegate-ch' || name === 'referrer') {
 				el.remove();
 				return;
 			}
 			if (he === 'refresh') {
 				const c = getHtmlAttribute(el, 'content', isXml);
-				if (c) setHtmlAttribute(el, 'content', rewriteRefreshContent(c, baseHref, workerOrigin), isXml);
+				if (c) setHtmlAttribute(el, 'content', rewriteRefreshContent(c, baseHref, workerOrigin, hasBaseHref), isXml);
 			}
 			if (he === 'content-type') {
 				const c = getHtmlAttribute(el, 'content', isXml);
-				if (c) setHtmlAttribute(el, 'content', c.replace(/charset\s*=\s*[^;]*/gi, 'charset=UTF-8'), isXml);
+				if (c) setHtmlAttribute(el, 'content', c.replace(/charset\s*=\s*(?:"[^"]*"|'[^']*'|[^;]*)/gi, 'charset=UTF-8'), isXml);
 			}
 			if (getHtmlAttribute(el, 'charset', isXml) != null) {
 				setHtmlAttribute(el, 'charset', 'UTF-8', isXml);
@@ -2303,8 +2324,9 @@ function transformHtml(response, baseUrl, workerOrigin, ck, sourceCharset = null
 	rewriter.on('script', bufferedTextHandler(
 		(text, kind) => rawText(text, part => kind === 'importmap'
 			? rewriteImportMap(part, baseHref, workerOrigin)
+			// 内联规则集的基地址和 relative_to: "document" 都是文档基地址（受 <base> 影响），不是文档地址。
 			: kind === 'speculationrules'
-				? rewriteSpeculationRules(part, baseHref, workerOrigin, baseUrl)
+				? rewriteSpeculationRules(part, baseHref, workerOrigin, baseHref)
 				: rewriteJsModuleSpecifiers(part, baseHref, workerOrigin)),
 		el => {
 			if (el.hasAttribute('src') || el.hasAttribute('href') || el.hasAttribute('xlink:href')) return null;
@@ -2320,9 +2342,12 @@ function transformHtml(response, baseUrl, workerOrigin, ck, sourceCharset = null
 				// 内容被我们改写过的资源必须去掉 SRI，否则哈希校验失败被浏览器拦截
 				if (tag === 'script' || tag === 'link') el.removeAttribute('integrity');
 				// 改写后的脚本带 charset=UTF-8 响应头，优先于此属性；它只影响原样透传的脚本。
-				if (tag === 'script' && scriptCharset && el.namespaceURI === htmlNamespace &&
-					el.hasAttribute('src') && !el.hasAttribute('charset')) {
-					setHtmlAttribute(el, 'charset', scriptCharset, isXml);
+				if (tag === 'script' && scriptCharset && el.namespaceURI === htmlNamespace && el.hasAttribute('src') &&
+					(getHtmlAttribute(el, 'type', isXml) || '').trim().toLowerCase() !== 'module') {
+					const rawCharset = el.getAttribute('charset');
+					const keepCharset = rawCharset != null && ((isXml && hasCustomXmlEntity(rawCharset)) ||
+						Boolean(normalizeCharsetLabel(isXml ? decodeXmlAttribute(rawCharset) : decodeHtmlAttribute(rawCharset))));
+					if (!keepCharset) setHtmlAttribute(el, 'charset', scriptCharset, isXml);
 				}
 				for (const [attr, kind] of attrs) {
 					const v = getHtmlAttribute(el, attr, isXml);
@@ -2575,13 +2600,15 @@ function rewriteModuleSpecifier(specifier, baseUrl, workerOrigin) {
 		const resolved = isRel ? new URL(specifier, baseUrl) : new URL(specifier);
 		if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return specifier;
 		if (isWorkerHost(resolved, workerOrigin)) {
-			const rawSelfPath = clean
+			const cut = clean.search(/[?#]/);
+			const rawSelfPath = (cut < 0 ? clean : clean.slice(0, cut))
 				.replace(/^(?:[a-z][a-z0-9+.-]*:[\/\\]*|[\/\\]{2,})[^\/\\?#]*/i, '')
 				.replace(/\\/g, '/');
 			if (isProxiedPath(rawSelfPath)) {
 				const norm = normalizeProxiedUrl(clean, workerOrigin, true, resolved);
 				if (norm) return norm;
 			}
+			return toProxyUrl(new URL(new URL(baseUrl).origin + resolved.pathname + urlSuffix(resolved)).href, workerOrigin);
 		}
 		return rewriteUrl(resolved.href, baseUrl, workerOrigin);
 	} catch {
@@ -2599,8 +2626,11 @@ function rewriteModuleSpecifier(specifier, baseUrl, workerOrigin) {
 const rewriteJsModuleSpecifiers = capRewriteGrowth((account, js, baseUrl, workerOrigin) => {
 	const source = String(js);
 	if (!source.includes('import') && !source.includes('export')) return source;
+	// 内联模块或重复 BOM 可能携带前导 U+FEFF，es-module-lexer 不将其视作空白。
+	let offset = 0;
+	while (source.charCodeAt(offset) === 0xfeff) offset++;
 	let imports;
-	try { [imports] = parseModuleImports(source); } catch { return source; }
+	try { [imports] = parseModuleImports(offset ? source.slice(offset) : source); } catch { return source; }
 	const parts = [];
 	let cursor = 0;
 	for (const item of imports) {
@@ -2609,8 +2639,8 @@ const rewriteJsModuleSpecifiers = capRewriteGrowth((account, js, baseUrl, worker
 		const rewritten = rewriteModuleSpecifier(spec, baseUrl, workerOrigin);
 		if (rewritten === spec) continue;
 		// 静态说明符 s/e 不含引号；动态说明符 s/e 包含整个字面量。
-		const start = item.d === -1 ? item.s - 1 : item.s;
-		const end = item.d === -1 ? item.e + 1 : item.e;
+		const start = offset + (item.d === -1 ? item.s - 1 : item.s);
+		const end = offset + (item.d === -1 ? item.e + 1 : item.e);
 		parts.push(source.slice(cursor, start), account(end - start, stringifyInlineJson(rewritten)));
 		cursor = end;
 	}
@@ -2748,7 +2778,7 @@ function readXmlTextEnd(source, start, qualifiedName) {
 			while (/[ \t\n\r]/.test(source[end] || '')) end++;
 			if (source[end] === '>') return { start: i, end: end + 1 };
 		}
-		if (!source.startsWith('<!--', i) && !source.startsWith('<![CDATA[', i)) return null;
+		if (!source.startsWith('<!--', i) && !source.startsWith('<![CDATA[', i) && !source.startsWith('<?', i)) return null;
 		const markup = readXmlMarkup(source, i);
 		if (!markup.kind) return null;
 		i = markup.end;
@@ -2775,15 +2805,15 @@ const rewriteXmlText = capRewriteGrowth((account, body, transform) => {
 		}
 		return next === decoded ? part : escapeXmlText(next);
 	};
-	const opener = /<!\[CDATA\[|<!--/g;
+	const opener = /<!\[CDATA\[|<!--|<\?/g;
 	let match;
 	while ((match = opener.exec(body))) {
-		const cdata = match[0] === '<![CDATA[';
-		const end = body.indexOf(cdata ? ']]>' : '-->', opener.lastIndex);
+		const close = match[0] === '<![CDATA[' ? ']]>' : match[0] === '<!--' ? '-->' : '?>';
+		const end = body.indexOf(close, opener.lastIndex);
 		if (end < 0) return body;
 		const before = body.slice(last, match.index);
 		if (before) out += account(before.length, pushText(before));
-		if (cdata) {
+		if (close === ']]>') {
 			hasCdata = true;
 			const inner = body.slice(opener.lastIndex, end);
 			const next = transform(inner);
@@ -2793,9 +2823,9 @@ const rewriteXmlText = capRewriteGrowth((account, body, transform) => {
 			}
 			out += account(end + 3 - match.index, `<![CDATA[${next.replace(/]]>/g, ']]]]><![CDATA[>')}]]>`);
 		} else {
-			out += body.slice(match.index, end + 3);
+			out += body.slice(match.index, end + close.length);
 		}
-		last = opener.lastIndex = end + 3;
+		last = opener.lastIndex = end + close.length;
 	}
 	const tail = body.slice(last);
 	if (tail || !out) out += account(tail.length, pushText(tail));
@@ -2932,10 +2962,10 @@ const rewriteJsonUrls = capRewriteGrowth((account, text, baseUrl, workerOrigin) 
 	// id 按规范相对 start_url 的来源解析，而非 manifest 地址：否则 "?pwa"、"app" 这类 id 会拼到 manifest 所在路径上。
 	if (typeof manifest.id === 'string' && manifest.id !== '') {
 		let idBase = new URL('/', baseUrl).href;
-		try {
-			const start = new URL(typeof manifest.start_url === 'string' ? manifest.start_url : '', baseUrl);
-			if (start.protocol === 'http:' || start.protocol === 'https:') idBase = start.origin + '/';
-		} catch {}
+		if (typeof manifest.start_url === 'string') {
+			const start = resolveTargetBaseUrl(manifest.start_url, baseUrl, workerOrigin, true);
+			if (start) idBase = new URL(start).origin + '/';
+		}
 		manifest.id = account(manifest.id.length, rewriteUrl(manifest.id, idBase, workerOrigin, true));
 	}
 	fields(manifest, ['start_url', 'scope']);
@@ -2989,7 +3019,7 @@ function parseTarget(url) {
 	// 不保留内部参数名：目标站可能合法使用 __pe，且查询串可能参与签名。
 	const search = urlSuffix(url).split('#', 1)[0];
 	if (search) {
-		target += (target.includes('?') ? '&' : '?') + search.slice(1);
+		target += target.includes('?') ? (search.length > 1 ? '&' + search.slice(1) : '') : search;
 	}
 	let u;
 	try { u = new URL(target); } catch { return null; }
@@ -3052,7 +3082,7 @@ function documentBase(targetUrl) {
 // 剥除代理链路注入的宿主/客户端转发头，避免源站据此生成指向代理域的链接或产生协议重定向循环
 const STRIP_FORWARDED_HEADERS = new Set([
 	'x-real-ip', 'true-client-ip', 'forwarded',
-	'x-original-host', 'x-original-url', 'x-rewrite-url', 'x-client-ip', 'via',
+	'x-original-host', 'x-host', 'x-http-host-override', 'x-original-url', 'x-rewrite-url', 'x-client-ip', 'via',
 	'cdn-loop', 'x-real-port', 'x-scheme', 'x-forwarded-ssl', 'front-end-https', 'fastly-client-ip',
 ]);
 
@@ -3326,7 +3356,7 @@ Disallow: /
 			const nextLocation = resp.headers.get('Location');
 			if (nextLocation && fwdHeaders.has('Authorization')) {
 				const next = parseTarget(new URL(nextLocation, workerOrigin));
-				if (!next || next.origin !== targetUrl.origin) {
+				if (!next || next.protocol !== targetUrl.protocol || next.origin !== targetUrl.origin) {
 					return new Response('不能跨目标来源重定向带 Authorization 的请求', {
 						status: 502, headers: { 'Cache-Control': 'no-store' },
 					});
@@ -3345,7 +3375,8 @@ Disallow: /
 			const kind = [204, 205, 206].includes(upstream.status) || hasNoTransform(request.headers.get('Cache-Control'))
 				? null : transformKind(upstream.headers, request);
 			// 声明长度超过上限且无需解码的正文必然原样透传，HEAD 可沿用与 GET 相同的表示元数据。
-			const declaredLength = Number(upstream.headers.get('Content-Length'));
+			const rawLength = upstream.headers.get('Content-Length')?.trim() || '';
+			const declaredLength = /^\d+$/.test(rawLength) ? Number(rawLength) : NaN;
 			const passthrough = kind !== null && kind !== 'html' && request.method === 'HEAD' &&
 				declaredLength > MAX_TRANSFORM_BYTES && contentCoding(upstream.headers) === 'identity';
 			if (kind && !passthrough) {
@@ -3891,10 +3922,12 @@ ${browserPathHelpers()}
     if(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})/i.test(v)){
       try{
         var u0=new URL(v,location.href);
-        var rawSelf=v.replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
-        if(normalizeHostname(u0.hostname)===selfH&&u0.port===location.port&&
+        var cut0=v.search(/[?#]/);
+        var rawSelf=(cut0<0?v:v.slice(0,cut0)).replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
+        if((u0.protocol==='http:'||u0.protocol==='https:')&&
+           normalizeHostname(u0.hostname)===selfH&&u0.port===location.port&&
            isProxiedPath(rawSelf)){
-          v=rawSelf+urlSuffix(u0);
+          v=rawSelf+(cut0<0?'':v.slice(cut0));
         }
       }catch(_){}
     }
@@ -3906,8 +3939,9 @@ ${browserPathHelpers()}
       if(dec){
         var hIdx=dec.indexOf('#');
         if(hIdx>=0)dec=dec.slice(0,hIdx);
-        if(sPart.charAt(0)==='?'&&dec.indexOf('?')>=0)sPart='&'+sPart.slice(1);
-        v=dec+sPart;
+        var sh=sPart.indexOf('#'),sq=sh<0?sPart:sPart.slice(0,sh),sf=sh<0?'':sPart.slice(sh);
+        if(sq&&dec.indexOf('?')>=0)sq=sq.length>1?'&'+sq.slice(1):'';
+        v=dec+sq+sf;
       }
     }
     if(/^[a-z][a-z0-9+.-]*:/i.test(v)&&!/^https?:\\/\\//i.test(v)&&!/^(?:localhost\\.?|[a-z0-9_-]+\\.[a-z0-9_.-]+):\\d+(?:[/?#]|$)/i.test(v)){

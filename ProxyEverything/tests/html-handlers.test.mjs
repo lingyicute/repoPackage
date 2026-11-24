@@ -36,6 +36,9 @@ test('html: external scripts keep the source document encoding after transcoding
 	const legacy = collectHandlers('text/html', 'gbk');
 	assert.equal(run(legacy, { src: 'a.js' }), 'gbk');
 	assert.equal(run(legacy, { src: 'a.js', charset: 'utf-8' }), 'utf-8', 'an explicit charset wins');
+	assert.equal(run(legacy, { src: 'a.js', charset: '' }), 'gbk', 'empty charset falls back to document encoding');
+	assert.equal(run(legacy, { src: 'a.js', charset: 'not-a-charset' }), 'gbk', 'invalid charset falls back to document encoding');
+	assert.equal(run(legacy, { src: 'a.js', type: 'module' }), null, 'module scripts always decode as UTF-8');
 	assert.equal(run(legacy, {}), null, 'inline scripts are not fetched');
 	assert.equal(run(collectHandlers('application/xhtml+xml', 'windows-1252'), { src: 'a.js' }), 'windows-1252');
 	for (const charset of [null, 'utf-8']) {
@@ -94,6 +97,17 @@ test('HTMLRewriter URL and style attributes decode references once and escape se
 	panel.before = () => {};
 	handlers['*'][0].element(panel);
 	assert.equal(panel.getAttribute('style'), `background:url(&quot;${proxy('/dir/tile.png?a=1&amp;b=2')}&quot;)`);
+
+	const meta = element('meta', { 'http-equiv': 'content-type', content: 'text/html; charset="gbk;x"; foo=bar' });
+	handlers.meta[0].element(meta);
+	assert.equal(meta.getAttribute('content'), 'text/html; charset=UTF-8; foo=bar');
+
+	for (const equiv of ['Accept-CH', 'Delegate-CH']) {
+		let removed = false;
+		const ch = Object.assign(element('meta', { 'http-equiv': equiv, content: 'Sec-CH-UA-Model' }), { remove() { removed = true; } });
+		handlers.meta[0].element(ch);
+		assert.equal(removed, true, equiv);
+	}
 });
 
 test('HTML base affects anchor fragments, but not absent or empty form actions', () => {
@@ -110,6 +124,15 @@ test('HTML base affects anchor fragments, but not absent or empty form actions',
 		const el = element(tag, attrs);
 		for (const h of handlers[tag]) h.element(el);
 		assert.equal(el.getAttribute(key), expected);
+	}
+	for (const [content, expected] of [
+		['0; url=#sec', `0; url=${proxy('/other/#sec')}`],
+		["0; url=''", `0; url=${proxy('/other/')}`],
+		['5;', '5;'],
+	]) {
+		const meta = element('meta', { 'http-equiv': 'refresh', content });
+		handlers.meta[0].element(meta);
+		assert.equal(meta.getAttribute('content'), expected, content);
 	}
 });
 
@@ -184,6 +207,9 @@ test('HTML base unwraps already-proxied and proxy-host URLs to their target base
 		['/~https%3A%2F%2Fother.example/sub/', 'https://other.example/sub/', origin + '/~' + encodeURIComponent('https://other.example') + '/sub/rel.html'],
 		[proxy('/sub/'), 'https://example.com/sub/', proxy('/sub/rel.html')],
 		[origin + '/sub/', 'https://example.com/sub/', proxy('/sub/rel.html')],
+		[origin + '/~https%3A%2F%2Fother.example/sub/?v=1#h', 'https://other.example/sub/?v=1#h', origin + '/~' + encodeURIComponent('https://other.example') + '/sub/rel.html'],
+		[origin + '/~https%3A%2F%2Fother.example?v=1', 'https://other.example/?v=1', origin + '/~' + encodeURIComponent('https://other.example') + '/rel.html'],
+		['https:\\\\proxy.example\\~https%3A%2F%2Fother.example\\sub\\?k=a\\b', 'https://other.example/sub/?k=a\\b', origin + '/~' + encodeURIComponent('https://other.example') + '/sub/rel.html'],
 	]) {
 		const handlers = collectHandlers();
 		const baseEl = element('base', { href });
@@ -193,4 +219,16 @@ test('HTML base unwraps already-proxied and proxy-host URLs to their target base
 		handlers.a[0].element(link);
 		assert.equal(link.getAttribute('href'), expectedLink, href);
 	}
+});
+
+test('inline speculation rules resolve relative_to document against the HTML base', () => {
+	const handlers = collectHandlers();
+	handlers.base[0].element(element('base', { href: '/assets/' }));
+	const script = element('script', { type: 'speculationrules' });
+	for (const h of handlers.script) h.element?.(script);
+	let output = null;
+	const rules = { prefetch: [{ urls: ['a.html'] }, { relative_to: 'document', urls: ['b.html'] }] };
+	const chunk = { text: JSON.stringify(rules), lastInTextNode: true, replace(text) { output = text; }, remove() {} };
+	for (const h of handlers.script) h.text?.(chunk);
+	assert.deepEqual(JSON.parse(output).prefetch.map(rule => rule.urls[0]), [proxy('/assets/a.html'), proxy('/assets/b.html')]);
 });

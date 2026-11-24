@@ -1542,3 +1542,36 @@ test('text.synClasses: Python 三引号字符串正确处理转义引号且不�
   const unclosed = '"""abc\\';
   assert.equal(synClasses(unclosed, 'py').every(c => c === 's'), true);
 });
+
+test('text.synClasses: 支持 JS/Python 字符串续行转义与 JS 大写科学计数法', () => {
+  const { synClasses } = run(between(script('text-compare.html'), 'const SYN={', '/* ===================== state'), 'synClasses');
+  const tpl = '`a \\\nb` + 1E5 + 2.5E-3';
+  const jc = synClasses(tpl, 'js');
+  assert.ok(jc.slice(0, 7).every(c => c === 's'));
+  assert.ok(jc.slice(tpl.indexOf('1E5'), tpl.indexOf('1E5') + 3).every(c => c === 'n'));
+  assert.ok(jc.slice(tpl.indexOf('2.5E-3')).every(c => c === 'n'));
+  const jsStr = '"hi \\\nthere" + 1';
+  assert.ok(synClasses(jsStr, 'js').slice(0, 12).every(c => c === 's'));
+  const pyStr = "'a \\\nb' + 1";
+  assert.ok(synClasses(pyStr, 'py').slice(0, 7).every(c => c === 's'));
+});
+
+test('image.pinchTransform: 双指捏合以中点为中心缩放平移并限幅', () => {
+  const { pinchTransform } = run(between(script('image-compare.html'), 'function pinchTransform', 'function renderStage'), 'pinchTransform');
+  // 围绕中点 (100, 80) 放大 2 倍，该中点对应的图像坐标应保持不动
+  const z2 = pinchTransform({ x: 20, y: 10, z: 1 }, { x: 80, y: 80 }, { x: 120, y: 80 }, { x: 60, y: 80 }, { x: 140, y: 80 }, 0.05, 8);
+  assert.equal(z2.z, 2);
+  assert.equal(z2.x, -60);
+  assert.equal(z2.y, -60);
+  // 纯双指平移，缩放不变
+  const pan = pinchTransform({ x: 10, y: 20, z: 1.5 }, { x: 0, y: 0 }, { x: 40, y: 0 }, { x: 15, y: -5 }, { x: 55, y: -5 }, 0.05, 8);
+  assert.equal(pan.z, 1.5);
+  assert.equal(pan.x, 25);
+  assert.equal(pan.y, 15);
+  // 超出上限被限幅，零距离不产生 NaN
+  const capped = pinchTransform({ x: 0, y: 0, z: 4 }, { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 0 }, { x: 100, y: 0 }, 0.05, 8);
+  assert.equal(capped.z, 8);
+  const tiny = pinchTransform({ x: 5, y: 5, z: 1 }, { x: 10, y: 10 }, { x: 11, y: 10 }, { x: 20, y: 30 }, { x: 21, y: 30 }, 0.05, 8);
+  assert.equal(tiny.z, 1);
+  assert.ok(Number.isFinite(tiny.x) && Number.isFinite(tiny.y));
+});

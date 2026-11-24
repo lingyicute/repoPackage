@@ -20,6 +20,11 @@ test('SVG xml:base scopes references and restores the parent base after closing 
 	assert.equal(rewrite(expected), expected);
 	const proxiedBase = `<svg xml:base="${proxy('/assets/')}"><g xml:base="/sub/"><image href="one.png"/></g></svg>`;
 	assert.equal(rewrite(proxiedBase), `<svg xml:base="${proxy('/assets/')}"><g xml:base="${proxy('/sub/')}"><image href="${proxy('/sub/one.png')}"/></g></svg>`);
+	const other = origin + '/~' + encodeURIComponent('https://other.example');
+	assert.equal(rewrite(`<svg xml:base="${other}/dir/?v=1"><image href="a.png"/></svg>`),
+		`<svg xml:base="${other}/dir/?v=1"><image href="${other}/dir/a.png"/></svg>`);
+	assert.equal(rewrite(`<svg xml:base="${other}?v=1"><image href="a.png"/></svg>`),
+		`<svg xml:base="${other}/?v=1"><image href="${other}/a.png"/></svg>`);
 });
 
 test('SVG xml:base on a self-closing element cannot affect its siblings', () => {
@@ -40,6 +45,9 @@ test('SVG preserves fragment semantics and uses exact qualified names for base s
 test('SVG does not invent a base when a custom XML entity cannot be resolved', () => {
 	const input = '<!DOCTYPE svg [<!ENTITY assets "/images/">]><svg xml:base="&assets;"><image href="logo.png"/></svg>';
 	assert.equal(rewrite(input), input);
+	const nested = '<!DOCTYPE svg [<!ENTITY assets "/images/">]><svg xml:base="&assets;"><g xml:base="sub/"><image href="a.png"/></g><g xml:base="https://site.example/abs/"><image href="b.png"/></g></svg>';
+	assert.equal(rewrite(nested),
+		`<!DOCTYPE svg [<!ENTITY assets "/images/">]><svg xml:base="&assets;"><g xml:base="sub/"><image href="a.png"/></g><g xml:base="${proxy('/abs/')}"><image href="${proxy('/abs/b.png')}"/></g></svg>`);
 });
 
 const miniflare = process.env.PE_MINIFLARE;

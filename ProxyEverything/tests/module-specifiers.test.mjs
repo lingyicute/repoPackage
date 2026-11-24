@@ -31,6 +31,10 @@ test('module imports resolve absolute HTTP specifiers without a base URL', () =>
 		`import "${proxy('https://cdn.example/four.js')}";`,
 	].join('\n');
 	assert.equal(rewriteJsModuleSpecifiers(input, base, origin), expected);
+	assert.equal(
+		rewriteJsModuleSpecifiers('\uFEFFimport "./local.js"; import("./lazy.js");', base, origin),
+		`\uFEFFimport "${proxy('https://site.example/app/local.js')}"; import("${proxy('https://site.example/app/lazy.js')}");`
+	);
 });
 
 test('import map keys and values use module resolution, not ordinary relative URL resolution', () => {
@@ -79,6 +83,14 @@ test('already proxied paths are not double-proxied and clamp dot segments', () =
 		rewriteJsModuleSpecifiers('import "//proxy.example/~https%3A%2F%2Fcdn.example/../~https%3A%2F%2Fother.example/one.js";', base, origin),
 		`import "${origin}/~https%3A%2F%2Fcdn.example/~https%3A%2F%2Fother.example/one.js";`
 	);
+	for (const escape of [
+		`${origin}/foo/../~https%3A%2F%2Fother.example/one.js`,
+		`${origin}/./~https%3A%2F%2Fother.example/one.js`,
+		`${origin}/~https%3A%2F%2F[invalid]/../~https%3A%2F%2Fother.example/one.js`,
+	]) {
+		assert.equal(rewriteJsModuleSpecifiers(`import "${escape}";`, base, origin),
+			`import "${origin}/~https%3A%2F%2Fsite.example/~https%3A%2F%2Fother.example/one.js";`, escape);
+	}
 	const map = { imports: { [path]: `${origin}/~https%3A%2F%2Fcdn.example/../one.js` } };
 	assert.deepEqual(JSON.parse(rewriteImportMap(JSON.stringify(map), base, origin)), {
 		imports: { [path]: origin + path },

@@ -261,6 +261,9 @@ test('document.cookie shares protected cookie names without accepting HTTP-only 
 	assert.equal(last, '');
 	ctx.document.cookie = 'pref=two; SameSite=None';
 	assert.equal(last, '');
+	ctx.document.cookie = 'bad=1\ninjected=2';
+	ctx.document.cookie = 'bad=1\x00x';
+	assert.equal(last, '');
 	ctx.document.cookie = '__Host-pref=two; Secure; Path=/';
 	assert.equal(last, `__Host-${ns}pref=two; Secure; Path=/`);
 });
@@ -379,6 +382,7 @@ test('history state updates resolve empty URLs against base and block dot-segmen
 	ctx.history.pushState(null, '', '/~https%3A%2F%2Fexample.com/.\t./~https%3A%2F%2Fother.example/inside');
 	assert.equal(calls[5], '/~https%3A%2F%2Fexample.com/~https%3A%2F%2Fother.example/inside');
 	assert.throws(() => ctx.history.pushState(null, '', '/~https%3A%2F%2Fother.example/x'), { name: 'SecurityError' });
+	assert.throws(() => ctx.history.pushState(null, '', 'wss://example.com/x'), { name: 'SecurityError' });
 });
 
 test('shim ignores foreign base elements and freezes at the first HTML base with href', () => {
@@ -401,6 +405,8 @@ test('shim ignores foreign base elements and freezes at the first HTML base with
 		['/~https%3A%2F%2Fother.example/sub/', 'https://other.example/sub/', origin + '/~' + encodeURIComponent('https://other.example') + '/api'],
 		[proxy('/sub/'), 'https://example.com/sub/', proxy('/api')],
 		[origin + '/sub/', 'https://example.com/sub/', proxy('/api')],
+		[origin + '/~https%3A%2F%2Fother.example/sub/?v=1#h', 'https://other.example/sub/?v=1#h', origin + '/~' + encodeURIComponent('https://other.example') + '/api'],
+		[origin + '/~https%3A%2F%2Fother.example?v=1', 'https://other.example/?v=1', origin + '/~' + encodeURIComponent('https://other.example') + '/api'],
 	]) {
 		secondBase.setAttribute('href', href);
 		assert.equal(secondBase.getAttribute('data-pe-base'), expectedBase, href);
@@ -451,6 +457,10 @@ test('shim coerces non-string URL objects, WebSocket empty base, and null attrib
 	ctx.fetch('#frag', { referrer: '#ref' });
 	assert.equal(fetchedUrl, proxy('/sub/#frag'));
 	assert.equal(fetchedInit.referrer, proxy('/sub/#ref'));
+	ctx.fetch('/api', { referrer: '   ' });
+	assert.equal(fetchedInit.referrer, proxy('/sub/'));
+	ctx.fetch('/api', { referrer: '' });
+	assert.equal(fetchedInit.referrer, '');
 	ctx.navigator.sendBeacon(urlLike);
 	assert.equal(beaconUrl, proxy('/api/v1'));
 	ctx.location.assign('#section');

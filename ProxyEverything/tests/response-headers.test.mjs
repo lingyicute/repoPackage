@@ -51,9 +51,14 @@ test('origin-wide persistent policy headers do not leak onto the shared proxy or
 	const headers = {
 		'content-type': 'image/png',
 		'accept-ch': 'Sec-CH-UA-Full-Version-List, Sec-CH-UA-Model',
+		'accept-ch-lifetime': '86400',
 		'critical-ch': 'Sec-CH-UA-Model',
 		'origin-agent-cluster': '?1',
 		'set-login': 'logged-in',
+		'activate-storage-access': 'load',
+		'observe-browsing-topics': '?1',
+		'supports-loading-mode': 'credentialed-prerender',
+		'permissions-policy-report-only': 'camera=()',
 	};
 	const response = await fetchThrough('https://example.com/a.png', headers);
 	for (const name of Object.keys(headers).slice(1)) assert.equal(response.headers.get(name), null, name);
@@ -184,6 +189,7 @@ test('authenticated redirects stay within the original target origin', async t =
 		['/next', true, 307], ['https://cdn.example/next', false, 307],
 		['https://cdn.example/next', true, 502], [proxy('https://cdn.example/next'), true, 502],
 		['http://example.com/next', true, 502], ['https://example.com:8443/next', true, 502],
+		[origin + '/~wss%3A%2F%2Fexample.com/next', true, 502],
 	]) {
 		location = next;
 		const r = await worker.fetch(new Request(proxy(target), {
@@ -221,7 +227,10 @@ test('bodyless responses do not advertise source metadata for a rewritten GET', 
 	}
 
 	// 声明长度超过改写上限且无需解码的正文一定会原样透传，HEAD 沿用 GET 的表示元数据。
-	for (const [length, encoding, intact] of [['3000000', null, true], ['3000000', 'gzip', false], ['2097152', null, false]]) {
+	for (const [length, encoding, intact] of [
+		['3000000', null, true], ['3000000', 'gzip', false], ['2097152', null, false],
+		['Infinity', null, false], ['1e9', null, false], ['0x300000', null, false],
+	]) {
 		const headers = { 'content-type': 'text/css; charset=gbk', 'content-length': length, etag: '"big"' };
 		if (encoding) headers['content-encoding'] = encoding;
 		upstream = new Response(null, { headers });
@@ -278,6 +287,8 @@ test('redirects to external protocol handlers keep their Location', async t => {
 		['mailto:team@example.com?subject=hi', 'mailto:team@example.com?subject=hi'],
 		['zoommtg://zoom.us/join?confno=1', 'zoommtg://zoom.us/join?confno=1'],
 		['/next', proxy('https://example.com/next')],
+		[origin + '/~https%3A%2F%2Fexample.com/a/../../~https%3A%2F%2Fother.example/x', proxy('https://example.com/~https%3A%2F%2Fother.example/x')],
+		[origin + '/foo/../~https%3A%2F%2Fother.example/x', proxy('https://example.com/~https%3A%2F%2Fother.example/x')],
 		['https://[', null],
 	]) {
 		location = next;
@@ -322,7 +333,7 @@ test('bodyless revalidation preserves the request cache policy variant without C
 
 test('SameSite=None and Partitioned cookies require an upstream Secure attribute', async () => {
 	const headers = new Headers({ 'content-type': 'text/plain' });
-	for (const cookie of ['cross=1; SameSite=None', 'chips=2; Partitioned',
+	for (const cookie of ['cross=1; SameSite=None', 'chips=2; Partitioned', 'ctl=1\x7f; Path=/',
 		'valid=3; SameSite=None; Secure', 'part=4; Secure; Partitioned', 'lax=5; SameSite=None; SameSite=Lax']) {
 		headers.append('Set-Cookie', cookie);
 	}

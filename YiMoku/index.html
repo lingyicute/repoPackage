@@ -970,7 +970,7 @@ function candidateList(b, radius) {
       if (!b[i]) continue;
       any = true;
       const x = i % N, y = (i / N) | 0;
-      if (AI_LINE_CAND && R >= 2) {
+      if (AI_LINE_CAND && R === 2) {
         /* ⑲-b 半径 2 的候选从「5×5 方块 25 格」收紧为「切比雪夫 1 邻域 9 格
            ∪ 四条线上距离 2 的 8 格」共 17 格。
            被去掉的格子（典型是马步位 (2,1)）沿 4 个方向、距离 2 以内都不存在
@@ -1279,9 +1279,10 @@ function evalForcedLine(b, ai, side, ply, qleft) {
     b[blk] = EMPTY;
     return v;
   }
-  for (let j = 0; j < n3S; j++) {
-    if (openThreeOnLine(b, LINES[L3_SIDE[j]], side) >= 1)
-      return maxing ? (WIN_V / 4 - ply) : -(WIN_V / 4 - ply);
+  const need3 = AI_OPENTHREE_STRICT ? 1 : 2;
+  for (let j = 0, c3 = 0; j < n3S; j++) {
+    c3 += openThreeOnLine(b, LINES[L3_SIDE[j]], side);
+    if (c3 >= need3) return maxing ? (WIN_V / 4 - ply) : -(WIN_V / 4 - ply);
   }
   return maxing ? s : -s;
 }
@@ -1800,7 +1801,8 @@ const RADIUS_BY_DEPTH = d => 2;
 const EXT_LIMIT = 8;                           // 单条线路上最多延伸的手数（防止爆炸）
 /* ⑲-c 杀手着法：在某层造成截断的着法，在兄弟子树里往往再次截断。
    与 HIST 的区别是它按「层数」记忆（同层=同类局面），HIST 按「格子」记忆。 */
-const KILL = new Int32Array(64 * 2).fill(-1);
+const AB_MAX_PLY = 256;
+const KILL = new Int32Array(AB_MAX_PLY * 2).fill(-1);
 /* ⑧ 历史启发表：在某节点造成 beta 截断的着法，在相似局面里更可能再次截断。
    加到 topKScored 的排序键上，只影响「同梯队」候选的次序——上限 HIST_CAP=48
    小于相邻梯队权重差（TW[1]=100），不会越级提拔低梯队着法。
@@ -2165,7 +2167,7 @@ function fastEvalForced(b, ai, side, ply, qleft) {
     b[blk] = EMPTY;
     return v;
   }
-  if ((isB ? totO3B : totO3W) >= 1) return maxing ? (WIN_V / 4 - ply) : -(WIN_V / 4 - ply);
+  if ((isB ? totO3B : totO3W) >= (AI_OPENTHREE_STRICT ? 1 : 2)) return maxing ? (WIN_V / 4 - ply) : -(WIN_V / 4 - ply);
   return ai === BLACK ? totScrB : -totScrB;
 }
 const origEvalLeaf = evalLeaf;
@@ -2296,7 +2298,7 @@ function candidateBuf(b, radius) {
   for (let q = 0; q < cl.length; q++) CAND_BUF[q] = cl[q];
   return cl.length;
 }
-const AB_CAND = new Int32Array(64 * 8);
+const AB_CAND = new Int32Array(AB_MAX_PLY * 8);
 function topKPacked(b, side, k, radius, plyBase) {
   if (incDirty >= 0) { incUpdateMove(b, incDirty); incDirty = -1; }
   const R = radius === undefined ? 2 : radius;
@@ -2506,7 +2508,7 @@ function abSearch(b, ai, side, depth, alpha, beta, ply, t0, budget, ext) {
     } else slot = -1;
   }
   const alphaP = alpha, betaP = beta;              // 收窄后的窗口（完成循环时的标志分类基准）
-  if (depth <= 0) {
+  if (depth <= 0 || ply >= AB_MAX_PLY) {
     const v = evalLeaf(b, ai, side, ply);
     /* 叶子值入表（EXACT, depth=0）；但不覆盖同局面已存的更深搜索结果 */
     if (slot >= 0 && (TT_KEY[slot] !== key || ((TT_META[slot] >>> 2) & 31) === 0))
@@ -2515,7 +2517,7 @@ function abSearch(b, ai, side, depth, alpha, beta, ply, t0, budget, ext) {
     return v;
   }
   if (now() - t0 > budget) { if (rootCall) zHashActive = false; return null; }
-  const plyBase = (ply < 63 ? ply : 63) * 8;
+  const plyBase = ply * 8;
   let cLen;
   if (AI_FAST_TOPK && AI_INC_EVAL && incActive) {
     cLen = topKPacked(b, side, K_BY_DEPTH(depth), RADIUS_BY_DEPTH(depth), plyBase);
@@ -2543,7 +2545,7 @@ function abSearch(b, ai, side, depth, alpha, beta, ply, t0, budget, ext) {
       }
     }
   }
-  if (AI_KILLER && cLen > 2) {                     // ⑲-c 杀手着法紧随 TT 着法之后
+  if (AI_KILLER && cLen > 2 && ply < 64) {         // ⑲-c 杀手着法紧随 TT 着法之后
     for (let s = 0; s < 2; s++) {
       const km = KILL[ply * 2 + s];
       if (km < 0) continue;
@@ -2597,7 +2599,7 @@ function abSearch(b, ai, side, depth, alpha, beta, ply, t0, budget, ext) {
       if (val >= beta) {
         /* ⑧ 历史启发：截断着法按深度²加权（封顶 HIST_CAP） */
         if (bestI < N * N) { const h = HIST[bestI] + depth * depth; HIST[bestI] = h > HIST_CAP ? HIST_CAP : h; }
-        if (AI_KILLER && bestI < N * N && KILL[ply * 2] !== bestI) { KILL[ply * 2 + 1] = KILL[ply * 2]; KILL[ply * 2] = bestI; }
+        if (AI_KILLER && ply < 64 && bestI < N * N && KILL[ply * 2] !== bestI) { KILL[ply * 2 + 1] = KILL[ply * 2]; KILL[ply * 2] = bestI; }
         ttStore(slot, key, val, TT_LOWER, depth, ext, bestI, ply);
         if (rootCall) zHashActive = false;
         return val;
@@ -2607,7 +2609,7 @@ function abSearch(b, ai, side, depth, alpha, beta, ply, t0, budget, ext) {
       if (v < val) { val = v; bestI = ci; }
       if (val <= alpha) {
         if (bestI < N * N) { const h = HIST[bestI] + depth * depth; HIST[bestI] = h > HIST_CAP ? HIST_CAP : h; }
-        if (AI_KILLER && bestI < N * N && KILL[ply * 2] !== bestI) { KILL[ply * 2 + 1] = KILL[ply * 2]; KILL[ply * 2] = bestI; }
+        if (AI_KILLER && ply < 64 && bestI < N * N && KILL[ply * 2] !== bestI) { KILL[ply * 2 + 1] = KILL[ply * 2]; KILL[ply * 2] = bestI; }
         ttStore(slot, key, val, TT_UPPER, depth, ext, bestI, ply);
         if (rootCall) zHashActive = false;
         return val;
@@ -3085,6 +3087,8 @@ function playWinSound() {
 function triggerHaptic(type) {
   try {
     if (!navigator.vibrate) return;
+    const ua = navigator.userActivation;
+    if (ua && !ua.hasBeenActive) return;
     if (type === 'win') {
       // 保证强度的轻快庆祝节奏：短促多段敲击脉冲，段间间隔适中
       navigator.vibrate([40, 60, 40, 60, 60, 80, 80]);
@@ -3288,6 +3292,7 @@ function buildBoard() {
 }
 function paintCell(i) {
   const v = S.board[i], el = cellsEl[i];
+  el.classList.remove('wig');
   el.classList.toggle('on', v !== EMPTY);
   el.classList.toggle('on1', v === BLACK);
   el.classList.toggle('on2', v === WHITE);
@@ -3653,9 +3658,10 @@ function safeAiMove(board, diff, p) {
 function tryPlace(x, y) {
   if (S.over || S.aiThinking) return;
   const p = turn();
-  if (!isHuman(p)) return;
-  if (!inB(x, y) || S.board[idx(x, y)]) {
-    const el = cellsEl[idx(x, y)];
+  if (!isHuman(p) || !inB(x, y)) return;
+  const i = idx(x, y);
+  if (S.board[i]) {
+    const el = cellsEl[i];
     if (el) { el.classList.remove('wig'); void el.offsetWidth; el.classList.add('wig'); }
     return;
   }
@@ -3669,6 +3675,7 @@ function undo() {
   cancelAI();
   clearWinTimer();
   clearMoveFlash();
+  for (let i = 0; i < N * N; i++) cellsEl[i].classList.remove('wig');
   const wasOver = S.over;
   let n = 1;
   if (S.mode === 'ai' && turn() === S.side) n = 2;   // 已回到我方回合 → 撤一对
@@ -3790,7 +3797,7 @@ function trapTab(e, m = document.querySelector('.modal.open')) {
   const f = m ? [...m.querySelectorAll('button:not([disabled])')] : [];
   if (!f.length) { e.preventDefault(); return; }
   const a = document.activeElement;
-  if (!m.contains(a)) { e.preventDefault(); f[0].focus(); }
+  if (!f.includes(a)) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
   else if (e.shiftKey && a === f[0]) { e.preventDefault(); f[f.length - 1].focus(); }
   else if (!e.shiftKey && a === f[f.length - 1]) { e.preventDefault(); f[0].focus(); }
 }

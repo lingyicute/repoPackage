@@ -73,6 +73,14 @@ test('meta refresh: preserves trailing quotes on unquoted URLs and trims quoted 
 		rewriteRefreshContent("0; url='https://example.com/a", base, origin),
 		`0; url=${proxy('https://example.com/a')}`
 	);
+	assert.equal(rewriteRefreshContent('5.2.3; url=https://example.com/next', base, origin),
+		`5.2.3; url=${proxy('https://example.com/next')}`);
+	assert.equal(rewriteRefreshContent('.; url=https://example.com/next', base, origin),
+		`.; url=${proxy('https://example.com/next')}`);
+	assert.equal(rewriteRefreshContent('5abc; url=https://example.com/next', base, origin),
+		'5abc; url=https://example.com/next');
+	assert.equal(rewriteRefreshContent('0; url=#sec', base, origin), '0; url=#sec');
+	assert.equal(rewriteRefreshContent('0; url=  ', base, origin), '0; url=  ');
 });
 
 test('svg: preserves CDATA end-tags, comments, ]]> escapes, namespaces, and quoted script attrs', () => {
@@ -159,10 +167,15 @@ test('homepage submit preserves percent-encoded plain URLs and rejects ws://', (
 	assert.equal(submit('https://en.wikipedia.org/wiki/C%23').href, '/~https%3A%2F%2Fen.wikipedia.org/wiki/C%23');
 	assert.equal(submit('https://example.com/files/a%2Fb?x=1').href, '/~https%3A%2F%2Fexample.com/files/a%2Fb?x=1');
 	assert.equal(submit(origin + '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523').href, '/~https%3A%2F%2Fen.wikipedia.org/wiki/C%23');
+	assert.equal(submit(origin + '/https%3A%2F%2Fexample.com%2Fp%3Fa%3D1?#top').href, '/~https%3A%2F%2Fexample.com/p?a=1#top');
 	assert.equal(submit(origin + '/~https%3A%2F%2Fexample.com/../other.example/secret').href, '/~https%3A%2F%2Fexample.com/other.example/secret');
+	assert.equal(submit(origin + '/~https%3A%2F%2Fexample.com/search?q=1#top').href, '/~https%3A%2F%2Fexample.com/search?q=1#top');
+	assert.equal(submit(origin + '/~https%3A%2F%2Fexample.com?q=1').href, '/~https%3A%2F%2Fexample.com/?q=1');
+	assert.equal(submit(origin + '/~https%3A%2F%2Fexample.com/search?k=a\\b').href, '/~https%3A%2F%2Fexample.com/search?k=a\\b');
 	const wsRes = submit('ws://example.com/ws');
 	assert.equal(wsRes.href, origin + '/');
 	assert.equal(wsRes.snack, '仅支持 http:// 或 https:// 网址');
+	assert.equal(submit('ftp://proxy.example/~https%3A%2F%2Fexample.com/file').snack, '仅支持 http:// 或 https:// 网址');
 });
 
 test('Referer lookups enforce ALLOWED_TARGET_ORIGINS and rewrite Sec-Fetch-Site', async () => {
@@ -294,6 +307,24 @@ test('sniffHtmlCharset handles HTML5 abrupt comments <!--> and <!--->', async ()
 	}
 });
 
+test('sniffHtmlCharset skips </ without a tag name up to the next >', async () => {
+	for (const [html, expected] of [
+		['</ <meta charset="gbk"><p>', null],
+		['</ x><meta charset="gbk">', 'gbk'],
+		['</p foo="<meta charset=big5>"><meta charset="gbk">', 'gbk'],
+	]) {
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(Buffer.from(html, 'latin1'));
+				controller.close();
+			},
+		});
+		const { charset, body } = await sniffHtmlCharset(stream, null);
+		await body.cancel();
+		assert.equal(charset, expected, html);
+	}
+});
+
 test('fast paths preserve untouched JS/CSS while still rewriting escaped style URLs', () => {
 	const plainJs = 'const a = 1 + 2; console.log(a);';
 	assert.equal(rewriteJsModuleSpecifiers(plainJs, base, origin), plainJs);
@@ -366,8 +397,17 @@ test('XML raw text leaves incomplete CDATA and comments intact', () => {
 	for (const input of ['body <![CDATA[unfinished', 'text <!-- open <!-- still open']) {
 		assert.equal(rewriteXmlText(input, value => value.toUpperCase()), input);
 	}
-	assert.equal(rewriteXmlText('a<!--keep--><![CDATA[b]]>c', s => s.toUpperCase()),
-		'A<!--keep--><![CDATA[B]]>C');
+	assert.equal(rewriteXmlText('a<!--keep--><?pi keep?><![CDATA[b]]>c', s => s.toUpperCase()),
+		'A<!--keep--><?pi keep?><![CDATA[B]]>C');
+	assert.equal(rewriteXmlText('body <?pi unfinished', s => s.toUpperCase()), 'body <?pi unfinished');
+	assert.equal(
+		rewriteSvg('<svg><style><?pi </style> ?>a{background:url(a.png)}</style></svg>', base, origin),
+		`<svg><style><?pi </style> ?>a{background:url("${proxy('a.png')}")}</style></svg>`
+	);
+	assert.equal(
+		rewriteSvg('<svg><script type="module">import <?pi x?>"./a.js";</script></svg>', base, origin),
+		`<svg><script type="module">import "${proxy('./a.js')}";</script></svg>`
+	);
 });
 
 test('upstream HTTP and opening WebSocket handshakes use the request cancellation signal', async t => {

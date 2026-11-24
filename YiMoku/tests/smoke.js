@@ -78,6 +78,14 @@ const click = el => el.dispatchEvent(new window.MouseEvent('click', { bubbles: t
   assert(document.activeElement === $('clearCancel'), '末个按钮按 Tab 回到首个');
   key('Tab', { shiftKey: true });
   assert(document.activeElement === $('clearConfirm'), '首个按钮按 Shift+Tab 回到末个');
+  const clearCard = $('modalClear').querySelector('.mcard');
+  clearCard.tabIndex = -1;
+  clearCard.focus();
+  const cardShiftTab = new window.KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true });
+  document.dispatchEvent(cardShiftTab);
+  assert(cardShiftTab.defaultPrevented && document.activeElement === $('clearConfirm'),
+    '焦点在模态卡片容器上按 Shift+Tab 不得逃出模态框');
+  clearCard.removeAttribute('tabindex');
   key('Escape');
   assert(!$('modalClear').classList.contains('open'), 'Esc 关闭确认框');
   assert(document.activeElement === $('menuBtn'), '确认框关闭后焦点回到菜单按钮（实际：' + (document.activeElement && document.activeElement.id) + '）');
@@ -320,8 +328,13 @@ const click = el => el.dispatchEvent(new window.MouseEvent('click', { bubbles: t
   assert(document.querySelectorAll('.cell.on').length === 0, '面板打开时点击棋盘不得落子');
   assert(!$('palettePop').classList.contains('open'), '外部点击关闭配色面板');
 
-  /* ---- 重开清掉棋谱高亮与无效落子抖动类，空盘上不得残留状态类 ---- */
+  /* ---- 悔棋与重开清掉棋谱高亮与无效落子抖动类，空盘上不得残留状态类 ---- */
   window.eval('setMode("pvp")');
+  click(document.querySelector('.cell[data-x="7"][data-y="7"]'));
+  click(document.querySelector('.cell[data-x="7"][data-y="7"]'));
+  assert(document.querySelector('.cell[data-x="7"][data-y="7"]').classList.contains('wig'), '重复点击已占格触发抖动类');
+  click($('undoBtn'));
+  assert(document.querySelectorAll('.cell.wig').length === 0, '悔棋后清除抖动类');
   click(document.querySelector('.cell[data-x="7"][data-y="7"]'));
   click(document.querySelector('.cell[data-x="7"][data-y="7"]'));
   assert(document.querySelector('.cell[data-x="7"][data-y="7"]').classList.contains('wig'), '重复点击已占格触发抖动类');
@@ -330,6 +343,13 @@ const click = el => el.dispatchEvent(new window.MouseEvent('click', { bubbles: t
   click($('restartBtn'));
   assert(document.querySelectorAll('.cell.flash').length === 0, '重开后清除棋谱高亮');
   assert(document.querySelectorAll('.cell.wig').length === 0, '重开后清除抖动类');
+  click(document.querySelector('.cell[data-x="7"][data-y="7"]'));
+  click(document.querySelector('.cell[data-x="7"][data-y="7"]'));
+  assert(document.querySelector('.cell[data-x="7"][data-y="7"]').classList.contains('wig'), '悔棋测试前提：已触发抖动类');
+  click($('undoBtn'));
+  assert(document.querySelectorAll('.cell.wig').length === 0, '悔棋后清除抖动类');
+  window.eval('tryPlace(-1, 7)');
+  assert(document.querySelectorAll('.cell.wig').length === 0, '越界坐标不得触发棋盘格抖动类');
   window.eval('setMode("ai")');
 
   /* ---- 计时只在显示的秒数变化时写 DOM ---- */
@@ -713,6 +733,16 @@ const click = el => el.dispatchEvent(new window.MouseEvent('click', { bubbles: t
     assert(created === 1, '有过用户手势后应正常创建 AudioContext');
     window.eval('audioCtx = null;');
     window.AudioContext = origAC;
+    let vibrated = 0;
+    const origVib = nav.vibrate;
+    nav.vibrate = () => { vibrated++; return true; };
+    activation.hasBeenActive = false;
+    window.eval('triggerHaptic("move");');
+    assert(vibrated === 0, '尚无用户手势时不应调用 navigator.vibrate');
+    activation.hasBeenActive = true;
+    window.eval('triggerHaptic("move");');
+    assert(vibrated === 1, '有过用户手势后应正常触发震动反馈');
+    nav.vibrate = origVib;
     if (origUA) Object.defineProperty(nav, 'userActivation', origUA); else delete nav.userActivation;
   }
 
