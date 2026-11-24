@@ -388,6 +388,14 @@ python3 tests/run_offline.py
 
 - `test_backlog_note_lines.py` / `test_evidence_before_hint.py` / `test_non_security_erratum_evidence.py` / `test_downgrade_reverted_cves.py` / `test_rollback_headline.py` / `test_rollback_reverted_errata.py` / `test_same_version_chunk_wording.py`：backlog 备注末尾的空行不计作「另有 N 行」；安全表依据列先列勘误、「不再提及」提示放最后；因高严重度或含 CVE 而判为安全相关的非 security 类勘误在依据列写明；被降级包丢失的 CVE 编号列入 `cves_reverted` 并按回退警告呈现；回滚不再以「常规更新」开头，headline 点名被回退的安全勘误（`errata_reverted`）；版本不变而 chunk 变化不再称作「重建」。
 
+- `test_bodhi_build_epochs.py`：Bodhi 的 `builds[].epoch` 为 0 不代表该构建没有 epoch（实测 `re2-20251105-19.fc45`、`netavark-2.1.0-1.fc45` 等已安装构建实为 Epoch 2，Bodhi 却给出 0），因此只记录 Bodhi 明确给出的非零 epoch；0 不得让已安装构建匹配不上自己的勘误，也不得让 backlog 看不到更新的构建。
+
+- `test_unowned_bigfiles_note.py`：无归属文件与软件包共用 chunk 时（实测 `policy.kern`、`hwdb.bin` 等与数十个 rpm 组件同层），「未检查」的字节数按上限表述，并注明其中几个 chunk 还含有软件包内容；整层都是无归属文件时措辞不变。
+
+- `test_rollback_erratum_wording.py`：差异含降级时，headline 不得一边写「此差异未发现 CVE/勘误」一边点名被回退的安全勘误，改称「升级部分未发现」；没有降级时措辞不变。
+
+- `test_non_package_churn_wording.py`：`skip` headline 里的非软件包下载量按 chunkah 镜像的真实组成表述（initramfs、rpmdb 及其他不属于软件包的文件），不再提镜像里并不存在的「ostree 元数据」层。
+
 其中 A6 的向量取自 rpm 上游 `tests/rpmvercmp.at`，已抓取为
 `tests/rpmvercmp_vectors.json`，因此**离线也能验证**与 rpm 本体的一致性
 （共 103 条：上游实际运行的 91 条，以及它以注释形式保留、用来记录既有怪异行为的 12 条）。

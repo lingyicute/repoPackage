@@ -128,7 +128,7 @@ BASELINE_LABEL_CAP = 80  # characters of a baseline label read back from the sta
 #                          former 26 cut check's own label and appended a 40-character
 #                          marker to it - once more on every --force run.
 PKGLIST_CACHE_VERSION = 7  # reject inventories read from executable/generated SQLite columns
-BODHI_CACHE_VERSION = 6  # v5 could cache a repeated, apparently complete page
+BODHI_CACHE_VERSION = 7  # v6 recorded Bodhi's default epoch 0 as a build's own epoch
 OLD_LOG_CAP = 1000  # changelog entries (dropped by this build) scanned for lost fixes
 RETAINED_LOG_CAP = 1000  # unchanged entries that may still mention a purportedly gained/lost CVE
 TAG_LIST_RETRIES = 4                        # ghcr is flaky on tags/list pagination
@@ -1861,9 +1861,17 @@ class Bodhi:
                     "bugs": bugs,
                     "date_approved": u.get("date_approved"),
                     "date_stable": u.get("date_stable"),
+                    # An epoch only where Bodhi states one. Its 0 is no statement: on
+                    # 2026-11-23 the API listed re2-20251105-19.fc45,
+                    # aardvark-dns-2.1.0-1.fc45 and netavark-2.1.0-1.fc45 with
+                    # "epoch": 0 while the installed Fedora RPMs of those very builds
+                    # carry Epoch 2 (4 of the image's 43 epoch-bearing builds with an
+                    # erratum). Read as a fact, that 0 kept an installed build from
+                    # matching its own erratum and a newer one from counting as newer.
                     "build_epochs": {b["nvr"]: str(b["epoch"]) for b in u.get("builds") or []
                                      if b.get("nvr") and (b.get("type") or "rpm").lower() == "rpm"
-                                     and str(b.get("epoch")).isascii() and str(b.get("epoch")).isdigit()},
+                                     and str(b.get("epoch")).isascii() and str(b.get("epoch")).isdigit()
+                                     and int(b["epoch"]) > 0},
                     "nvrs": [b.get("nvr") for b in (u.get("builds") or [])
                              if isinstance(b, dict)
                              and (b.get("type") or "rpm").lower() == "rpm"],
@@ -2217,7 +2225,8 @@ def classify_change(old: dict | None, new: dict, rel: str, bodhi: Bodhi | None,
                         "severity": u.get("severity"), "nvr": reverted,
                         "cves": sorted(source_cves), "advisory_wide_cves": sorted(shared_cves)})
                 passed = (_passed_build(old, new, u["nvrs"], epochs)
-                          if (old and (baseline_release is None or baseline_release == rel)
+                          if (old and evr_cmp(old, new) < 0
+                              and (baseline_release is None or baseline_release == rel)
                               and (not third_party or norm_new)
                               and (not old_third_party or old_norm)) else None)
                 if passed and u.get("type") == "security" and status in PUSHED_STATUSES:
@@ -2731,13 +2740,26 @@ def _reverted_aliases(group: dict) -> list:
         and not a.get("also_matches_target")))
 
 
-def _unowned_chunk_bytes(ldiff: dict) -> int:
-    """Changed bytes outside rpm/ packages, excluding rpmdb.sqlite and initramfs.img."""
+def _unowned_chunk_bytes(ldiff: dict) -> tuple[int, int]:
+    """(bytes, shared) of the changed chunks that hold files no rpm/ package owns.
+
+    `bytes` adds up those chunks (the rpmdb.sqlite and initramfs.img ones aside) and
+    `shared` counts how many of them hold other components as well. chunkah packs
+    unowned files next to packages: of the four chunks 45.20261123.0 moved without
+    a package change, two (53.6 and 69.9 MiB) carry `bigfiles/policy.kern`,
+    `.../udev/hwdb.bin` and the like next to 39 and 45 rpm/ components. The sum is
+    then an upper bound - it was reported as 133.0 MiB of unowned files.
+    """
     def _unowned(c):
         return (not c.startswith("rpm/")
                 and c.rpartition("/")[2] not in (CHUNK_MATCH, "initramfs.img"))
-    return sum(ch["size"] for ch in ldiff.get("changed_chunks") or []
-               if any(_unowned(c) for c in ch.get("components") or []))
+    total = shared = 0
+    for ch in ldiff.get("changed_chunks") or []:
+        comps = ch.get("components") or []
+        if any(_unowned(c) for c in comps):
+            total += ch["size"]
+            shared += not all(_unowned(c) for c in comps)
+    return total, shared
 
 
 def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
@@ -2912,14 +2934,19 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
         # etc/trivalent/filter/trivalent-blocklist, .../selinux/targeted/policy/
         # policy.35 and .../udev/hwdb.bin. Left out: the rpmdb, which was read,
         # and the initramfs, which the image build regenerates from packages.
-        loose = _unowned_chunk_bytes(ldiff)
+        loose, shared = _unowned_chunk_bytes(ldiff)
         if loose:
-            v["headline"] += (f". Not inspected: {human(loose)} of files that no package owns "
+            bound, bound_zh = ("up to ", "至多") if shared else ("", "")
+            v["headline"] += (f". Not inspected: {bound}{human(loose)} of files that no package owns "
                               f"(chunkah/unclaimed and bigfiles/* chunks, secureblue's own "
                               f"configuration among them) changed as well")
-            v["headline_zh"] += (f"。未检查：另有 {human(loose)} 不属于任何软件包的文件"
+            v["headline_zh"] += (f"。未检查：另有{bound_zh} {human(loose)} 不属于任何软件包的文件"
                                  f"（chunkah/unclaimed 与 bigfiles/* chunk，secureblue 自己的配置"
                                  f"就在其中）发生了变化")
+            if shared:
+                v["headline"] += (f" - an upper bound: package content sits in {shared} of "
+                                  f"those chunks too")
+                v["headline_zh"] += f"——此为上限：其中 {shared} 个 chunk 还含有软件包内容"
     elif sec:
         v["level"] = "update-now"
         # Two separate renderings: the trivia (", " vs "，", the count wording)
@@ -2979,17 +3006,21 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
             lead = f"{plural(len(down), 'source package')} ({down_bin} binary) downgraded, "
             lead_zh = f"{len(down)} 个源码包（{down_bin} 个二进制包）被降级，"
             advice = advice_zh = ""
-        v["headline"] = (lead + "no CVE/erratum found for this delta, but "
+        # A rollback's errata are found, not absent: the warning further down names
+        # the ones it reverts. What came up empty is the upgraded part.
+        found_in, found_in_zh = (("among the upgrades", "升级部分") if down
+                                 else ("for this delta", "此差异"))
+        v["headline"] = (lead + f"no CVE/erratum found {found_in}, but "
                          + "; ".join(bits) + advice)
-        v["headline_zh"] = (lead_zh + "此差异未发现 CVE/勘误，但涉及：" + "；".join(bits_zh)
+        v["headline_zh"] = (lead_zh + found_in_zh + "未发现 CVE/勘误，但涉及：" + "；".join(bits_zh)
                             + advice_zh)
     else:
         tail = tail_zh = ""
         if v["non_package_bytes"]:
             tail = (f"; {human(v['non_package_bytes'])} of the download is non-package churn "
-                    f"(initramfs / ostree metadata)")
+                    f"(initramfs, rpmdb and other files no package owns)")
             tail_zh = (f"；下载中有 {human(v['non_package_bytes'])} 属于非软件包内容"
-                       f"（initramfs / ostree 元数据）")
+                       f"（initramfs、rpmdb 及其他不属于软件包的文件）")
         up_groups = [g for g in groups if any(p.get("dir") != "downgrade" for p in g["pkgs"])]
         up_bin = sum(p.get("dir") != "downgrade" for g in up_groups for p in g["pkgs"])
         v["level"] = "skip"
@@ -3080,7 +3111,9 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
                 old, new = _evr_pair(p["old"], p["new"])
                 return f"{p['name']} ({old} → {new})"
             return clip_list((p for p in g["pkgs"] if p.get("dir") == "downgrade"),
-                             2, render=binary_label, lang=lang)
+                             2, render=binary_label, lang=lang,
+                             joiner="，" if lang == "zh" else ", ",
+                             unit="二进制包" if lang == "zh" else "binary package(s)")
 
         # The entries are binary packages grouped by source package, so the
         # overflow marker has to say what it counts: a bare "(+12 more not shown)"
@@ -3371,7 +3404,7 @@ def group_by_src(changed: list) -> list:
         g["dropped"] = sorted(g["dropped"])
         g["reverted"] = sorted(g["reverted"])
         g["changelog_cves"] = sorted(g["changelog_cves"])
-        rep = min(g["pkgs"], key=lambda p: (p["name"] != g["src"], p["name"]))
+        rep = min(g["pkgs"], key=lambda p: (p.get("dir") == "downgrade", p["name"] != g["src"], p["name"]))
         o, n = rep["old"], rep["new"]
         g["old_evr"], g["new_evr"] = _build_evr(o), _build_evr(n)
         if o.get("arch") != n.get("arch"):
@@ -3397,7 +3430,8 @@ def shortref(ref) -> str:
 
 
 def fmt_pkgs(g: dict, lang: str = "en") -> str:
-    names = [p["name"] for p in g["pkgs"]]
+    pkgs = [p for p in g["pkgs"] if p.get("dir") != "downgrade"] or g["pkgs"]
+    names = [p["name"] for p in pkgs]
     if len(names) == 1:
         return f"`{names[0]}`"
     head = ", ".join(f"`{x}`" for x in names[:3])
@@ -3864,23 +3898,27 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
     if (not changed and not diff["added"] and not diff["removed"]
             and diff.get("rpmdb_complete", True)
             and (isinstance(diff.get("count_a"), int) or diff.get("same_rpmdb"))):
-        unowned = _unowned_chunk_bytes(ldiff)
+        unowned, shared = _unowned_chunk_bytes(ldiff)
+        bound, bound_zh = ("up to ", "至多") if shared else ("", "")
         if is_zh:
             W("## 没有任何软件包版本发生变化")
             W("")
             if unowned:
-                W(f"两个镜像中所有软件包的 NEVRA 完全一致；但另有 {human(unowned)} "
+                W(f"两个镜像中所有软件包的 NEVRA 完全一致；但另有{bound_zh} {human(unowned)} "
                   "不属于任何软件包的文件（`chunkah/unclaimed` 与 `bigfiles/*`，含 secureblue 自身配置）"
-                  "发生了变化，且未在此检查。")
+                  "发生了变化，且未在此检查。"
+                  + (f"该数字是上限：其中 {shared} 个 chunk 还含有软件包内容。" if shared else ""))
             else:
                 W("两个镜像中所有软件包的 NEVRA 完全一致；文件内容未检查，版本相同不能证明内容相同。")
         else:
             W("## No package version changed at all")
             W("")
             if unowned:
-                W(f"Every package in both images has the same NEVRA; {human(unowned)} of "
+                W(f"Every package in both images has the same NEVRA; {bound}{human(unowned)} of "
                   "files no package owns (`chunkah/unclaimed` and `bigfiles/*`, including secureblue's own "
-                  "configuration) also changed and were not inspected here.")
+                  "configuration) also changed and were not inspected here."
+                  + (f" The figure is an upper bound: package content sits in {shared} of those chunks too."
+                     if shared else ""))
             else:
                 W("Every package in both images has the same NEVRA; file contents were not inspected. "
                   "Identical versions do not prove identical contents.")
@@ -4163,6 +4201,12 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
     def with_epoch(evr, epoch):
         return f"{epoch}:{evr}" if epoch not in (None, "0", 0) else evr
 
+    def newer(a, b):
+        """Is candidate build `b` newer than `a`? Epochs decide only where Bodhi stated both."""
+        if "epoch" not in a or "epoch" not in b:
+            a, b = {**a, "epoch": "0"}, {**b, "epoch": "0"}
+        return evr_cmp(a, b) < 0
+
     rows = []
     queried = audit_failed = audit_skipped = 0
     mem = getattr(bodhi, "_mem", None)
@@ -4198,7 +4242,7 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
                     if epoch is not None:
                         cand["epoch"] = str(epoch)
                     if _is_behind(p, bv, br, use_build_evr=True, candidate_epoch=epoch) and (
-                            best is None or evr_cmp(best, cand) < 0):
+                            best is None or newer(best, cand)):
                         best = cand
                 if best is None:
                     continue
@@ -4222,7 +4266,7 @@ def security_backlog(pkgs: dict, rel: str, bodhi: Bodhi,
                     row["cves"].update(cves)
                     row["advisory_wide_cves"].update(shared)
                     row["advisories"].append(advisory)
-                    if evr_cmp(row["_best"], best) < 0:
+                    if newer(row["_best"], best):
                         row["_best"] = best
                         row.update(build)
                     if order.get((u.get("severity") or "").lower(), 0) > \
@@ -5574,7 +5618,7 @@ def cmd_check(args):
             state_base_dig = state["digest"]
             state_base_index = state.get("index_digest")
             state_base_lbl = _state_label(state)
-        elif pending or (state.get("digest") == cur["digest"] and previous != cur["digest"]):
+        elif pending or state.get("digest") == cur["digest"]:
             # An inconclusive target is not a checkpoint. If the tag returned to
             # the last usable baseline, compare it to itself, not to the failure.
             state_base_dig = previous

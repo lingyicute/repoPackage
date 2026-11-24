@@ -156,7 +156,7 @@
     -webkit-backdrop-filter: blur(18px) saturate(1.4);
     background: var(--surface);
     background: color-mix(in oklab, var(--surface) 78%, transparent);
-    transition: background .4s var(--ease), box-shadow .3s;
+    transition: background .4s var(--ease);
   }
   .appbar.scrolled {
     background: var(--surface-container);
@@ -345,7 +345,7 @@
   .story p { color: var(--on-surface-variant); margin-top: 16px; font-size: 1.02rem; }
 
   /* How it works */
-  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 44px; counter-reset: step; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 44px; }
   .step {
     background: var(--surface-container); border-radius: var(--radius-l); padding: 30px 28px; position: relative;
     transition: background .3s, transform .4s var(--ease-emph);
@@ -395,7 +395,7 @@
   .download .btn-outlined:hover { background: color-mix(in oklab, var(--on-primary) 12%, transparent); }
   /* A bare class loses to `.download p` and would never apply. */
   .download .dl-note { margin-top: 20px; font-size: .85rem; opacity: 1; position: relative; }
-  .dl-note code { font-family: var(--font); background: color-mix(in oklab, var(--on-primary) 6%, transparent); padding: 2px 8px; border-radius: 6px; }
+  .dl-note code { font-family: var(--font); background: color-mix(in oklab, var(--on-primary) 6%, transparent); padding: 2px 8px; border-radius: 6px; white-space: nowrap; }
 
   /* Footer */
   footer { padding: 48px 0 40px; color: var(--on-surface-variant); font-size: .9rem; }
@@ -513,7 +513,7 @@
     <div class="blob b2" aria-hidden="true"></div>
     <div class="container hero-grid">
       <div>
-        <span class="chip"><span class="dot">✦</span>GPL-3.0 · Android 5+ ·  Made with ❤️ by lingyicute</span>
+        <span class="chip"><span class="dot">✦</span>GPL-3.0 · Android 5+ · Made with ❤️ by lingyicute</span>
         <h1>轻松<span class="accent">锁定</span><br>你的屏幕方向</h1>
         <p class="lead">YiTate 是一个不到 100k 的开源小工具。躺着刷手机、横着看平板，可以按需要选择方向。没有多余功能，只做好一件事。</p>
         <div class="hero-cta">
@@ -601,7 +601,7 @@
         <div class="step reveal">
           <div class="num">1</div>
           <h3>授予悬浮窗权限</h3>
-          <p>用“显示在其他应用上层”权限创建透明窗口；通知权限可选。</p>
+          <p>用“显示在其他应用的上层”权限创建透明窗口；通知权限可选。</p>
         </div>
         <div class="step reveal" style="--reveal-delay:.08s">
           <div class="num">2</div>
@@ -642,7 +642,7 @@
           <a class="btn btn-outlined" href="https://github.com/lingyicute/YiTate/releases" target="_blank" rel="noopener">所有版本</a>
           <a class="btn btn-outlined" href="https://github.com/lingyicute/YiTate/issues" target="_blank" rel="noopener">反馈问题</a>
         </div>
-        <p class="dl-note">首次选择非默认方向时，请允许 <code>显示在其他应用上层</code> 权限</p>
+        <p class="dl-note">首次选择非默认方向时，请允许 <code>显示在其他应用的上层</code> 权限</p>
       </div>
     </div>
   </section>
@@ -949,7 +949,7 @@
     syncDrift();
   }
 
-  /* ---------- App bar shadow ---------- */
+  /* ---------- App bar scrolled state ---------- */
   const appbar = $('#appbar');
   const syncAppbar = () => appbar.classList.toggle('scrolled', scrollY > 10);
   syncAppbar();

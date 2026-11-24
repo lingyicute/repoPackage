@@ -275,24 +275,30 @@ def _lookup_hsi_info(aid):
     return {}
 
 
+def _str_field(v):
+    return v if isinstance(v, str) else ""
+
+
 def _normalize_attrs(raw):
     items = []
     for a in raw:
         if not isinstance(a, dict):
             continue
-        aid = str(a.get("AppstreamId") or "")
+        aid = _str_field(a.get("AppstreamId")).strip()
+        if not aid:
+            continue
         flags = _flags_to_set(a.get("Flags", 0))
         result = _result_to_str(a.get("HsiResult", 0))
         info = _lookup_hsi_info(aid)
         raw_lvl = a.get("HsiLevel", 0)
         try:
-            level = 0 if isinstance(raw_lvl, bool) else int(raw_lvl or 0)
-        except (TypeError, ValueError):
+            level = 0 if isinstance(raw_lvl, bool) else max(0, int(raw_lvl or 0))
+        except (TypeError, ValueError, OverflowError):
             level = 0
         items.append(HsiItem(
-            id=aid, name=str(info.get("name") or a.get("Name") or aid),
-            summary=str(a.get("Summary") or a.get("Description") or ""),
-            level=level, result=result, flags=flags, uri=str(a.get("Uri") or ""), info=info,
+            id=aid, name=str(info.get("name") or _str_field(a.get("Name")) or aid),
+            summary=_str_field(a.get("Summary")) or _str_field(a.get("Description")),
+            level=level, result=result, flags=flags, uri=_str_field(a.get("Uri")), info=info,
             passed="success" in flags, obsoleted="obsoleted" in flags))
     items.sort(key=lambda i: (i.passed, i.level, i.name))
     return items
@@ -664,8 +670,10 @@ def get_cmdline_report() -> CmdlineReport:
     efi_tokens = []
     for k, v in _iter_cmdline_tokens(cmdline):
         nk = _CMDLINE_KEY_ALIASES.get(_norm_key(k), _norm_key(k))
-        # lib/vsprintf.c：no_hash_pointers 等价于 hash_pointers=never，后出现会覆盖 always。
+        # lib/vsprintf.c no_hash_pointers_enable()：仅接受无值的裸 token（带 = 返回 -EINVAL）。
         if nk == "no_hash_pointers":
+            if v is not None:
+                continue
             nk, v = "hash_pointers", "never"
         if v is not None:
             if nk == "efi":
@@ -1310,7 +1318,9 @@ def _ntfs_from_lsblk_json(j):
                     mp = ", ".join(str(x) for x in n["mountpoints"] if x)
                 dev = str(n.get("name") or "")
                 dev_path = dev if dev.startswith("/dev/") else f"/dev/{dev}"
-                line = (f"{dev_path}  {n.get('size', '')}  标签: {n.get('label') or '-'}"
+                size = n.get("size")
+                size_txt = "" if size is None else str(size)
+                line = (f"{dev_path}  {size_txt}  标签: {n.get('label') or '-'}"
                         f"  挂载: {mp or '-'}")
                 if ftype == data.BITLOCKER_FS_TYPE:
                     # 加密卷看不出里面是 NTFS，界面上要说清楚是被什么加密的。
@@ -1373,7 +1383,11 @@ def _ntfs_partitions():
             if not devname:
                 uevent = read(f"/sys/dev/block/{os.path.basename(f)[1:]}/uevent")
                 m_dev = re.search(r"^DEVNAME=(\S+)", uevent, re.M)
-                devname = f"/dev/{m_dev.group(1)}" if m_dev else f
+                devname = m_dev.group(1) if m_dev else ""
+            if devname and not devname.startswith("/"):
+                devname = f"/dev/{devname}"
+            elif not devname:
+                devname = f
             if re.fullmatch(fs_pat, fstype, re.I):
                 label = re.search(r"^E:ID_FS_LABEL=([^\r\n]+)$", content, re.M)
                 lbl_txt = label.group(1).strip() if label and label.group(1).strip() else "-"
