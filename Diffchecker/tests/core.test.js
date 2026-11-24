@@ -1774,3 +1774,144 @@ test('image.hideLoading: 任一侧仍在载入时不隐藏提示，取消全部�
   ctx.cancelLoad('B');
   assert.equal(noticeEl.shown, false);
 });
+
+test('image.ensureOverlay: 仅在需要绘制边框或压暗背景时分配，关闭后立即归零释放', () => {
+  const s = script('image-compare.html');
+  const code = between(s, 'function ensureOverlay', 'function scheduleOverlay');
+  const children = [], created = [];
+  const slider = { parentNode: null };
+  const stage = {
+    appendChild(n) { n.parentNode = stage; children.push(n); },
+    insertBefore(n, ref) { n.parentNode = stage; const i = children.indexOf(ref); children.splice(i < 0 ? children.length : i, 0, n); },
+  };
+  slider.parentNode = stage;
+  children.push(slider);
+  const ctx = {
+    S: { mode: 'slider', W: 200, H: 100, regions: [{ x: 0, y: 0, w: 10, h: 10 }], boxes: false, darken: false, zoom: 1 },
+    overlay: null, overlayRaf: 0, sliderEl: slider, stage,
+    cancelAnimationFrame() {},
+    paintOverlay() {},
+    dropCanvas(c) { if (c) { c.width = 0; c.height = 0; } },
+    canvasUsable: () => true,
+    mk(w, h) {
+      const c = { width: w, height: h, parentNode: null, getContext: () => ({}), remove() { const i = children.indexOf(c); if (i >= 0) children.splice(i, 1); c.parentNode = null; } };
+      created.push(c); return c;
+    },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code + ';this.drawOverlay=drawOverlay;this.getOv=()=>overlay;', ctx);
+  ctx.drawOverlay();
+  assert.equal(created.length, 0);
+  ctx.S.boxes = true;
+  ctx.drawOverlay();
+  assert.equal(created.length, 1);
+  assert.equal(children.indexOf(created[0]) < children.indexOf(slider), true);
+  ctx.S.boxes = false;
+  ctx.drawOverlay();
+  assert.equal(ctx.getOv(), null);
+  assert.equal(created[0].width, 0);
+  assert.equal(children.includes(created[0]), false);
+});
+
+test('image.exportCanvas: 原分辨率导出时在分配叠加画布前先释放源副本画布', () => {
+  const s = script('image-compare.html');
+  const code = between(s, 'function exportCanvas', 'function pngUrl');
+  const events = [];
+  let seq = 0;
+  const ctx = {
+    MAX_EXPORT_PIXELS: 16 * 1024 * 1024,
+    S: { mode: 'highlight', frame: { x: 0, y: 0, w: 400, h: 300 }, W: 200, H: 150, A: { c: {}, w: 400, h: 300 }, B: { c: {} }, align: {}, regions: [{ x: 0, y: 0, w: 10, h: 10 }], boxes: true, darken: false },
+    baseA: {}, baseB: {},
+    fitsCanvas: () => true,
+    canvasUsable: () => true,
+    drawAligned() {},
+    paintOverlay() {},
+    compositeCanvas() { events.push('composite'); },
+    mk(w, h) {
+      const id = ++seq;
+      events.push('mk:' + id);
+      return { id, width: w, height: h, getContext: () => ({ drawImage() {}, translate() {}, scale() {} }) };
+    },
+    dropCanvas(c) { if (c) { events.push('drop:' + c.id); c.width = 0; c.height = 0; } },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code + ';this.exportCanvas=exportCanvas;', ctx);
+  const out = ctx.exportCanvas(true);
+  assert.equal(out.id, 3);
+  assert.ok(events.indexOf('drop:1') < events.indexOf('mk:4'));
+  assert.ok(events.indexOf('drop:2') < events.indexOf('mk:4'));
+  assert.ok(events.includes('drop:4'));
+});
+
+test('image.alignKeyboardOpen 与 drawAlign: 大屏软键盘弹出取消吸顶，仅改修改图时不重绘原图', () => {
+  const s = script('image-compare.html');
+  const kbCode = between(s, 'function alignKeyboardOpen', 'function syncAlignLayout');
+  const drawCode = between(s, 'function drawAlign(', '\nfunction syncAlignInputs');
+  const ctx = { window: { innerHeight: 932, visualViewport: { height: 610 } } };
+  vm.createContext(ctx);
+  vm.runInContext(kbCode + ';this.alignKeyboardOpen=alignKeyboardOpen;', ctx);
+  assert.equal(ctx.alignKeyboardOpen(), true);
+  ctx.window.visualViewport.height = 900;
+  assert.equal(ctx.alignKeyboardOpen(), false);
+  ctx.window.innerHeight = 420; ctx.window.visualViewport.height = 420;
+  assert.equal(ctx.alignKeyboardOpen(), true);
+
+  const drawn = [];
+  const mkC = side => ({ width: 0, height: 0, style: {}, getContext: () => ({ setTransform() {}, clearRect() {}, drawImage() { drawn.push(side); } }) });
+  const nodes = { alignView: { clientWidth: 300, clientHeight: 200 }, alignA: mkC('A'), alignB: mkC('B'), alOpacity: { value: '50' } };
+  const dctx = {
+    S: { A: { c: {}, w: 100, h: 100 }, B: { c: {} } },
+    alTmp: { dx: 0, dy: 0, rot: 0, scale: 1 }, alView: { sx: 1, sy: 1, z: 1, x: 0, y: 0, w: 0, h: 0 },
+    window: { devicePixelRatio: 1 }, $: id => nodes[id],
+    drawAligned() { drawn.push('B'); },
+  };
+  vm.createContext(dctx);
+  vm.runInContext(drawCode + ';this.drawAlign=drawAlign;', dctx);
+  dctx.drawAlign();
+  assert.deepEqual(drawn, ['A', 'B']);
+  drawn.length = 0;
+  dctx.drawAlign(true);
+  assert.deepEqual(drawn, ['B']);
+});
+
+test('scrollToEl: 仅顶部或底部窄条可见时滚入视口，短容器完整可见时不额外滚动', () => {
+  for (const [f, end] of [['text-compare.html', '\nfunction goChange'], ['excel-compare.html', "\n$('prevBtn')"]]) {
+    const code = between(script(f), 'const scrollBehavior=', end);
+    const ctx = { matchMedia: () => ({ matches: false }), window: { innerHeight: 667 } };
+    vm.createContext(ctx);
+    vm.runInContext(code + ';this.scrollToEl=scrollToEl;', ctx);
+    const runWith = (top, bottom) => {
+      let outer = 0;
+      const box = {
+        scrollTop: 0, scrollLeft: 0, clientHeight: bottom - top, clientWidth: 360, scrollWidth: 360,
+        getBoundingClientRect: () => ({ top, bottom, left: 0, right: 360 }),
+        querySelector: () => null, scrollTo() {}, scrollIntoView() { outer++; },
+      };
+      const row = { tagName: 'TR', getBoundingClientRect: () => ({ top: top + 20, height: 20 }), querySelector: () => null };
+      ctx.scrollToEl(box, row);
+      return outer;
+    };
+    assert.equal(runWith(600, 1000), 1, f);
+    assert.equal(runWith(-340, 60), 1, f);
+    assert.equal(runWith(100, 180), 0, f);
+    assert.equal(runWith(0, 600), 0, f);
+  }
+});
+
+test('翻译插值与导出文件名: 单遍替换不误改文件名中的占位符，开头点号与空格被剔除', () => {
+  for (const [f, fnVars, exp] of [
+    ['text-compare.html', 'const lastDiff={input:{leftName:".env",rightName:"b.txt"}},fileNames={A:"x",B:"y"};', 'env-vs-b'],
+    ['image-compare.html', 'const S={A:{name:".hidden.png"},B:{name:"b.png"}};', 'hidden-vs-b'],
+    ['excel-compare.html', 'const NAMES={A:".book.xlsx",B:"new.xlsx"};', 'book-vs-new'],
+  ]) {
+    const s = script(f);
+    const tLine = s.split('\n').find(l => l.startsWith('const t=('));
+    const stemLine = s.split('\n').find(l => l.startsWith('const stem='));
+    const baseLine = s.split('\n').find(l => l.startsWith('const baseName='));
+    const ctx = { lang: 'en', I18N: { en: { m: '{name}: {msg}' } } };
+    vm.createContext(ctx);
+    vm.runInContext([tLine, fnVars, stemLine, baseLine, 'this.t=t;this.baseName=baseName;'].join('\n'), ctx);
+    assert.equal(ctx.t('m', { name: 'a{msg}.txt', msg: 'err' }), 'a{msg}.txt: err', f);
+    assert.equal(ctx.baseName(), exp, f);
+  }
+});

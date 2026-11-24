@@ -111,7 +111,7 @@ tr.focus td.code{box-shadow:inset 3px 0 0 var(--accent)}
 .panel{position:fixed;top:0;right:0;height:100%;width:min(320px,100vw);background:var(--bg);border-left:1px solid var(--border);box-shadow:var(--shadow);transform:translateX(100%);visibility:hidden;transition:transform .2s,visibility 0s linear .2s;z-index:50;display:flex;flex-direction:column}
 .panel.open{transform:none;visibility:visible;transition-delay:0s}
 .panel-head{display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 14px 16px;border-bottom:1px solid var(--border);font-weight:600}
-.panel-body{overflow:auto;overscroll-behavior:contain;padding:8px max(16px,env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) 16px}
+.panel-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:8px max(16px,env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) 16px}
 .panel h4{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--fg3);margin:18px 0 8px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;font-size:13px}
 .row select,.row input[type=text]{border:1px solid var(--border2);border-radius:6px;padding:4px 8px;background:var(--bg);max-width:160px;min-width:0}
@@ -139,7 +139,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 .hidden{display:none!important}
 .file-input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;overflow:hidden;clip-path:inset(50%);pointer-events:none}
 #printResult{display:none;color:var(--fg);background:var(--bg)}
-@media (max-width:900px){.inputs{grid-template-columns:1fr}.offline-navigation{min-height:52px;gap:8px 14px;padding:0 max(14px,env(safe-area-inset-right)) 0 max(14px,env(safe-area-inset-left));flex-wrap:wrap}.offline-tools{gap:14px}.offline-tools a{min-height:44px}.offline-actions{gap:8px}.offline-brand>span{display:none}.offline-badge{display:none}main{padding:14px max(14px,env(safe-area-inset-right)) 32px max(14px,env(safe-area-inset-left))}}
+@media (max-width:900px){.inputs{grid-template-columns:1fr}.offline-navigation{min-height:52px;gap:8px 14px;padding:0 max(14px,env(safe-area-inset-right)) 0 max(14px,env(safe-area-inset-left));flex-wrap:wrap}.offline-tools{gap:14px}.offline-tools a{min-height:44px}.offline-actions{gap:8px;padding:6px 0}.offline-brand>span{display:none}.offline-badge{display:none}main{padding:14px max(14px,env(safe-area-inset-right)) 32px max(14px,env(safe-area-inset-left))}}
 @media (max-width:480px){.offline-navigation{gap:4px 10px;padding:0 max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left))}.offline-tools{gap:10px}.offline-actions{gap:6px}.offline-language{padding:5px 8px;font-size:12px}.choices{grid-template-columns:1fr}}
 @media (max-width:640px){.hero{margin:2px 0 12px}.hero h1{font-size:24px}.input-card textarea{min-height:160px;font-size:16px}.row select,.row input[type=text],.rule input{font-size:16px}.toolbar{position:static}.stats{margin-left:0;width:100%}.diff-head{font-size:12px}.diff-head>div{padding:6px 8px}table.diff thead th{padding:6px 8px;font-size:12px}.diff-scroll{max-height:70vh;max-height:70dvh}table.diff{font-size:12px}table.diff td{padding:0 6px 0 4px}table.diff td.num{width:36px;min-width:36px;padding:0 5px 0 3px;font-size:11px}table.diff col.cn{width:36px}table.diff td.sign,table.diff col.cs{width:14px;min-width:14px;padding-left:3px}table.diff.is-split:not(.nowrap){min-width:580px}.modal{padding:16px}}
 @media (max-height:520px){.toolbar{position:static}}
@@ -149,7 +149,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 </head>
 <body>
 <header class="offline-header"><nav class="offline-navigation">
-  <a class="offline-brand" href="text-compare.html"><svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#20a464"/><path d="M9 9h6v14H9zM17 9h6v14h-6z" fill="#fff" opacity=".9"/></svg><span>Diffchecker</span></a>
+  <a class="offline-brand" href="text-compare.html" aria-label="Diffchecker"><svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#20a464"/><path d="M9 9h6v14H9zM17 9h6v14h-6z" fill="#fff" opacity=".9"/></svg><span>Diffchecker</span></a>
   <div class="offline-tools"><a href="text-compare.html" aria-current="page" data-i18n="nav.text">Text</a><a href="image-compare.html" data-i18n="nav.images">Images</a><a href="excel-compare.html" data-i18n="nav.excel">Excel</a></div>
   <div class="offline-actions"><span class="offline-badge"><span>●</span><span data-i18n="offline">Offline · no network</span></span><button class="offline-language" id="themeBtn" data-i18n="dark">Dark</button><button class="offline-language" id="langBtn">中文</button></div>
 </nav></header>
@@ -242,7 +242,7 @@ Object.assign(I18N.zh,{lines1:'行',words1:'字词',characters1:'字符',none:'�
 I18N.en.exportXlsxLimit='Excel cannot store this many rows or columns, or a cell has more than 32,767 characters. Use another export format.';
 I18N.zh.exportXlsxLimit='结果超出 Excel 规格的行数、列数或单元格 32767 字符上限。请改用其他格式。';
 let lang=lsGet('offline-lang');if(lang!=='en'&&lang!=='zh')lang=/^zh/i.test(navigator.language||'')?'zh':'en';
-const t=(k,v)=>{let s=(I18N[lang][k]??I18N.en[k]??k);if(v)for(const x in v)s=s.split('{'+x+'}').join(v[x]);return s};
+const t=(k,v)=>{const s=I18N[lang][k]??I18N.en[k]??k;return v?s.replace(/\{(\w+)\}/g,(m,x)=>Object.hasOwn(v,x)?String(v[x]):m):s};
 function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>{e.textContent=t(e.dataset.i18n)});document.getElementById('langBtn').textContent=lang==='en'?'中文':'English';document.getElementById('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.getElementById('rules').querySelectorAll('input').forEach(i=>{i.placeholder=t('rulePh');i.setAttribute('aria-label',i.placeholder)});document.querySelectorAll('[data-i18n-ph]').forEach(e=>{e.placeholder=t(e.dataset.i18nPh);e.setAttribute('aria-label',e.placeholder)});document.querySelectorAll('[data-i18n-title]').forEach(e=>e.title=t(e.dataset.i18nTitle));document.getElementById('rules').querySelectorAll('button').forEach(b=>{b.title=t('remove');b.setAttribute('aria-label',b.title)});document.title=t('hero.title')+' — Diffchecker';updateMeta();document.querySelectorAll('.switch,select[data-sel]').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});{const p=document.getElementById('panel'),c=document.getElementById('panelClose');if(p)p.setAttribute('aria-label',t('tools'));if(c)c.setAttribute('aria-label',t('cancel'))}if(lastDiff)render()}
 let theme=lsGet('offline-theme');if(theme!=='dark'&&theme!=='light')theme=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
 function applyTheme(){document.documentElement.dataset.theme=theme;document.getElementById('themeBtn').textContent=t(theme==='dark'?'light':'dark')}
@@ -529,7 +529,7 @@ function diffView(d,layout,interactive=true){
    有很多折叠块时每展开一个都得重新 Tab 过来。重绘后折叠条原来的位置正好是展开出来的第一行，把焦点放到这一行，Tab 就从这里继续 */
 function focusRow(wrap,i){const row=wrap.querySelector('table')?.rows[i];if(!row)return;row.tabIndex=-1;try{row.focus({preventScroll:true})}catch(e){row.focus()}}
 const scrollBehavior=()=>matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth';
-function scrollToEl(box,el){const br=box.getBoundingClientRect(),er=el.getBoundingClientRect(),bh=scrollBehavior(),head=box.querySelector('thead')?.getBoundingClientRect().height||0,opt={top:Math.max(0,box.scrollTop+(er.top-br.top)-head-Math.max(0,(box.clientHeight-head-er.height)/2)),behavior:bh};if(el.classList?.contains('split')&&box.scrollWidth>box.clientWidth){const del=el.querySelector('td.code.del'),ins=el.querySelector('td.code.ins'),side=!del?ins:!ins?del:null;if(side){const sr=side.getBoundingClientRect();if(sr.left<br.left||sr.right>br.right)opt.left=Math.max(0,box.scrollLeft+(sr.left-br.left)-44)}}box.scrollTo(opt);if(br.bottom<=40||br.top>=window.innerHeight-40)box.scrollIntoView({behavior:bh,block:'nearest'})}
+function scrollToEl(box,el){const br=box.getBoundingClientRect(),er=el.getBoundingClientRect(),bh=scrollBehavior(),head=box.querySelector('thead')?.getBoundingClientRect().height||0,opt={top:Math.max(0,box.scrollTop+(er.top-br.top)-head-Math.max(0,(box.clientHeight-head-er.height)/2)),behavior:bh};if(el.classList?.contains('split')&&box.scrollWidth>box.clientWidth){const del=el.querySelector('td.code.del'),ins=el.querySelector('td.code.ins'),side=!del?ins:!ins?del:null;if(side){const sr=side.getBoundingClientRect();if(sr.left<br.left||sr.right>br.right)opt.left=Math.max(0,box.scrollLeft+(sr.left-br.left)-44)}}box.scrollTo(opt);if(Math.min(br.bottom,window.innerHeight)-Math.max(br.top,0)<Math.min(br.bottom-br.top,140))box.scrollIntoView({behavior:bh,block:'nearest'})}
 function goChange(dir){const box=$('diffScroll'),n=+box.dataset.changes||0;if(!n)return;focusIdx=focusIdx<0&&dir<0?n-1:((focusIdx+dir)%n+n)%n;document.querySelectorAll('tr.focus').forEach(e=>e.classList.remove('focus'));const el=$('focus-'+focusIdx);if(el){el.classList.add('focus');scrollToEl(box,el)}}
 $('prevBtn').onclick=()=>goChange(-1);$('nextBtn').onclick=()=>goChange(1);
 $('findBtn').onclick=()=>run();
@@ -583,7 +583,10 @@ $('exportLayout').onclick=e=>{const b=e.target.closest('button');if(!b)return;ex
 // 打印树与交互树隔离：浏览器异步打印时也不会暂时改动或保存当前布局、主题。
 function clearPrintResult(){$('printResult').replaceChildren();document.body.classList.remove('printing-text-result')}
 const printMedia=matchMedia('print');
+const clearStalePrint=()=>{if(!printMedia.matches&&document.body.classList.contains('printing-text-result'))clearPrintResult()};
 window.addEventListener('afterprint',clearPrintResult);
+window.addEventListener('focus',clearStalePrint);
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)clearStalePrint()});
 printMedia.addEventListener?.('change',e=>{if(!e.matches)clearPrintResult()});
 function printComparison(layout){
   const wrap=document.createElement('div'),scroll=document.createElement('div'),identical=lastDiff.nDel===0&&lastDiff.nIns===0;
@@ -596,7 +599,7 @@ $('exportGo').onclick=async()=>{$('exportModal').close();if(rt)run(true);if(!las
   try{if(exportFmt==='pdf')printComparison(exportLayout);else if(exportFmt==='png')await exportPng();else if(exportFmt==='xlsx')exportXlsx();else exportDiffFile()}
   catch(e){console.error(e);notice(t(e&&e.tooTall?'exportTooTall':e?.message==='exportXlsxLimit'?'exportXlsxLimit':'exportFailed'))}};
 const stem=(n,d)=>{n=n||d;return n.replace(/\.[^.]+$/,'')||n};
-const baseName=()=>(stem(fileNames.A,'original')+'-vs-'+stem(fileNames.B,'changed')).replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100).replace(/[. ]+$/,'')||'diffchecker';
+const baseName=()=>(stem(lastDiff?.input?.leftName??fileNames.A,'original')+'-vs-'+stem(lastDiff?.input?.rightName??fileNames.B,'changed')).replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100).replace(/^[. ]+|[. ]+$/g,'')||'diffchecker';
 function download(blob,name){const u=URL.createObjectURL(blob);const a=document.createElement('a');a.href=u;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),60000)}
 function exportDiffFile(){const j={type:'text',version:1,...lastDiff.input,options:{...opts},createdAt:new Date().toISOString()};download(new Blob([JSON.stringify(j)],{type:'application/json'}),baseName()+'.diffchecker')}
 /* rows for tabular exports (pairs of left/right lines) */
@@ -621,7 +624,7 @@ async function exportPng(){
   const d=lastDiff,rows=pairedRows(true),unified=exportLayout==='unified',dark=theme==='dark';
   const css=getComputedStyle(document.body),cssVar=(n,d)=>css.getPropertyValue(n).trim()||d,W=1600,LH=20,PAD=16,HEADER=PAD*2+40,font='13px '+cssVar('--mono','monospace');
   const col={del:cssVar('--del-block','rgba(255,46,0,.09)'),ins:cssVar('--ins-block','rgba(0,180,144,.12)'),delHl:cssVar('--del-hl','rgba(255,46,0,.3)'),insHl:cssVar('--ins-hl','rgba(0,180,144,.34)')};
-  const cv=document.createElement('canvas');try{cv.width=W;cv.height=1;const ctx=cv.getContext('2d');ctx.font=font;
+  const cv=document.createElement('canvas');try{cv.width=W;cv.height=1;const ctx=cv.getContext('2d');if(!ctx)throw Object.assign(new Error('image too tall'),{tooTall:true});ctx.font=font;
   const colW=unified?W-PAD*2:(W-PAD*2)/2,numW=Math.ceil(Math.max(40,ctx.measureText(String(Math.max(d.A.length,d.B.length))).width+8)),gut=unified?numW*2:numW,limit=pngLineBudget(W,HEADER,LH);
   const widths=new Map(),widthOf=ch=>{if(!widths.has(ch))widths.set(ch,ctx.measureText(ch).width);return widths.get(ch)};
   const wrap=(txt,segs,side)=>wrapPngLine(segs?segs.map(s=>({text:side==='l'?s.a:s.b,mark:s.t!==EQ})):[{text:txt,mark:false}],colW-gut-16,widthOf,limit);
@@ -634,7 +637,7 @@ async function exportPng(){
     if(unified){if(left)add({...r,left});if(right)add({...r,right})}else add({...r,left,right});
   }
   const H=HEADER+total*LH;cv.height=H;ctx.fillStyle=dark?'#17191c':'#fff';ctx.fillRect(0,0,W,H);if(ctx.getImageData(0,0,1,1).data[3]!==255)throw Object.assign(new Error('image too tall'),{tooTall:true});ctx.font='bold 15px system-ui';ctx.fillStyle=dark?'#ebedef':'#202329';
-  const hA=`${t('original')}${fileNames.A?' · '+fileNames.A:''}`,hB=`${t('changed')}${fileNames.B?' · '+fileNames.B:''}`;ctx.fillText(unified?`${hA}  →  ${hB}`:hA,PAD,PAD+14,unified?colW:colW-PAD);if(!unified)ctx.fillText(hB,W/2+PAD,PAD+14,colW-PAD);
+  const ln=d.input?.leftName??fileNames.A,rn=d.input?.rightName??fileNames.B,hA=`${t('original')}${ln?' · '+ln:''}`,hB=`${t('changed')}${rn?' · '+rn:''}`;ctx.fillText(unified?`${hA}  →  ${hB}`:hA,PAD,PAD+14,unified?colW:colW-PAD);if(!unified)ctx.fillText(hB,W/2+PAD,PAD+14,colW-PAD);
   ctx.font=font;let y=PAD+40;
   // 统一视图与页面一致，用两列行号（原始 / 修改后）；删除行只有原始行号，新增行只有修改后行号
   const drawLines=(x,lines,nums,kind,height)=>{if(kind){ctx.fillStyle=col[kind];ctx.fillRect(x,y,colW,height*LH)}

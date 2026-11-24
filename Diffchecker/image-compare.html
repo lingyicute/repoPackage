@@ -99,7 +99,7 @@ main{flex:1;width:100%;max-width:1600px;margin:0 auto;padding:22px max(28px,env(
 .align-view{position:relative;height:460px;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--checker);cursor:move;touch-action:none}
 .align-view canvas{position:absolute;left:0;top:0;width:100%;height:100%}
 .align-ctl .row input[type=number]{width:80px;border:1px solid var(--border2);border-radius:6px;padding:3px 6px;background:var(--bg);font-size:12px}
-.chk{display:flex;align-items:center;gap:6px;font-size:13px;padding:3px 0}
+.chk{display:flex;align-items:flex-start;gap:8px;font-size:13px;padding:3px 0}.chk input[type=checkbox]{flex:none;margin:3px 0 0}
 .err{color:var(--danger);font-size:12px;overflow-wrap:anywhere}.err.ok{color:var(--accent2)}
 .offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 32px);transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;overflow-wrap:anywhere;opacity:0;pointer-events:none;transition:opacity .2s}.offline-notice.show{opacity:1}
 [data-theme="dark"] .offline-notice{border-color:#2f4a3a;background:#1c2b23;color:#c8f5e6;box-shadow:0 5px 24px #00000066}
@@ -109,18 +109,18 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 .hidden{display:none!important}
 .file-input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;overflow:hidden;clip-path:inset(50%);pointer-events:none}
 #report{display:none}
-@media (max-width:1000px){.inputs{grid-template-columns:1fr}.work,.work.collapsed{grid-template-columns:1fr;min-height:0}.viewport{height:min(62vh,460px);height:min(62dvh,460px);min-height:240px}.align-grid{grid-template-columns:1fr}.align-view{height:min(44vh,300px);height:min(44dvh,300px);min-height:200px}.align-ctl .row input[type=number]{width:108px}.sidebar{height:auto;min-height:0;max-height:none}.sb-body{overflow:visible;overscroll-behavior:auto}#chgList{max-height:min(55vh,420px);max-height:min(55dvh,420px);overflow:auto}.work.collapsed .sb-head{border-bottom:0}.work.collapsed .sb-head span{display:inline}.offline-navigation{min-height:52px;gap:8px 14px;padding:0 max(14px,env(safe-area-inset-right)) 0 max(14px,env(safe-area-inset-left));flex-wrap:wrap}.offline-tools{gap:14px}.offline-tools a{min-height:44px}.offline-actions{gap:8px}.offline-brand>span{display:none}.offline-badge{display:none}main{padding:14px max(14px,env(safe-area-inset-right)) 32px max(14px,env(safe-area-inset-left))}}
+@media (max-width:1000px){.inputs{grid-template-columns:1fr}.work,.work.collapsed{grid-template-columns:1fr;min-height:0}.viewport{height:min(62vh,460px);height:min(62dvh,460px);min-height:240px}.align-grid{grid-template-columns:1fr}.align-view{height:min(44vh,300px);height:min(44dvh,300px);min-height:200px}.align-ctl .row input[type=number]{width:108px}.sidebar{height:auto;min-height:0;max-height:none}.sb-body{overflow:visible;overscroll-behavior:auto}#chgList{max-height:min(55vh,420px);max-height:min(55dvh,420px);overflow:auto}.work.collapsed .sb-head{border-bottom:0}.work.collapsed .sb-head span{display:inline}.offline-navigation{min-height:52px;gap:8px 14px;padding:0 max(14px,env(safe-area-inset-right)) 0 max(14px,env(safe-area-inset-left));flex-wrap:wrap}.offline-tools{gap:14px}.offline-tools a{min-height:44px}.offline-actions{gap:8px;padding:6px 0}.offline-brand>span{display:none}.offline-badge{display:none}main{padding:14px max(14px,env(safe-area-inset-right)) 32px max(14px,env(safe-area-inset-left))}}
 @media (max-width:1000px) and (min-height:540px){#alignModal:not(.kb) .modal{scroll-padding-top:calc(min(36dvh,260px) + 16px)}#alignModal:not(.kb) .align-grid{display:flex;flex-direction:column}#alignModal:not(.kb) .align-view{flex:none;position:sticky;top:0;z-index:2;height:min(36vh,260px);height:min(36dvh,260px);min-height:160px}}
 @media (max-width:480px){.offline-navigation{gap:4px 10px;padding:0 max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left))}.offline-tools{gap:10px}.offline-actions{gap:6px}.offline-language{padding:5px 8px;font-size:12px}.choices{grid-template-columns:1fr}}
 @media (max-width:640px){.hero{margin:2px 0 12px}.hero h1{font-size:24px}.drop{min-height:150px}.drop img{max-height:160px}.toolbar .spacer,.modal-actions .spacer{display:none}#modeSeg{display:grid;grid-template-columns:repeat(3,1fr);width:100%}#modeSeg button{padding:8px 6px;border-left:0;border-right:1px solid var(--border2);border-bottom:1px solid var(--border2);text-align:center}#modeSeg button:nth-child(3n){border-right:0}#modeSeg button:nth-child(n+4){border-bottom:0}.hud{font-size:11px;padding:3px 6px}.modal{padding:16px}.ctl select,.row select,.align-ctl .row input[type=number]{font-size:16px}}
-@media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.row{padding:7px 0}.switch::before{content:"";position:absolute;inset:-6px -10px}.ctl select,.row select,.align-ctl .row input[type=number]{font-size:16px}.chk{padding:7px 0}input[type=range]{min-height:32px}.drop{padding-top:48px}.drop .lbl{right:54px}}
+@media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.row{padding:7px 0}.switch::before{content:"";position:absolute;inset:-6px -10px}.ctl select,.row select,.align-ctl .row input[type=number]{font-size:16px}.chk{padding:7px 0}.chk input[type=checkbox]{width:18px;height:18px;margin-top:1px}input[type=range]{min-height:32px}.drop{padding-top:48px}.drop .lbl{right:54px}}
 @media (pointer:coarse) and (min-width:1001px){.work.collapsed .sb-head{padding:10px 2px}}
 @media print{html,body{background:#fff!important;color:#000!important}body.printing-image-report{display:block;height:auto}body.printing-image-report>*{display:none!important}body.printing-image-report>#report{display:block!important;font-family:system-ui,sans-serif;color:#000}#report h1{font-size:18px}#report h2{font-size:14px;margin:18px 0 6px;page-break-after:avoid}#report img{max-width:100%;max-height:85vh;display:block;border:1px solid #ccc}#report .srcs{display:grid;grid-template-columns:1fr 1fr;gap:12px}#report .crops{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-items:start}#report .crop{page-break-inside:avoid;border:1px solid #ddd;padding:6px;font-size:11px}#report .crop img{max-height:220px;margin:4px auto}#report table{border-collapse:collapse;font-size:11px}#report td,#report th{border:1px solid #ccc;padding:3px 6px}}
 </style>
 </head>
 <body>
 <header class="offline-header"><nav class="offline-navigation">
-  <a class="offline-brand" href="text-compare.html"><svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#20a464"/><path d="M9 9h6v14H9zM17 9h6v14h-6z" fill="#fff" opacity=".9"/></svg><span>Diffchecker</span></a>
+  <a class="offline-brand" href="text-compare.html" aria-label="Diffchecker"><svg width="30" height="30" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#20a464"/><path d="M9 9h6v14H9zM17 9h6v14h-6z" fill="#fff" opacity=".9"/></svg><span>Diffchecker</span></a>
   <div class="offline-tools"><a href="text-compare.html" data-i18n="nav.text">Text</a><a href="image-compare.html" aria-current="page" data-i18n="nav.images">Images</a><a href="excel-compare.html" data-i18n="nav.excel">Excel</a></div>
   <div class="offline-actions"><span class="offline-badge"><span>●</span><span data-i18n="offline">Offline · no network</span></span><button class="offline-language" id="themeBtn">Dark</button><button class="offline-language" id="langBtn">中文</button></div>
 </nav></header>
@@ -205,8 +205,8 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
   <div id="pngOptions"><label class="chk"><input type="checkbox" id="expWorking"> <span data-i18n="workingExport">Export at working resolution</span></label></div>
   <div id="pdfOptions" class="hidden">
   <label data-i18n="reportContent">Report content</label>
-  <label class="chk"><input type="checkbox" id="expSrc" checked> <span data-i18n="srcImages">Source images</span> — <small data-i18n="srcImagesD">Add the original and changed images to the report.</small></label>
-  <label class="chk"><input type="checkbox" id="expList" checked> <span id="expListLbl">Change list</span> — <small data-i18n="chgListD">Add original and changed crops, with an optional difference preview, for each detected region.</small></label>
+  <label class="chk"><input type="checkbox" id="expSrc" checked> <span><span data-i18n="srcImages">Source images</span> — <small data-i18n="srcImagesD">Add the original and changed images to the report.</small></span></label>
+  <label class="chk"><input type="checkbox" id="expList" checked> <span><span id="expListLbl">Change list</span> — <small data-i18n="chgListD">Add original and changed crops, with an optional difference preview, for each detected region.</small></span></label>
   <label data-i18n="diffStyle">Difference style</label>
   <div class="seg" id="expDiffStyle"><button data-s="subtract" aria-pressed="true" data-i18n="m.subtract">Subtract</button><button data-s="none" aria-pressed="false" data-i18n="none">None</button></div>
   <p class="tip" data-i18n="alwaysIncluded">The comparison result and summary are always included.</p>
@@ -234,11 +234,11 @@ I18N.en.alignOutOfRange='The aligned images span too large a frame. Reduce the s
 I18N.zh.alignOutOfRange='对齐后的画幅过大，请减小平移量或缩放比例。';
 I18N.en.invalidAlignment='Enter finite alignment values and a positive scale.';
 I18N.zh.invalidAlignment='请输入有效的对齐数值，缩放比例必须为正数。';
-Object.assign(I18N.en,{pauseFlicker:'Pause',resumeFlicker:'Resume',flickSpeed:'Flicker speed',shiftX:'Horizontal shift (pixels)',shiftY:'Vertical shift (pixels)'});
-Object.assign(I18N.zh,{pauseFlicker:'暂停',resumeFlicker:'继续',flickSpeed:'闪烁速度',shiftX:'水平平移（像素）',shiftY:'垂直平移（像素）'});
+Object.assign(I18N.en,{pauseFlicker:'Pause',resumeFlicker:'Resume',flickSpeed:'Flicker speed',shiftX:'Horizontal shift (pixels)',shiftY:'Vertical shift (pixels)',aligning:'Aligning images…'});
+Object.assign(I18N.zh,{pauseFlicker:'暂停',resumeFlicker:'继续',flickSpeed:'闪烁速度',shiftX:'水平平移（像素）',shiftY:'垂直平移（像素）',aligning:'正在自动对齐图片…'});
 let lang=lsGet('offline-lang'),theme=lsGet('offline-theme');if(theme!=='dark'&&theme!=='light')theme=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';if(lang!=='en'&&lang!=='zh')lang=/^zh/i.test(navigator.language||'')?'zh':'en';
 if(matchMedia('(pointer:coarse)').matches){I18N.en.browse='or tap to choose an image';I18N.zh.browse='或点击选择图片'}// 触屏设备没有 Ctrl+V
-const t=(k,v)=>{let s=(I18N[lang][k]??I18N.en[k]??k);if(v)for(const x in v)s=s.split('{'+x+'}').join(v[x]);return s};
+const t=(k,v)=>{const s=I18N[lang][k]??I18N.en[k]??k;return v?s.replace(/\{(\w+)\}/g,(m,x)=>Object.hasOwn(v,x)?String(v[x]):m):s};
 const $=id=>document.getElementById(id);
 const labeledControls={fadeRange:'opacity',flickRange:'flickSpeed',hlMode:'hlStyle',hlThr:'threshold',zoomRange:'zoom',alDx:'shiftX',alDy:'shiftY',alRot:'rotate',alScale:'scale',alOpacity:'opacity'};
 function applyLang(){for(const [id,key] of Object.entries(labeledControls))$(id).setAttribute('aria-label',t(key));document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.dataset.i18n));$('langBtn').textContent=lang==='en'?'中文':'English';$('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.querySelectorAll('[data-i18n-title]').forEach(e=>{e.title=t(e.dataset.i18nTitle);if(e.matches('.rm,#sbToggle'))e.setAttribute('aria-label',e.title)});document.title=t('hero.title')+' — Diffchecker';document.querySelectorAll('.switch').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});if(S.W){applyTransform();redrawFlicker()}syncFlickerButton();sliderEl?.setAttribute('aria-label',t('m.slider'));renderPasses();renderList()}
@@ -280,7 +280,8 @@ function hideLoading(){if(pending.A||pending.B)return;const n=$('notice');if(n.t
 function cancelLoad(side){loadVersion[side]++;pending[side]=false;hideLoading()}
 function cancelLoads(){cancelLoad('A');cancelLoad('B')}
 const setAlignMsg=(m,ok=false)=>{const e=$('alignErr');e.textContent=m;e.classList.toggle('ok',ok&&!!m)};
-function stopAuto(){alignJob++;$('autoAlignBtn').disabled=false;setAlignMsg('')}
+function hideAligning(){const n=$('notice');if(n.textContent===I18N.en.aligning||n.textContent===I18N.zh.aligning){clearTimeout(n._t);n.classList.remove('show')}}
+function stopAuto(){alignJob++;$('autoAlignBtn').disabled=false;setAlignMsg('');hideAligning()}
 function closeAlign(){stopAuto();clearAlignPtrs();AL.classList.remove('kb');AL.close();for(const id of ['alignA','alignB'])dropCanvas($(id))}
 function clearComparison(){
   clearPrintReport();closeAlign();$('promptModal').close();$('exportModal').close();clearVpPtrs();
@@ -319,11 +320,14 @@ function sourceCanvas(img,w,h){
 function setImage(side,img,name,quiet,keepOld){
   const w=img.naturalWidth||img.width||1024,h=img.naturalHeight||img.height||768;
   if(!fitsCanvas(w,h,MAX_SOURCE_PIXELS))throw new Error('imageTooLarge');
-  const c=img instanceof HTMLCanvasElement?img:sourceCanvas(img,w,h);
-  const k=Math.min(1,600/Math.max(c.width,c.height)),th=mk(c.width*k,c.height*k);let thumb;
-  try{th.getContext('2d').drawImage(c,0,0,th.width,th.height);thumb=th.toDataURL('image/png')}finally{dropCanvas(th)}
-  if(thumb==='data:,'){if(c!==img)dropCanvas(c);throw new Error('Could not render the image thumbnail')}
-  const prev=S[side]?.c;clearComparison();if(prev&&prev!==c&&!keepOld)dropCanvas(prev);
+  const prev=S[side]?.c,owned=!(img instanceof HTMLCanvasElement);
+  if(owned)clearComparison();
+  const c=owned?sourceCanvas(img,w,h):img;
+  const k=Math.min(1,600/Math.max(c.width,c.height)),th=mk(c.width*k,c.height*k);let thumb='';
+  try{if(canvasUsable(th)){th.getContext('2d').drawImage(c,0,0,th.width,th.height);thumb=th.toDataURL('image/png')}}finally{dropCanvas(th)}
+  if(!thumb||thumb==='data:,'){if(owned)dropCanvas(c);throw new Error('Could not render the image thumbnail')}
+  if(!owned)clearComparison();
+  if(prev&&prev!==c&&!keepOld)dropCanvas(prev);
   S[side]={c,name,w:c.width,h:c.height};const d=$('drop'+side);d.classList.add('has');
   d.innerHTML=`<span class="lbl" data-i18n="${side==='A'?'original':'changed'}">${t(side==='A'?'original':'changed')}</span><img alt=""><div class="meta"></div><button class="btn sm ghost rm" data-i18n-title="remove" title="${t('remove')}" aria-label="${t('remove')}">✕</button>`;
   d.querySelector('img').src=thumb;d.querySelector('.meta').textContent=`${name?name+' · ':''}${c.width}×${c.height}`;
@@ -337,9 +341,10 @@ function maybePromptAlign(){
   if(S.A.w===S.B.w&&S.A.h===S.B.h){compare();return}
   showPrompt(t('mismatchTitle'),t('mismatchMsg'),t('skip'),t('autoAlignGo'),async()=>{
     if(!compare())return;const job=++alignJob,current=()=>job===alignJob;
-    try{const r=await autoAlign(S.A.c,S.B.c,{rot:true,scale:true,active:current});if(!current())return;
+    const at=typeof setTimeout==='function'?setTimeout(()=>{if(current())notice(t('aligning'))},120):0;
+    try{const r=await autoAlign(S.A.c,S.B.c,{rot:true,scale:true,active:current});if(at)clearTimeout(at);if(typeof hideAligning==='function')hideAligning();if(!current())return;
       if(r){S.align=r;if(compare())alignNotice(r)}else notice(t('alignFail'));
-    }catch(e){if(current()){console.error(e);notice(t('alignFail'))}}
+    }catch(e){if(at)clearTimeout(at);if(current()){if(typeof hideAligning==='function')hideAligning();console.error(e);notice(t('alignFail'))}}
   },()=>compare());
 }
 function showPrompt(title,msg,skip,go,onGo,onSkip){$('pmTitle').textContent=title;$('pmMsg').textContent=msg;$('pmSkip').textContent=skip;$('pmGo').textContent=go;$('promptModal').showModal();$('pmSkip').onclick=()=>{$('promptModal').close();onSkip&&onSkip()};$('pmGo').onclick=()=>{$('promptModal').close();onGo()}}
@@ -411,7 +416,7 @@ function compositeCanvas(mode,sourceA=baseA,sourceB=baseB,target){const W=source
 }
 function flickShow(){return holdSide?holdSide-1:flickState}
 /* ===================== view / stage ===================== */
-const stage=$('stage'),viewport=$('viewport');let overlay=null,sliderEl=null,mainCanvas=null,sliderDragging=false,vpPtrCount=()=>0;
+const stage=$('stage'),viewport=$('viewport');let overlay=null,sliderEl=null,mainCanvas=null,sliderDragging=false,clearSliderDrag=()=>{sliderDragging=false},vpPtrCount=()=>0;
 const capture=(el,id)=>{try{el.setPointerCapture(id)}catch(e){}};
 function pinchTransform(start,p1,p2,q1,q2,minZ,maxZ){
   const d0=Math.hypot(p2.x-p1.x,p2.y-p1.y),d1=Math.hypot(q2.x-q1.x,q2.y-q1.y);
@@ -421,7 +426,7 @@ function pinchTransform(start,p1,p2,q1,q2,minZ,maxZ){
 }
 function renderStage(){clearTimeout(highlightTimer);cancelAnimationFrame(overlayRaf);highlightTimer=overlayRaf=0;sliderEl=null;sliderDragging=false;dropCanvas(mainCanvas);dropCanvas(overlay);overlay=mainCanvas=null;stage.replaceChildren();stage.classList.toggle('pix',S.zoom>=3);const W=S.W,H=S.H;
   if(S.mode==='split'){const wrap=document.createElement('div');wrap.className='split-pair';for(const [c,k] of [[baseA,'original'],[baseB,'changed']]){const d=document.createElement('div');d.innerHTML=`<span class="tag" data-i18n="${k}">${t(k)}</span>`;d.appendChild(c);wrap.appendChild(d)}stage.appendChild(wrap)}
-  else{mainCanvas=compositeCanvas(S.mode);stage.appendChild(mainCanvas);overlay=mk(W,H);overlay.id='overlay';stage.appendChild(overlay);drawOverlay();
+  else{const mc=mk(W,H);if(!canvasUsable(mc)){dropCanvas(mc);throw new Error('compareFailed')}mainCanvas=compositeCanvas(S.mode,baseA,baseB,mc);stage.appendChild(mainCanvas);drawOverlay();
     if(S.mode==='slider'){
       const handle=sliderEl=document.createElement('div'),canvas=mainCanvas;
       handle.className='sl-handle';handle.style.height=H+'px';handle.tabIndex=0;handle.setAttribute('role','slider');
@@ -433,7 +438,8 @@ function renderStage(){clearTimeout(highlightTimer);cancelAnimationFrame(overlay
         if(dir||e.key==='Home'||e.key==='End'){e.preventDefault();move(dir?S.sliderPos+dir*(e.shiftKey ? .1 : .01):Number(e.key==='End'))}
       };
       handle.onpointerdown=e=>{if((e.pointerType==='mouse'&&e.button!==0)||!e.isPrimary||vpPtrCount()>0)return;e.stopPropagation();sliderDragging=true;capture(handle,e.pointerId);
-        const stop=ev=>{if(ev.pointerId!==e.pointerId)return;sliderDragging=false;handle.onpointermove=handle.onpointerup=handle.onpointercancel=handle.onlostpointercapture=null};
+        const drop=()=>{sliderDragging=false;clearSliderDrag=()=>{sliderDragging=false};handle.onpointermove=handle.onpointerup=handle.onpointercancel=handle.onlostpointercapture=null};
+        const stop=ev=>{if(ev.pointerId!==e.pointerId)return;drop()};clearSliderDrag=drop;
         handle.onpointermove=ev=>{if(ev.pointerId!==e.pointerId||handle!==sliderEl)return;const r=stage.getBoundingClientRect();
           move((ev.clientX-r.left)/(W*S.zoom))};
         handle.onpointerup=handle.onpointercancel=handle.onlostpointercapture=stop;
@@ -451,11 +457,17 @@ function restartFlicker(){
 }
 function redrawFlicker(){if(!mainCanvas||S.mode!=='flicker')return;const s=flickShow();paintBaseMode(mainCanvas.getContext('2d'),'flicker',baseA,baseB);$('flickTag').textContent=s===0?t('fOriginal'):t('fChanged')}
 /* 线宽与标签字号按“输出像素 / 工作像素”换算：屏幕上取当前缩放，导出时取导出倍率，导出的框不随当前视图缩放变粗或变细 */
-function drawOverlay(){if(overlayRaf){cancelAnimationFrame(overlayRaf);overlayRaf=0}if(overlay)paintOverlay(overlay.getContext('2d'),S.zoom)}
+function ensureOverlay(){const want=S.mode!=='split'&&S.W>0&&S.H>0&&S.regions.length>0&&(S.boxes||S.darken);
+  if(!want){if(overlay){overlay.remove?.();dropCanvas(overlay);overlay=null}return null}
+  if(!overlay||overlay.width!==S.W||overlay.height!==S.H){if(overlay){overlay.remove?.();dropCanvas(overlay);overlay=null}
+    const c=mk(S.W,S.H);if(!canvasUsable(c)){dropCanvas(c);return null}
+    c.id='overlay';overlay=c;if(sliderEl&&sliderEl.parentNode===stage)stage.insertBefore(c,sliderEl);else stage.appendChild(c)}
+  return overlay}
+function drawOverlay(){if(overlayRaf){cancelAnimationFrame(overlayRaf);overlayRaf=0}const c=ensureOverlay();if(c)paintOverlay(c.getContext('2d'),S.zoom)}
 function scheduleOverlay(){if(!overlay||!S.boxes||!S.regions.length||overlayRaf)return;overlayRaf=requestAnimationFrame(()=>{overlayRaf=0;drawOverlay()})}
 function paintOverlay(cx,zoom){cx.clearRect(0,0,S.W,S.H);if(!S.regions.length)return;
   if(S.darken){cx.fillStyle='rgba(0,0,0,.5)';cx.fillRect(0,0,S.W,S.H);cx.globalCompositeOperation='destination-out';cx.fillStyle='#000';for(const r of S.regions){cx.fillRect(r.x,r.y,r.w,r.h)}cx.globalCompositeOperation='source-over'}
-  if(S.boxes){const lw=Math.max(1,2/zoom);S.regions.forEach((r,i)=>{cx.lineWidth=i===S.active?lw*2:lw;cx.strokeStyle=i===S.active?'#ffb400':'#ff3b30';cx.strokeRect(r.x-lw,r.y-lw,r.w+2*lw,r.h+2*lw);cx.font=`${Math.max(10,14/zoom)}px system-ui`;const lbl=String(i+1);const tw=cx.measureText(lbl).width+6/zoom;const th=Math.max(12,16/zoom),ly=Math.max(0,r.y-lw-th);cx.fillStyle=i===S.active?'#ffb400':'#ff3b30';cx.fillRect(r.x-lw,ly,tw,th);cx.fillStyle='#fff';cx.fillText(lbl,r.x-lw+3/zoom,ly+th*0.78)})}}
+  if(S.boxes){const lw=Math.max(1,2/zoom);S.regions.forEach((r,i)=>{cx.lineWidth=i===S.active?lw*2:lw;cx.strokeStyle=i===S.active?'#ffb400':'#ff3b30';cx.strokeRect(r.x-lw,r.y-lw,r.w+2*lw,r.h+2*lw);cx.font=`${Math.max(10,14/zoom)}px system-ui`;const lbl=String(i+1);const tw=cx.measureText(lbl).width+6/zoom;const th=Math.max(12,16/zoom),lx=Math.max(0,r.x-lw),ly=Math.max(0,r.y-lw-th);cx.fillStyle=i===S.active?'#ffb400':'#ff3b30';cx.fillRect(lx,ly,tw,th);cx.fillStyle='#fff';cx.fillText(lbl,lx+3/zoom,ly+th*0.78)})}}
 function applyTransform(){stage.classList.toggle('pix',S.zoom>=3);stage.style.transform=`translate(${S.px}px,${S.py}px) scale(${S.zoom})`;stage.style.setProperty('--iz',String(1/S.zoom));const pad=Math.min(S.H/2,24/S.zoom),midY=(viewport.clientHeight/2-S.py)/S.zoom;stage.style.setProperty('--ky',Math.max(pad,Math.min(S.H-pad,midY))+'px');$('zoomRange').value=Math.round(S.zoom*100);$('zoomVal').textContent=Math.round(S.zoom*100)+'%';$('hud').textContent=`${S.W}×${S.H}${S.scale<1?t('hudScale',{s:S.scale.toFixed(2)}):''} · ${t('hudDiff',{p:(100*diffCount/(S.W*S.H)).toFixed(2)})}`}
 // 并排模式：竖屏窄视口里左右排布时每张图只剩一半宽度，上下叠放能明显显示得更大时改为上下排布（两个标签共占 54px）。
 function fit(){const vw=viewport.clientWidth,vh=viewport.clientHeight;if(!vw||!vh||!S.W||!S.H)return;lastVpW=vw;const aw=Math.max(1,vw-24),ah=Math.max(1,vh-24);let sw=S.W,sh=S.H,tag=0;
@@ -472,12 +484,12 @@ let clearVpPtrs=()=>{};
  const startPinch=()=>{const [[a,p1],[b,p2]]=[...ptrs];pinch={a,b,p1:{...p1},p2:{...p2},start:{x:S.px,y:S.py,z:S.zoom}};pan=null;viewport.classList.remove('panning')};
  const end=e=>{if(!ptrs.delete(e.pointerId))return;if(ptrs.size>=2){if(!pinch||!ptrs.has(pinch.a)||!ptrs.has(pinch.b))startPinch()}else if(ptrs.size===1){pinch=null;const [[id,p]]=[...ptrs];pan={id,ox:p.x-S.px,oy:p.y-S.py};viewport.classList.add('panning')}else{pan=pinch=null;viewport.classList.remove('panning')}};
  vpPtrCount=()=>ptrs.size;
- clearVpPtrs=()=>{ptrs.clear();pan=pinch=null;sliderDragging=false;viewport.classList.remove('panning')};
+ clearVpPtrs=()=>{ptrs.clear();pan=pinch=null;clearSliderDrag();viewport.classList.remove('panning')};
  viewport.onpointerdown=e=>{if((e.pointerType==='mouse'&&e.button!==0)||sliderDragging||(ptrs.size===0&&e.target.closest('.sl-handle')))return;if(ptrs.size>=2&&!ptrs.has(e.pointerId))return;capture(viewport,e.pointerId);const p=local(e);ptrs.set(e.pointerId,p);if(ptrs.size===1){pan={id:e.pointerId,ox:p.x-S.px,oy:p.y-S.py};pinch=null;viewport.classList.add('panning')}else startPinch()};
  viewport.onpointermove=e=>{if(!ptrs.has(e.pointerId))return;const p=local(e);ptrs.set(e.pointerId,p);if(pinch){const q1=ptrs.get(pinch.a),q2=ptrs.get(pinch.b);if(!q1||!q2)return;const r=pinchTransform(pinch.start,pinch.p1,pinch.p2,q1,q2,.05,8);S.zoom=r.z;S.px=r.x;S.py=r.y;applyTransform();scheduleOverlay()}else if(pan&&pan.id===e.pointerId){S.px=p.x-pan.ox;S.py=p.y-pan.oy;applyTransform()}};
  viewport.onpointerup=viewport.onpointercancel=viewport.onlostpointercapture=end}
 /* toolbar */
-$('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;const sp=S.mode==='split';if(S.mode!==b.dataset.mode)holdSide=0;S.mode=b.dataset.mode;$('modeSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));renderStage();if(sp||S.mode==='split')fit()};// 只有进出并排模式时舞台尺寸才会变；其余模式之间切换保留当前的缩放与位置，便于对着同一处细节来回比较
+$('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;const prev=S.mode,sp=prev==='split';if(prev!==b.dataset.mode)holdSide=0;S.mode=b.dataset.mode;$('modeSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));try{renderStage();if(sp||S.mode==='split')fit()}catch(err){console.error(err);S.mode=prev;$('modeSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.mode===prev)));notice(t('compareFailed'))}};// 只有进出并排模式时舞台尺寸才会变；其余模式之间切换保留当前的缩放与位置，便于对着同一处细节来回比较
 $('fadeRange').oninput=e=>{S.fade=e.target.value/100;$('fadeVal').textContent=e.target.value+'%';if(mainCanvas)paintBaseMode(mainCanvas.getContext('2d'),'fade',baseA,baseB)};
 // 至少 200ms 才切换一次，且尊重系统的减少动态效果设置。
 $('flickRange').oninput=e=>{S.flick=Math.max(200,2100-+e.target.value);restartFlicker()};
@@ -488,7 +500,9 @@ for(const [id,side] of [['holdA',1],['holdB',2]])$(id).onclick=()=>{S.flickPause
 document.addEventListener('keydown',e=>{if(e.repeat||S.mode!=='flicker'||!S.W||e.ctrlKey||e.metaKey||e.altKey||e.target.closest?.('dialog,input,textarea,select,[contenteditable]'))return;
   if((e.key==='1'||e.key==='2')&&holdSide!==+e.key)hold(+e.key,true)});
 document.addEventListener('keyup',e=>{if((e.key==='1'||e.key==='2')&&holdSide===+e.key)hold(0,false)});
-window.addEventListener('blur',()=>hold(0,false));
+const releasePointers=()=>{clearVpPtrs();clearAlignPtrs()};
+window.addEventListener('blur',()=>{hold(0,false);releasePointers()});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){hold(0,false);releasePointers()}else if(printing&&!printMedia.matches)clearPrintReport()});
 const redrawHighlight=()=>{if(S.W&&S.mode==='highlight'){if(mainCanvas)compositeCanvas('highlight',baseA,baseB,mainCanvas);else renderStage()}};$('hlMode').onchange=e=>{S.hlMode=e.target.value;redrawHighlight()};$('hlThr').oninput=e=>{S.hlThr=+e.target.value;$('hlThrVal').textContent=e.target.value;clearTimeout(highlightTimer);highlightTimer=setTimeout(()=>{highlightTimer=0;redrawHighlight()},60)};
 $('swBoxes').onclick=()=>{S.boxes=!S.boxes;$('swBoxes').setAttribute('aria-checked',S.boxes);drawOverlay()};$('swDarken').onclick=()=>{S.darken=!S.darken;$('swDarken').setAttribute('aria-checked',S.darken);drawOverlay()};
 $('sbToggle').onclick=()=>{const c=$('work').classList.toggle('collapsed'),b=$('sbToggle');/* 收起后按钮仍写着“收起侧边栏”、aria-expanded 也不变，读屏与悬停提示都对不上当前状态 */b.setAttribute('aria-expanded',String(!c));b.dataset.i18nTitle=c?'sbTipOpen':'sbTip';b.title=t(b.dataset.i18nTitle);b.setAttribute('aria-label',b.title);b.textContent=c?'⇤':'⇥'};
@@ -575,7 +589,7 @@ function renderList(){const el=$('chgList');clearList(el);const gen=listGen;$('c
     d.onclick=()=>{S.active=i;el.querySelectorAll('.chg-item').forEach((x,j)=>x.classList.toggle('active',j===i));focusRegion(r)};
     d.tabIndex=0;d.setAttribute('role','button');d.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();d.click()}};/* 差异列表项同样可用键盘聚焦并定位 */el.appendChild(d);
     if(i<12||!listObserver)fill(d,r);else{jobs.set(d,r);listObserver.observe(d)}})}
-function focusRegion(r){if(S.mode==='split'){S.mode='highlight';$('modeSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.mode==='highlight')));renderStage()}const vw=viewport.clientWidth,vh=viewport.clientHeight;const z=Math.max(.05,Math.min(6,Math.min(vw/(r.w+80),vh/(r.h+80))));S.zoom=z;S.px=vw/2-(r.x+r.w/2)*z;S.py=vh/2-(r.y+r.h/2)*z;applyTransform();drawOverlay();const b=viewport.getBoundingClientRect();if(b.top<0||b.bottom>window.innerHeight)viewport.scrollIntoView({behavior:scrollBehavior(),block:'nearest'})}
+function focusRegion(r){if(S.mode==='split'){S.mode='highlight';$('modeSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.mode==='highlight')));try{renderStage()}catch(e){console.error(e);S.mode='split';$('modeSeg').querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed',String(x.dataset.mode==='split')));notice(t('compareFailed'));return}}const vw=viewport.clientWidth,vh=viewport.clientHeight;if(!vw||!vh)return;const z=Math.max(.05,Math.min(6,Math.min(vw/(r.w+80),vh/(r.h+80))));S.zoom=z;S.px=vw/2-(r.x+r.w/2)*z;S.py=vh/2-(r.y+r.h/2)*z;applyTransform();drawOverlay();const b=viewport.getBoundingClientRect();if(b.top<0||b.bottom>window.innerHeight)viewport.scrollIntoView({behavior:scrollBehavior(),block:'nearest'})}
 
 /* ===================== alignment ===================== */
 const AL=$('alignModal');let alTmp=null,alView={z:1,x:0,y:0,w:0,h:0};
@@ -589,32 +603,34 @@ $('alignApply').onclick=()=>{
   try{comparisonFrame(S.A,S.B,alTmp)}catch(e){setAlignMsg(t('alignOutOfRange'));return}
   S.align={...alTmp};closeAlign();compare();
 };
-$('alignUndo').onclick=()=>{stopAuto();alTmp=defAlign();syncAlignInputs();drawAlign()};
-function syncAlignLayout(){if(!AL.open)return;const vh=window.visualViewport?.height||window.innerHeight;AL.classList.toggle('kb',vh<540);const v=$('alignView'),w=v.clientWidth,h=v.clientHeight;if(w&&h&&(w!==alView.w||h!==alView.h)){alView.x+=(w-alView.w)/2;alView.y+=(h-alView.h)/2;drawAlign()}}
+$('alignUndo').onclick=()=>{stopAuto();alTmp=defAlign();syncAlignInputs();drawAlign(true)};
+function alignKeyboardOpen(){const vv=window.visualViewport,vh=vv?.height||window.innerHeight;return vh<540||(!!vv&&window.innerHeight-vh>120)}
+function syncAlignLayout(){if(!AL.open)return;AL.classList.toggle('kb',alignKeyboardOpen());const v=$('alignView'),w=v.clientWidth,h=v.clientHeight;if(w&&h&&(w!==alView.w||h!==alView.h)){alView.x+=(w-alView.w)/2;alView.y+=(h-alView.h)/2;drawAlign()}}
 function initAlignView(){
-  AL.classList.toggle('kb',(window.visualViewport?.height||window.innerHeight)<540);
+  AL.classList.toggle('kb',alignKeyboardOpen());
   const v=$('alignView'),f=S.frame,w=workingFrame(f.w,f.h),cw=v.clientWidth,ch=v.clientHeight;
   alView.sx=w.w/f.w;alView.sy=w.h/f.h;alView.w=cw;alView.h=ch;
   alView.z=Math.max(.02,Math.min(Math.max(1,cw-20)/w.w,Math.max(1,ch-20)/w.h));
   alView.x=(cw-w.w*alView.z)/2-f.x*alView.sx*alView.z;alView.y=(ch-w.h*alView.z)/2-f.y*alView.sy*alView.z;
   syncAlignInputs();drawAlign();
 }
-function drawAlign(){
+function drawAlign(onlyB=false){
   if(!S.A||!S.B||!alTmp)return;
   const v=$('alignView'),w=v.clientWidth,h=v.clientHeight;if(!w||!h)return;
-  alView.w=w;alView.h=h;const k=Math.min(2,window.devicePixelRatio||1),sx=alView.sx*alView.z,sy=alView.sy*alView.z;
-  for(const side of ['A','B']){const canvas=$('align'+side),pw=Math.max(1,Math.round(w*k)),ph=Math.max(1,Math.round(h*k));
-    if(canvas.width!==pw||canvas.height!==ph){canvas.width=pw;canvas.height=ph}
+  alView.w=w;alView.h=h;const k=Math.min(2,window.devicePixelRatio||1),pw=Math.max(1,Math.round(w*k)),ph=Math.max(1,Math.round(h*k)),sx=alView.sx*alView.z,sy=alView.sy*alView.z;
+  for(const side of ['A','B']){const canvas=$('align'+side),resized=canvas.width!==pw||canvas.height!==ph;
+    if(onlyB&&side==='A'&&!resized)continue;
+    if(resized){canvas.width=pw;canvas.height=ph}
     const ctx=canvas.getContext('2d');ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,pw,ph);
     ctx.setTransform(k,0,0,k,alView.x*k,alView.y*k);
     if(side==='A')ctx.drawImage(S.A.c,0,0,S.A.w*sx,S.A.h*sy);else drawAligned(ctx,S.B.c,alTmp,sx,sy);
   }
   $('alignB').style.opacity=$('alOpacity').value/100;
 }
-function syncAlignInputs(){$('alDx').value=alTmp.dx.toFixed(1);$('alDy').value=alTmp.dy.toFixed(1);$('alRot').value=alTmp.rot.toFixed(2);$('alScale').value=Number(alTmp.scale.toPrecision(8));$('flipH').setAttribute('aria-pressed',alTmp.fh);$('flipV').setAttribute('aria-pressed',alTmp.fv)}
-for(const [id,k] of alignFields)$(id).oninput=e=>{stopAuto();const v=e.target.valueAsNumber;if(validAlignValue(k,v)){alTmp[k]=v;drawAlign()}};
+function syncAlignInputs(){$('alDx').value=(alTmp.dx||0).toFixed(1);$('alDy').value=(alTmp.dy||0).toFixed(1);$('alRot').value=(alTmp.rot||0).toFixed(2);$('alScale').value=Number(alTmp.scale.toPrecision(8));$('flipH').setAttribute('aria-pressed',alTmp.fh);$('flipV').setAttribute('aria-pressed',alTmp.fv)}
+for(const [id,k] of alignFields)$(id).oninput=e=>{stopAuto();const v=e.target.valueAsNumber;if(validAlignValue(k,v)){alTmp[k]=v;drawAlign(true)}};
 for(const id of ['allowRot','allowScale'])$(id).onchange=()=>stopAuto();
-$('flipH').onclick=()=>{stopAuto();alTmp.fh=!alTmp.fh;syncAlignInputs();drawAlign()};$('flipV').onclick=()=>{stopAuto();alTmp.fv=!alTmp.fv;syncAlignInputs();drawAlign()};$('alOpacity').oninput=()=>{$('alignB').style.opacity=$('alOpacity').value/100};
+$('flipH').onclick=()=>{stopAuto();alTmp.fh=!alTmp.fh;syncAlignInputs();drawAlign(true)};$('flipV').onclick=()=>{stopAuto();alTmp.fv=!alTmp.fv;syncAlignInputs();drawAlign(true)};$('alOpacity').oninput=()=>{$('alignB').style.opacity=$('alOpacity').value/100};
 let clearAlignPtrs=()=>{};
 {const v=$('alignView'),ptrs=new Map();let drag=null,pinch=null,locked=false;
  const local=e=>{const r=v.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top}};
@@ -622,18 +638,18 @@ let clearAlignPtrs=()=>{};
  clearAlignPtrs=()=>{ptrs.clear();drag=pinch=null;locked=false};
  v.onpointerdown=e=>{if(e.pointerType==='mouse'&&e.button!==0)return;if(ptrs.size>=2&&!ptrs.has(e.pointerId))return;capture(v,e.pointerId);const p=local(e);ptrs.set(e.pointerId,p);
    if(ptrs.size===1&&!locked){drag={id:e.pointerId,sx:p.x,sy:p.y,odx:alTmp.dx,ody:alTmp.dy,t:performance.now(),moved:false}}
-   else if(ptrs.size===2){if(drag){const f1=ptrs.get(drag.id);if(performance.now()-drag.t<300&&f1&&Math.hypot(f1.x-drag.sx,f1.y-drag.sy)<20){alTmp.dx=drag.odx;alTmp.dy=drag.ody;syncAlignInputs();drawAlign()}}const [[a,p1],[b,p2]]=[...ptrs];pinch={a,b,p1:{...p1},p2:{...p2},start:{x:alView.x,y:alView.y,z:alView.z}};drag=null;locked=true}};
+   else if(ptrs.size===2){if(drag?.moved){const f1=ptrs.get(drag.id);if(performance.now()-drag.t<300&&f1&&Math.hypot(f1.x-drag.sx,f1.y-drag.sy)<20){alTmp.dx=drag.odx;alTmp.dy=drag.ody;syncAlignInputs();drawAlign(true)}}const [[a,p1],[b,p2]]=[...ptrs];pinch={a,b,p1:{...p1},p2:{...p2},start:{x:alView.x,y:alView.y,z:alView.z}};drag=null;locked=true}};
  v.onpointermove=e=>{if(!ptrs.has(e.pointerId))return;const p=local(e);ptrs.set(e.pointerId,p);
    if(pinch){const q1=ptrs.get(pinch.a),q2=ptrs.get(pinch.b);if(!q1||!q2)return;const r=pinchTransform(pinch.start,pinch.p1,pinch.p2,q1,q2,.02,10);alView.z=r.z;alView.x=r.x;alView.y=r.y;drawAlign()}
-   else if(drag&&drag.id===e.pointerId&&!locked){if(!drag.moved){if(Math.hypot(p.x-drag.sx,p.y-drag.sy)<2)return;drag.moved=true;stopAuto()}alTmp.dx=drag.odx+(p.x-drag.sx)/(alView.z*alView.sx);alTmp.dy=drag.ody+(p.y-drag.sy)/(alView.z*alView.sy);syncAlignInputs();drawAlign()}};
+   else if(drag&&drag.id===e.pointerId&&!locked){if(!drag.moved){if(Math.hypot(p.x-drag.sx,p.y-drag.sy)<2)return;drag.moved=true;stopAuto()}alTmp.dx=drag.odx+(p.x-drag.sx)/(alView.z*alView.sx);alTmp.dy=drag.ody+(p.y-drag.sy)/(alView.z*alView.sy);syncAlignInputs();drawAlign(true)}};
  v.onpointerup=v.onpointercancel=v.onlostpointercapture=end;
  v.addEventListener('wheel',e=>{e.preventDefault();const p=local(e);const z=Math.max(.02,Math.min(10,alView.z*(e.deltaY<0?1.12:1/1.12)));const k=z/alView.z;alView.x=p.x-(p.x-alView.x)*k;alView.y=p.y-(p.y-alView.y)*k;alView.z=z;drawAlign()},{passive:false})}
 $('autoAlignBtn').onclick=async()=>{
   const job=++alignJob,current=()=>job===alignJob,A=S.A.c,B=S.B.c;
   const allow={rot:$('allowRot').checked,scale:$('allowScale').checked,fh:alTmp.fh,fv:alTmp.fv,active:current};
-  setAlignMsg('');$('autoAlignBtn').disabled=true;
+  setAlignMsg(t('aligning'));$('autoAlignBtn').disabled=true;
   try{await new Promise(r=>setTimeout(r,20));if(!current())return;const r=await autoAlign(A,B,allow);if(!current())return;
-    if(!r)setAlignMsg(t('alignFail'));else{alTmp={...r};syncAlignInputs();drawAlign();setAlignMsg(alignText(r),true)}
+    if(!r)setAlignMsg(t('alignFail'));else{alTmp={...r};syncAlignInputs();drawAlign(true);setAlignMsg(alignText(r),true)}
   }catch(e){if(current()){console.error(e);setAlignMsg(t('alignFail'))}}finally{if(current())$('autoAlignBtn').disabled=false}
 };
 
@@ -686,7 +702,7 @@ async function autoAlign(A,B,allow){
   // 因此相关峰值是 B 中心相对 A 中心的位移，换算回 drawAligned 的 (dx, dy) 需加上中心差 (A - B)/2。
   // 不旋转也不缩放时把位移取整：这种情况（截图错位、裁剪、留白）真实位移几乎总是整数像素，而亚像素估计约 0.1px 的误差会让整张图被重采样，在边缘处冒出大量假差异
   const whole=fin.rot===0&&fin.sc===1,px=v=>whole?Math.round(v)||0:v;
-  return {dx:px((A.width-B.width)/2+fin.dx/f),dy:px((A.height-B.height)/2+fin.dy/f),rot:fin.rot,scale:fin.sc,fh,fv,conf:Math.min(1,fin.psr/40)};
+  return {dx:px((A.width-B.width)/2+fin.dx/f),dy:px((A.height-B.height)/2+fin.dy/f),rot:fin.rot||0,scale:fin.sc,fh,fv,conf:Math.min(1,fin.psr/40)};
 }
 function alignWithOpenCV(A,B){const cv=window.cv,del=[];const keep=x=>(del.push(x),x);
   try{const ma=keep(cv.imread(A)),mb=keep(cv.imread(B)),ga=keep(new cv.Mat()),gb=keep(new cv.Mat());cv.cvtColor(ma,ga,cv.COLOR_RGBA2GRAY);cv.cvtColor(mb,gb,cv.COLOR_RGBA2GRAY);const orb=keep(new cv.ORB(4000,1.2,8,31,0,2,cv.ORB_HARRIS_SCORE,31,20));const k1=keep(new cv.KeyPointVector()),k2=keep(new cv.KeyPointVector()),d1=keep(new cv.Mat()),d2=keep(new cv.Mat()),nomask=keep(new cv.Mat());orb.detectAndCompute(ga,nomask,k1,d1);orb.detectAndCompute(gb,nomask,k2,d2);
@@ -708,7 +724,7 @@ function alignWithOpenCV(A,B){const cv=window.cv,del=[];const keep=x=>(del.push(
 /* ===================== export ===================== */
 let expFmt='png',expDiff='subtract';
 const stem=(n,d)=>{n=n||d;return n.replace(/\.[^.]+$/,'')||n};
-const baseName=()=>(stem(S.A?.name,'original')+'-vs-'+stem(S.B?.name,'changed')).replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100).replace(/[. ]+$/,'')||'image-comparison';
+const baseName=()=>(stem(S.A?.name,'original')+'-vs-'+stem(S.B?.name,'changed')).replace(/[<>:"/\\|?*\u0000-\u001f]/g,'_').slice(0,100).replace(/^[. ]+|[. ]+$/g,'')||'image-comparison';
 const printMedia=matchMedia('print');
 $('exportBtn').onclick=()=>{if(printing&&!printMedia.matches)clearPrintReport();if(scanTimer)scan(true);$('exportModal').showModal()};$('exportCancel').onclick=()=>$('exportModal').close();
 $('fmtChoices').onclick=e=>{const b=e.target.closest('.choice');if(!b)return;expFmt=b.dataset.fmt;$('fmtChoices').querySelectorAll('.choice').forEach(c=>c.setAttribute('aria-pressed',String(c===b)));$('pngOptions').classList.toggle('hidden',expFmt!=='png');$('pdfOptions').classList.toggle('hidden',expFmt!=='pdf')};
@@ -726,14 +742,15 @@ function exportCanvas(native=false){
     if(split){const c=need(mk(w*2+16,h)),cx=c.getContext('2d');cx.drawImage(a,0,0);cx.drawImage(b,w+16,0);return c}
     const c=need(mk(w,h));
     try{compositeCanvas(S.mode,a,b,c);
-      if(overlay&&S.regions.length&&(S.boxes||S.darken)){const ov=need(mk(w,h));try{const ox=ov.getContext('2d');ox.scale(w/S.W,h/S.H);paintOverlay(ox,w/S.W);c.getContext('2d').drawImage(ov,0,0)}finally{dropCanvas(ov)}}
+      if(fresh){dropCanvas(a);dropCanvas(b);a=b=null}
+      if(S.regions.length&&(S.boxes||S.darken)){const ov=need(mk(w,h));try{const ox=ov.getContext('2d');ox.scale(w/S.W,h/S.H);paintOverlay(ox,w/S.W);c.getContext('2d').drawImage(ov,0,0)}finally{dropCanvas(ov)}}
       return c;
     }catch(e){dropCanvas(c);throw e}
   }finally{if(fresh){dropCanvas(a);dropCanvas(b)}}
 }
 function pngUrl(canvas,release=false){try{const url=canvas.toDataURL('image/png');if(url==='data:,')throw new Error('PNG encoding failed');return url}finally{if(release)dropCanvas(canvas)}}
 function reportHtml(c){
-  const esc=s=>String(s).replace(/[&<>]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[x])),al=S.align;
+  const esc=s=>String(s).replace(/[&<>"]/g,x=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[x])),al=S.align;
   const flips=[al.fh?t('flipH'):'',al.fv?t('flipV'):''].filter(Boolean).join(' · ');
   let h=`<h1>${t('rptTitle')}</h1><table><tr><th>${t('rptOrig')}</th><td>${esc(S.A.name)} (${S.A.w}×${S.A.h})</td></tr><tr><th>${t('rptChg')}</th><td>${esc(S.B.name)} (${S.B.w}×${S.B.h})</td></tr><tr><th>${t('rptMode')}</th><td>${esc(t('m.'+S.mode))}</td></tr><tr><th>${t('rptSummary')}</th><td>${t(S.regions.length===1?'summary1':'summary',{p:(100*diffCount/(S.W*S.H)).toFixed(2),n:S.regions.length})}</td></tr><tr><th>${t('rptAlign')}</th><td>dx ${al.dx.toFixed(1)}, dy ${al.dy.toFixed(1)}, rot ${al.rot.toFixed(2)}°, scale ${al.scale.toFixed(4)}${flips?' · '+esc(flips):''}</td></tr></table><h2>${t('rptCmp')}</h2><img alt="" src="${pngUrl(c,true)}">`;
   if($('expSrc').checked){const src=image=>pngUrl(cropCanvas(image.c,{x:0,y:0,w:image.w,h:image.h},1600,1600),true);
@@ -741,7 +758,7 @@ function reportHtml(c){
   }
   if($('expList').checked&&S.regions.length){
     h+=`<h2>${t('chgList',{n:S.regions.length})}</h2>${S.truncated?`<p>${t('truncatedRegions')}</p>`:''}<div class="crops">`;
-    const sub=expDiff==='subtract'?compositeCanvas('subtract'):null;
+    let sub=null;if(expDiff==='subtract'){const sc=mk(S.W,S.H);if(!canvasUsable(sc)){dropCanvas(sc);throw new Error('exportFailed')}sub=compositeCanvas('subtract',baseA,baseB,sc)}
     try{const max=Math.min(400,Math.floor(Math.sqrt(6000000/(S.regions.length*(sub?3:2)))));
       for(const [i,r] of S.regions.entries()){const pad={x:Math.max(0,r.x-8),y:Math.max(0,r.y-8)};
         pad.w=Math.min(S.W,r.x+r.w+8)-pad.x;pad.h=Math.min(S.H,r.y+r.h+8)-pad.y;
@@ -782,6 +799,7 @@ function makeExample(variant){const c=mk(900,620),x=c.getContext('2d');x.fillSty
 $('exampleBtn').onclick=()=>{cancelLoads();setImage('A',makeExample(0),'work-order-v1.png',true);setImage('B',makeExample(1),'work-order-v2.png',true);compare();$('result').scrollIntoView({behavior:scrollBehavior()})};
 function clearPrintReport(){reportGen++;printing=false;document.body.classList.remove('printing-image-report');$('report').replaceChildren()}
 window.addEventListener('afterprint',()=>{if(printing)clearPrintReport()});
+window.addEventListener('focus',()=>{if(printing&&!printMedia.matches)clearPrintReport()});
 printMedia.addEventListener?.('change',e=>{if(!e.matches&&printing)clearPrintReport()});
 ['dragover','drop'].forEach(n=>window.addEventListener(n,e=>{if(hasFiles(e))e.preventDefault()}));
 window.addEventListener('resize',()=>{syncAlignLayout();
