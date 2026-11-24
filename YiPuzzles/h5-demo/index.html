@@ -69,7 +69,7 @@
 
   /* ---------- Layout ---------- */
   .layout { max-width:1120px; margin:0 auto; padding:8px clamp(16px,4vw,40px) 40px; display:grid; gap:28px; grid-template-columns:minmax(0,1fr); }
-  .game { order:1; width:100%; max-width:540px; margin:0 auto; }
+  .game { order:1; width:100%; max-width:540px; max-width:min(540px, calc(100svh - 24px)); margin:0 auto; }
   .intro { order:2; text-align:center; }
   @media (min-width:960px) {
     .layout { grid-template-columns:minmax(0,1fr) 540px; align-items:center; gap:64px; min-height:calc(100dvh - 110px); }
@@ -149,7 +149,6 @@
   .tile .inner.d3 { font-size:calc(100cqw / var(--n) * .34); }
   .tile .inner.d4 { font-size:calc(100cqw / var(--n) * .27); }
   .tile .inner.d5 { font-size:calc(110cqw / var(--n) / var(--digits)); }
-  .tile .inner.glow { box-shadow:0 0 22px 2px color-mix(in srgb, currentColor 0%, var(--glow, transparent)); }
   .tile .inner.new { animation:appear .2s ease .1s backwards; }
   .tile .inner.pop { animation:pop .2s ease; }
   @keyframes appear { from{ transform:scale(.2); opacity:0 } to{ transform:scale(1); opacity:1 } }
@@ -331,7 +330,7 @@
     <h4>棋盘聚焦时的快捷键</h4>
     <ul>
       <li><kbd>↑↓←→</kbd> / <kbd>WASD</kbd> 移动</li>
-      <li><kbd>Z</kbd> 撤销　<kbd>R</kbd> 重新开始</li>
+      <li><kbd>Z</kbd> / <kbd>Backspace</kbd> 撤销　<kbd>R</kbd> 重新开始</li>
     </ul>
     <h4>数据</h4>
     <p class="tight">分数、最高分与对局进度按棋盘大小分别自动保存在本机浏览器中。</p>

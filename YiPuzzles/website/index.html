@@ -381,6 +381,7 @@ section { scroll-margin-top: 88px; }
 /* ---------- 9. 隐私 ---------- */
 .privacy { padding: clamp(56px, 8vw, 96px) 0; }
 .privacy-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: clamp(24px, 4vw, 48px); align-items: center; }
+.privacy-grid > * { min-width: 0; } /* the manifest sample scrolls instead of widening the grid */
 .check-list { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 26px; }
 .check-item {
   display: flex; align-items: center; gap: 12px;
@@ -425,8 +426,8 @@ section { scroll-margin-top: 88px; }
 .dl-req { display: grid; gap: 12px; align-content: center; }
 .req-item {
   display: flex; align-items: center; gap: 14px;
-  background: var(--surface); border-radius: 20px; padding: 15px 18px;
-  transition: background-color .35s ease;
+  background: var(--surface); color: var(--on-surface); border-radius: 20px; padding: 15px 18px;
+  transition: background-color .35s ease, color .35s ease;
 }
 .req-item .rk { flex-shrink: 0; width: 40px; height: 40px; border-radius: 13px;
   background: var(--primary-container); color: var(--on-primary-container);
@@ -537,9 +538,12 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
   display: flex; align-items: center; justify-content: center;
   box-shadow: var(--shadow-3);
   visibility: hidden; transform: translateY(110px);
-  transition: transform .4s cubic-bezier(.2,.9,.3,1.1), background-color .35s ease;
+  transition: transform .4s cubic-bezier(.2,.9,.3,1.1), background-color .35s ease, visibility 0s linear .4s;
 }
-.fab.show { visibility: visible; transform: translateY(0); }
+.fab.show {
+  visibility: visible; transform: translateY(0);
+  transition: transform .4s cubic-bezier(.2,.9,.3,1.1), background-color .35s ease, visibility 0s;
+}
 .fab:hover { filter: brightness(1.05); }
 .fab svg { width: 24px; height: 24px; }
 
@@ -599,6 +603,10 @@ footer { padding: clamp(40px, 6vw, 64px) 0 110px; }
   try { theme = localStorage.getItem('yi-theme'); } catch (e) { /* storage can be unavailable */ }
   if (theme !== 'dark' && theme !== 'light') theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', theme);
+  if (theme === 'dark') {
+    var meta = document.getElementById('metaTheme');
+    if (meta) meta.setAttribute('content', '#141218');
+  }
 })();
 </script>
 <noscript><style>#themeToggle, .copy-btn { display: none; }</style></noscript>
@@ -1500,7 +1508,7 @@ cd YiPuzzles</pre>
   /* ============ 13. 迷你棋盘生成 ============ */
   var tiers = ['a', 'b', 'c', 'd'];
   Array.prototype.forEach.call(document.querySelectorAll('.mini-board'), function (board) {
-    var n = parseInt(board.dataset.size, '10') || 4;
+    var n = parseInt(board.dataset.size, 10) || 4;
     board.style.gridTemplateColumns = 'repeat(' + n + ', 1fr)';
     for (var i = 0; i < n * n; i++) {
       var cellEl = document.createElement('i');

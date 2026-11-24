@@ -211,6 +211,10 @@ public class GameActivity extends BaseActivityWithoutNavBar {
         // Directions are physical left/right, regardless of the surrounding UI language.
         number_field.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
         number_field_background.setLayoutDirection(View.LAYOUT_DIRECTION_LTR);
+        // Keep every finger on the view that got the first one, so that a second finger on
+        // another tile cancels the swipe instead of starting a gesture of its own.
+        touch_field.setMotionEventSplittingEnabled(false);
+        number_field.setMotionEventSplittingEnabled(false);
         touch_field.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
             ViewGroup.MarginLayoutParams margins = (ViewGroup.MarginLayoutParams) number_field.getLayoutParams();
             int width = right - left - margins.leftMargin - margins.rightMargin;
@@ -672,8 +676,9 @@ public class GameActivity extends BaseActivityWithoutNavBar {
             case KeyEvent.KEYCODE_Z:
                 if (event.isCtrlPressed()) {
                     handleUndo();
+                    return true;
                 }
-                return true;
+                break;
         }
         return super.onKeyDown(keyCode, event);
     }
@@ -766,7 +771,12 @@ public class GameActivity extends BaseActivityWithoutNavBar {
     public void setDPositions(boolean animation) {
         for (Element[] i : elements) {
             for (Element j : i) {
-                if (j.dPosX != j.getX()) {
+                // Without animations the margins are authoritative: getX()/getY() only catch up in
+                // the next layout pass, and another move can arrive before it.
+                ViewGroup.MarginLayoutParams lp = (ViewGroup.MarginLayoutParams) j.getLayoutParams();
+                float x = animation ? j.getX() : lp.leftMargin;
+                float y = animation ? j.getY() : lp.topMargin;
+                if (j.dPosX != x) {
                     if (j.animateMoving && animation) {
                         if (j.number != j.dNumber)
                             j.animate().x(j.dPosX).setDuration(MOVINGSPEED).setStartDelay(0).setInterpolator(new LinearInterpolator()).setListener(new MovingListener(j, true)).start();
@@ -785,7 +795,7 @@ public class GameActivity extends BaseActivityWithoutNavBar {
                     }
 
                 }
-                if (j.dPosY != j.getY()) {
+                if (j.dPosY != y) {
                     if (j.animateMoving && animation) {
                         if (j.number != j.dNumber)
                             j.animate().y(j.dPosY).setDuration(MOVINGSPEED).setStartDelay(0).setInterpolator(new LinearInterpolator()).setListener(new MovingListener(j, true)).start();
@@ -878,9 +888,9 @@ public class GameActivity extends BaseActivityWithoutNavBar {
         tile.setNumber(Math.random() < PROBABILITY_FOR_TWO ? 2 : 4);
         tile.drawItem();
         if (animationActivated) {
-            tile.setAlpha(0);
-            tile.animate().alpha(1).setInterpolator(new LinearInterpolator())
-                    .setStartDelay(MOVINGSPEED).setDuration(ADDINGSPEED).start();
+            tile.setAlpha(0f);
+            tile.animate().alpha(1f).setInterpolator(new LinearInterpolator())
+                    .setStartDelay(MOVINGSPEED).setDuration(ADDINGSPEED).setListener(null).start();
         }
     }
 

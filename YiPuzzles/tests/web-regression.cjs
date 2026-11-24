@@ -141,6 +141,11 @@ test('a game reset keeps appearance and unrelated origin data', async t => {
     ['{"mode":"dark","size":4}', null, null, '"keep"']);
 });
 
+test('the board fits inside short landscape viewports', async t => {
+  const { page } = await open(t, '/h5-demo/', { options: { viewport: { width: 844, height: 390 } } });
+  const box = await page.locator('#board').boundingBox();
+  assert.ok(box.height <= 390, `the ${box.height}px board must fit a 390px viewport`);
+});
 test('mobile site keeps downloads and navigation available with JavaScript disabled', async t => {
   const { page } = await open(t, '/website/', { options: {
     javaScriptEnabled: false, reducedMotion: 'no-preference', viewport: { width: 375, height: 780 }
@@ -149,6 +154,14 @@ test('mobile site keeps downloads and navigation available with JavaScript disab
   assert.equal(await page.locator('#loader').count(), 0);
   assert.equal(await page.locator('#download .reveal').first().evaluate(el => getComputedStyle(el).opacity), '1');
   assert.equal(await page.locator('#fab').isVisible(), false);
+});
+
+test('narrow site layouts stay within the viewport', async t => {
+  for (const width of [320, 375, 600]) {
+    const { page } = await open(t, '/website/', { options: { viewport: { width, height: 780 } } });
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert.equal(overflow, 0, `${width}px viewport must not scroll or clip horizontally`);
+  }
 });
 
 test('site tracks system colors until chosen manually and restores mobile focus', async t => {

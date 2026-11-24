@@ -65,6 +65,14 @@ public class GameStorageTest {
         state.last_numbers = new int[49];
         GameStorage.writeState(dir, 7, state);
         assertFalse(GameStorage.readState(dir, 7).undo);
+
+        for (int y = 0; y < 7; y++) {
+            for (int x = 0; x < 7; x++) {
+                state.last_numbers[y * 7 + x] = (x + y) % 2 == 0 ? 2 : 4;
+            }
+        }
+        GameStorage.writeState(dir, 7, state);
+        assertFalse(GameStorage.readState(dir, 7).undo);
     }
 
     @Test public void treatsUncheckedDeserializationFailuresAsUnreadable() throws IOException {
@@ -100,6 +108,30 @@ public class GameStorageTest {
         assertEquals(128, GameStorage.readStatistics(dir, 5).getRecord());
         GameStorage.deleteStatistics(dir, 5);
         assertEquals(0, GameStorage.readStatistics(dir, 5).getRecord());
+    }
+
+    @Test public void clampsCorruptNegativeStatisticsFields() throws Exception {
+        File dir = files.getRoot();
+        GameStatistics stats = new GameStatistics(4);
+        for (String name : new String[]{"moves", "timePlayed", "record"}) {
+            java.lang.reflect.Field field = GameStatistics.class.getDeclaredField(name);
+            field.setAccessible(true);
+            field.setLong(stats, -10L);
+        }
+        java.lang.reflect.Field highest = GameStatistics.class.getDeclaredField("highestNumber");
+        highest.setAccessible(true);
+        highest.setLong(stats, 3L);
+        java.lang.reflect.Field undo = GameStatistics.class.getDeclaredField("undo");
+        undo.setAccessible(true);
+        undo.setInt(stats, -2);
+        GameStorage.writeStatistics(dir, 4, stats);
+
+        GameStatistics restored = GameStorage.readStatistics(dir, 4);
+        assertEquals(0L, restored.getMoves());
+        assertEquals(0L, restored.getTimePlayed());
+        assertEquals(0L, restored.getRecord());
+        assertEquals(2L, restored.getHighestNumber());
+        assertEquals(0, restored.getUndo());
     }
 
     /** Stands in for corrupt streams that ObjectInputStream reports with unchecked exceptions. */
