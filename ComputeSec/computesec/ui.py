@@ -296,9 +296,13 @@ def build_dashboard(report, win, navigate):
             hsi_desc += f"，另有 {len(report.hsi.undetermined)} 项数据缺失无法判定"
     else:
         hsi_desc = report.hsi.error
+    sysctl_unassessed = len(report.sysctl.unknown) + len(report.sysctl.unverified)
+    kernel_desc = f"内核参数缺失 {len(report.cmdline.missing)} 项｜sysctl 缺失 {len(report.sysctl.missing)} 项"
+    if sysctl_unassessed:
+        kernel_desc += f"，另有 {sysctl_unassessed} 项无法判定"
     cards = [
         ("hsi", "HSI 固件安全", hsi_score, hsi_desc, "security-high-symbolic"),
-        ("kernel", "内核加固", report.kernel_score, f"内核参数缺失 {len(report.cmdline.missing)} 项｜sysctl 缺失 {len(report.sysctl.missing)} 项", "emblem-system-symbolic"),
+        ("kernel", "内核加固", report.kernel_score, kernel_desc, "emblem-system-symbolic"),
         ("hardware", "硬件品牌", report.hardware.score, f"{report.hardware.vendor['name']} · {data.RATING_ZH[report.hardware.vendor['rating']]}", "computer-symbolic"),
         ("habits", "使用习惯", report.habits.score, "、".join(f"{c.title.split(' ')[0]}{_HABIT_MARK.get(c.status, '?')}" for c in report.habits.checks), "avatar-default-symbolic"),
     ]
@@ -497,7 +501,10 @@ def build_hsi(report, win):
     fixable = h.fixable
     if not fixable:
         if not scored:
-            fix.add(text_row("暂无可评估的检测项", "所有检测项均因缺少数据而无法判定。"))
+            fix.add(text_row(
+                "暂无可评估的检测项",
+                "所有检测项均因缺少数据而无法判定。" if h.undetermined else "当前没有处于生效状态的检测项。",
+            ))
         elif h.failed:
             fix.add(praise_row(
                 "所有可判定的用户可修复项目均已通过，做得非常好！"
@@ -641,8 +648,9 @@ def build_kernel(report, win):
     # 沙箱里能读到的条目（kernel.*、vm.*、fs.* 等）本来就是宿主机视图。
     g_src = None
     n = len(s.unknown)
-    n_perm = sum(1 for i in s.unknown if i.source != "读取失败")
-    n_io = n - n_perm
+    n_io = sum(1 for i in s.unknown if i.source == "读取失败")
+    n_incomplete = sum(1 for i in s.unknown if i.source == "数据不完整")
+    n_perm = n - n_io - n_incomplete
     m = len(s.unverified)
     m_net = sum(1 for i in s.unverified if i.source == "沙箱网络隔离")
     if s.user_supplied or n or m:
@@ -655,6 +663,8 @@ def build_kernel(report, win):
                 parts.append(f"仍有 {n_perm} 项无法判定，可能是您执行命令时没有加 sudo。")
             if n_io:
                 parts.append(f"另有 {n_io} 项因内核接口读取失败而无法判定，未计入评分。")
+            if n_incomplete:
+                parts.append(f"另有 {n_incomplete} 项缺少接口或默认配置而无法完整验证，未计入评分。")
             if m:
                 parts.append(f"另有 {m} 项不在您提供的输出中（可能被 2>/dev/null 过滤，或该内核没有这一项）；"
                              "沙箱内的读数不可信，已忽略，未计入评分。")
@@ -670,10 +680,12 @@ def build_kernel(report, win):
                 parts.append(f"当前有 {n_perm} 项 sysctl 因为文件仅 root 可读而无法判定（例如 vm.mmap_rnd_bits），未计入评分。")
             if n_io:
                 parts.append(f"当前有 {n_io} 项 sysctl 因内核接口返回读取错误而无法判定，未计入评分。")
-            if n_perm or m:
+            if n_incomplete:
+                parts.append(f"当前有 {n_incomplete} 项 sysctl 缺少接口或默认配置而无法完整验证，未计入评分。")
+            if n_perm or n_incomplete or m:
                 parts.append("点击右侧按钮，按向导在终端执行一条只读命令并复制结果，即可得到完整准确的评估。")
         g_src = group(title, "".join(parts))
-        if s.user_supplied or n_perm or m:
+        if s.user_supplied or n_perm or n_incomplete or m:
             g_src.set_header_suffix(_collect_button(win, "重新采集" if s.user_supplied else "采集系统数据"))
 
     # ---- cmdline ----
@@ -742,6 +754,8 @@ def build_kernel(report, win):
                 sub += "  （内核不支持或模块未加载）"
             elif it.status == "unknown" and it.source == "读取失败":
                 sub += "  （内核接口读取失败，未参与评分）"
+            elif it.status == "unknown" and it.source == "数据不完整":
+                sub += "  （缺少接口或默认配置，无法完整验证，未参与评分）"
             elif it.status == "unknown":
                 sub += "  （该文件仅 root 可读，未参与评分；请用主菜单的「重新采集系统数据」提供 sudo sysctl -a 的结果）"
             elif it.status == "unverified" and it.source == "沙箱网络隔离":
@@ -752,7 +766,7 @@ def build_kernel(report, win):
                         "已忽略且未参与评分）")
             row.set_subtitle(esc(sub))
             row.add_prefix(status_icon(
-                "locked" if it.status == "unknown" and it.source != "读取失败" else it.status))
+                "locked" if it.status == "unknown" and it.source not in ("读取失败", "数据不完整") else it.status))
             # source 可能是 "用户提供" 或 "用户提供（3 小时前）"：只有这一项是
             # 靠快照补上的才打标签，剩下的都是 /proc 的实时读数。
             if it.source.startswith("用户提供") and it.status != "unknown":
@@ -818,10 +832,13 @@ def build_hardware(report, win):
         sysinfo = group("宿主机系统信息", "通过 D-Bus 接口 org.freedesktop.hostname1 读取，因此在 Flatpak 内也是您真实的系统信息，"
                                           "而不是 runtime（org.gnome.Platform）的字段。")
         has_sysinfo = False
-        os_val = ident.pretty_name or ident.os_release.get("PRETTY_NAME") or ident.os_release.get("NAME")
-        for label, val in (("操作系统", os_val), ("CPE 名称", ident.cpe_name),
-                           ("内核", " ".join(x for x in (ident.kernel_name, ident.kernel_release) if x)),
-                           ("机箱类型", ident.chassis), ("主机名", ident.static_hostname or ident.hostname),
+        os_val = (ident.pretty_name.strip()
+                  or (ident.os_release.get("PRETTY_NAME") or "").strip()
+                  or (ident.os_release.get("NAME") or "").strip())
+        for label, val in (("操作系统", os_val), ("CPE 名称", ident.cpe_name.strip()),
+                           ("内核", " ".join(x for x in (ident.kernel_name.strip(), ident.kernel_release.strip()) if x)),
+                           ("机箱类型", ident.chassis.strip()),
+                           ("主机名", ident.static_hostname.strip() or ident.hostname.strip()),
                            ("数据来源", ident.source)):
             if val:
                 sysinfo.add(text_row(label, val, selectable=True))

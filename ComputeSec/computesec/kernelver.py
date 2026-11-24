@@ -222,10 +222,12 @@ class KernelSupport:
     def age_text(self, now=None):
         """版本号是多久以前拿到的；没有时间戳或数值非法时返回空串。"""
         ts = self.checked_at
-        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts) or ts < 1:
+        if (isinstance(ts, bool) or not isinstance(ts, (int, float))
+                or (isinstance(ts, float) and not math.isfinite(ts)) or ts < 1):
             return ""
         if isinstance(now, bool) or (now is not None and (
-                not isinstance(now, (int, float)) or not math.isfinite(now))):
+                not isinstance(now, (int, float))
+                or (isinstance(now, float) and not math.isfinite(now)))):
             return ""
         try:
             diff = (time.time() if now is None else now) - ts
@@ -314,7 +316,13 @@ def _default_fetcher(url, timeout):
     """
     if not isinstance(url, str) or not url.lower().startswith("https://"):
         raise ValueError(f"拒绝请求非 https 地址：{url}")
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise ValueError(f"无效的请求超时时间：{timeout}")
+    try:
+        timeout = float(timeout)
+    except OverflowError as e:
+        raise ValueError(f"无效的请求超时时间：{timeout}") from e
+    if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"无效的请求超时时间：{timeout}")
     req = urllib.request.Request(url, headers={"User-Agent": "ComputeSec"})
     deadline = time.monotonic() + timeout

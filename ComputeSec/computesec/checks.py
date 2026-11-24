@@ -108,7 +108,7 @@ def cpu_model():
             k, sep, val = line.partition(":")
             if sep and k.strip().lower() == prefix and val.strip() and not val.strip().isdigit():
                 return val.strip()
-    soc = read("/sys/devices/soc0/machine").strip()
+    soc = read("/sys/devices/soc0/machine").replace("\x00", "").strip()
     return soc or platform.processor() or platform.machine()
 
 
@@ -480,14 +480,15 @@ _CMDLINE_FORCE_DISABLE = {
     "nospectre_v2": "spectre_v2",
     "nospec_store_bypass_disable": "spec_store_bypass_disable",
 }
-# arch/x86/mm/pti.c 与 arch/x86/kernel/cpu/bugs.c：cpu_mitigations_off() 会无条件
-# 禁用下列 x86 缓解，即便命令行上同时写有 pti=on / spectre_v2=on 等单项参数。
+# arch/x86/mm/pti.c、arch/x86/kernel/cpu/bugs.c 与 arch/arm64/kernel/proton-pack.c：
+# cpu_mitigations_off() 会无条件禁用下列缓解，即便命令行上同时写有单项参数。
 _MITIGATIONS_OFF_TARGETS = (
     "pti",
     "spectre_v2",
     "spec_store_bypass_disable",
     "l1tf",
     "gather_data_sampling",
+    "ssbd",
 )
 
 
@@ -693,6 +694,8 @@ def get_cmdline_report() -> CmdlineReport:
     present = {}
     efi_tokens = []
     forced_off = {}
+    effective_mitigations = None
+    iommu_pt_active = False
     for k, v in _iter_cmdline_tokens(cmdline):
         nk = _CMDLINE_KEY_ALIASES.get(_norm_key(k), _norm_key(k))
         if v is None and nk in _CMDLINE_FORCE_DISABLE:
@@ -708,6 +711,16 @@ def get_cmdline_report() -> CmdlineReport:
                 continue
             nk, v = "hash_pointers", "never"
         if v is not None:
+            if nk == "mitigations" and v in _MITIGATIONS_RANK:
+                effective_mitigations = v
+            if nk == "iommu":
+                for opt in v.split(","):
+                    if opt.startswith("pt"):
+                        iommu_pt_active = True
+                    elif opt.startswith("nopt"):
+                        iommu_pt_active = False
+            elif nk == "iommu.passthrough" and _kstrtobool(v) is not None:
+                iommu_pt_active = False
             if nk == "efi":
                 efi_tokens.append(v)
                 present[nk] = ",".join(x for x in efi_tokens if x)
@@ -735,13 +748,22 @@ def get_cmdline_report() -> CmdlineReport:
                     and nk != "hash_pointers"):
                 continue
             present[nk] = None
-    if present.get("mitigations") == "off":
+    if effective_mitigations == "off":
         for target in _MITIGATIONS_OFF_TARGETS:
             if target in present:
                 present[target] = "mitigations=off"
     for target, flag in forced_off.items():
         present[target] = flag
     ar, cv = arch(), cpu_vendor()
+    if ar == "x86_64":
+        iommu_opts = [o for o in (present.get("iommu") or "").split(",") if o]
+        if any(o.startswith("off") for o in iommu_opts):
+            for target in ("intel_iommu", "amd_iommu"):
+                if target in present:
+                    present[target] = "iommu=off"
+        if (iommu_pt_active and "iommu.passthrough" in present
+                and _cmdline_value_ok("iommu.passthrough", present["iommu.passthrough"], "0")):
+            present["iommu.passthrough"] = "iommu=pt"
     running = kernelver.parse_release(platform.release())
     items = []
     for p in data.KERNEL_PARAMS:
@@ -802,7 +824,11 @@ class SysctlItem:
             # 沙箱网络隔离时用户可能根本没提供过快照，不能说「您提供的快照中没有」。
             return "（沙箱网络隔离，无法验证）" if self.source == "沙箱网络隔离" else "（您提供的快照中没有这一项）"
         if self.status == "unknown":
-            return "（无法读取）" if self.source == "读取失败" else "（无法读取，需要 root 权限）"
+            if self.source == "读取失败":
+                return "（无法读取）"
+            if self.source == "数据不完整":
+                return "（缺少接口或默认配置，无法验证）"
+            return "（无法读取，需要 root 权限）"
         if not self.actual:
             return "（内核不支持）"
         vals = {v for v in self.actual.values()}
@@ -926,9 +952,12 @@ def _sysctl_effective_values(key, actual):
         return actual
     if key == "net.ipv6.conf.*.use_tempaddr":
         default_key = "net.ipv6.conf.default.use_tempaddr"
-        if default_key not in actual:
-            return {**actual, default_key: None}
-        return actual
+        effective = dict(actual)
+        if default_key not in effective:
+            effective[default_key] = None
+        if not any(k != default_key for k in actual):
+            effective[key] = None
+        return effective
     if key != "net.ipv4.conf.*.rp_filter":
         return actual
     all_key = "net.ipv4.conf.all.rp_filter"
@@ -1057,10 +1086,11 @@ def get_sysctl_report() -> SysctlReport:
                      for v in compared.values()):
                 status = "missing"
             elif unreadable or any(v is None for v in compared.values()):
-                # 部分接口读不到时，不能凭其余接口的正确值宣称整项已加固；非权限错误（如 EIO）单独标记来源。
+                # 部分接口读不到时，不能凭其余接口的正确值宣称整项已加固；
+                # 区分权限不足、内核 I/O 读取失败、以及缺少接口/默认配置导致的数据不完整。
                 status = "unknown"
                 if not unreadable:
-                    source = "读取失败"
+                    source = "读取失败" if any(v is None for v in actual.values()) else "数据不完整"
             else:
                 status = "ok"
             items.append(SysctlItem(key=key, expected=e["value"], cmp=cmp, actual=actual, status=status,
@@ -1100,7 +1130,7 @@ def _vendor_kw_match(kw, text):
 
 def get_hardware() -> HardwareReport:
     def dmi(n):
-        return read(f"/sys/class/dmi/id/{n}").strip()
+        return read(f"/sys/class/dmi/id/{n}").replace("\x00", "").strip()
     sv, pn, bv, biosv, biosver = dmi("sys_vendor"), dmi("product_name"), dmi("board_vendor"), dmi("bios_vendor"), dmi("bios_version")
     model = read("/proc/device-tree/model").strip("\x00\n ")
     # D-Bus hostname1 也提供厂商/型号/固件版本（宿主机视角），用于补全沙箱内读不到的字段
