@@ -1638,7 +1638,7 @@ def test_hsi_normalize_attrs_skips_missing_id_and_clamps_level_and_no_hash_point
         "hash_pointers=always no_hash_pointers=0" if p == "/proc/cmdline" else default
     ))
     by_key = {i.key: i for i in checks.get_cmdline_report().items}
-    assert by_key["hash_pointers"].status == "ok"
+    assert by_key["hash_pointers"].status == "wrong"
 
 
 def test_hsi_flags_and_result_strip_whitespace_and_ignore_non_strings():
@@ -1755,7 +1755,7 @@ def test_cmdline_force_disable_flags_override_enabled_params(monkeypatch, cmdlin
     ("slab_nomerge slab_merge", "missing"),
     ("slub_nomerge slub_merge", "missing"),
     ("slab_merge slab_nomerge", "ok"),
-    ("slab_nomerge slab_merge=0", "ok"),
+    ("slab_nomerge slab_merge=0", "missing"),
 ])
 def test_cmdline_slab_merge_overrides_earlier_nomerge(monkeypatch, cmdline, want):
     monkeypatch.setattr(checks, "arch", lambda: "x86_64")

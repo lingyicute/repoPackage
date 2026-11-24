@@ -701,14 +701,35 @@ def get_cmdline_report() -> CmdlineReport:
         if v is None and nk in _CMDLINE_FORCE_DISABLE:
             forced_off[_CMDLINE_FORCE_DISABLE[nk]] = nk
             continue
-        # mm/slab_common.c：slab_merge / slub_merge 按顺序重新允许合并，覆盖先前的 slab_nomerge。
-        if v is None and nk in ("slab_merge", "slub_merge"):
+        # mm/slab_common.c：slab_merge / slub_merge 经 obsolete_checksetup() 前缀匹配，
+        # setup_slab_merge() 忽略参数值并重新允许合并，覆盖先前的 slab_nomerge。
+        if nk in ("slab_merge", "slub_merge"):
             present.pop("slab_nomerge", None)
             continue
-        # lib/vsprintf.c no_hash_pointers_enable()：仅接受无值的裸 token（带 = 返回 -EINVAL）。
+        # init/main.c：quiet（级别 4）与 debug（级别 10）同为 early_param，忽略参数值，
+        # 出现在 loglevel=0 之后时会把 console_loglevel 覆盖回非 0。
+        if nk in ("quiet", "debug"):
+            if "loglevel" in present:
+                present["loglevel"] = nk
+            continue
+        # kernel/printk/printk.c：early_param("ignore_loglevel") 无条件置真；
+        # printk.ignore_loglevel 作为 module_param(bool) 在第二阶段覆盖。
+        if nk == "ignore_loglevel":
+            forced_off.setdefault("_early_ignore_loglevel", "ignore_loglevel")
+            continue
+        if nk == "printk.ignore_loglevel":
+            if v is None:
+                forced_off["_param_ignore_loglevel"] = "printk.ignore_loglevel"
+            else:
+                b = _kstrtobool(v)
+                if b == "1":
+                    forced_off["_param_ignore_loglevel"] = f"printk.ignore_loglevel={v}"
+                elif b == "0":
+                    forced_off["_param_ignore_loglevel"] = ""
+            continue
+        # lib/vsprintf.c no_hash_pointers_enable()：early_param 仅比较参数名，
+        # 处理函数忽略参数值并一律调用 hash_pointers_mode_parse("never")。
         if nk == "no_hash_pointers":
-            if v is not None:
-                continue
             nk, v = "hash_pointers", "never"
         if v is not None:
             if nk == "mitigations" and v in _MITIGATIONS_RANK:
@@ -719,8 +740,10 @@ def get_cmdline_report() -> CmdlineReport:
                         iommu_pt_active = True
                     elif opt.startswith("nopt"):
                         iommu_pt_active = False
-            elif nk == "iommu.passthrough" and _kstrtobool(v) is not None:
-                iommu_pt_active = False
+            elif nk == "iommu.passthrough":
+                b = _kstrtobool(v)
+                if b is not None:
+                    iommu_pt_active = b == "1"
             if nk == "efi":
                 efi_tokens.append(v)
                 present[nk] = ",".join(x for x in efi_tokens if x)
@@ -748,6 +771,11 @@ def get_cmdline_report() -> CmdlineReport:
                     and nk != "hash_pointers"):
                 continue
             present[nk] = None
+    early_ign = forced_off.pop("_early_ignore_loglevel", None)
+    param_ign = forced_off.pop("_param_ignore_loglevel", None)
+    eff_ign = early_ign if param_ign is None else (param_ign or None)
+    if eff_ign and "loglevel" in present:
+        present["loglevel"] = eff_ign
     if effective_mitigations == "off":
         for target in _MITIGATIONS_OFF_TARGETS:
             if target in present:
@@ -755,6 +783,7 @@ def get_cmdline_report() -> CmdlineReport:
     for target, flag in forced_off.items():
         present[target] = flag
     ar, cv = arch(), cpu_vendor()
+    iommu_cmp_actual = present.get("iommu", MISSING)
     if ar == "x86_64":
         iommu_opts = [o for o in (present.get("iommu") or "").split(",") if o]
         if any(o.startswith("off") for o in iommu_opts):
@@ -764,6 +793,8 @@ def get_cmdline_report() -> CmdlineReport:
         if (iommu_pt_active and "iommu.passthrough" in present
                 and _cmdline_value_ok("iommu.passthrough", present["iommu.passthrough"], "0")):
             present["iommu.passthrough"] = "iommu=pt"
+        if "iommu" in present and present["iommu"] and not iommu_pt_active:
+            iommu_cmp_actual = f"{present['iommu']},nopt"
     running = kernelver.parse_release(platform.release())
     items = []
     for p in data.KERNEL_PARAMS:
@@ -780,11 +811,16 @@ def get_cmdline_report() -> CmdlineReport:
                 exp = legacy
         nk = _norm_key(p["key"])
         actual = present.get(nk, MISSING)
+        cmp_val = (
+            efi_tokens if nk == "efi" and efi_tokens
+            else iommu_cmp_actual if nk == "iommu" and ar == "x86_64"
+            else actual
+        )
         if p.get("cpu") and p["cpu"] != cv and (cv is not None or actual is MISSING):
             status = "na"
         elif actual is MISSING:
             status = "missing"
-        elif _cmdline_value_ok(p["key"], efi_tokens if nk == "efi" and efi_tokens else actual, exp):
+        elif _cmdline_value_ok(p["key"], cmp_val, exp):
             status = "ok"
         else:
             status = "wrong"
@@ -898,6 +934,16 @@ _SYSCTL_WORD_ALIASES = {
 }
 
 
+_ASCII_INT_RE = re.compile(r"^-?[0-9]+$")
+
+
+def _parse_ascii_int(v):
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    return int(s) if _ASCII_INT_RE.fullmatch(s) else None
+
+
 def _sysctl_norm(v):
     """把读到的值归一化，便于与期望值比较。"""
     v = " ".join(v.split())
@@ -910,17 +956,13 @@ def _sysctl_value_ok(actual, expected, cmp):
     a = _sysctl_norm(actual)
     e = _sysctl_norm(expected)
     if cmp == "ge":
-        try:
-            return int(a) >= int(e)
-        except ValueError:
-            return a == e
+        ia, ie = _parse_ascii_int(a), _parse_ascii_int(e)
+        return ia >= ie if (ia is not None and ie is not None) else a == e
     if cmp == "le":
         # 上限型阈值（kernel.oops_limit / warn_limit）：越小越早 panic、越严格；
         # 但 0 表示关闭计数，不是"最严格"，必须单独排除。
-        try:
-            return 0 < int(a) <= int(e)
-        except ValueError:
-            return a == e
+        ia, ie = _parse_ascii_int(a), _parse_ascii_int(e)
+        return 0 < ia <= ie if (ia is not None and ie is not None) else a == e
     return a == e
 
 
@@ -968,21 +1010,24 @@ def _sysctl_effective_values(key, actual):
     if not any(k not in (all_key, default_key) for k in actual):
         # All/default alone cannot rule out a loose-mode existing interface.
         effective[key] = None
-    try:
-        global_mode = int(actual.get(all_key))
-    except (TypeError, ValueError):
-        global_mode = None
+    raw_all = actual.get(all_key)
+    parsed_all = _parse_ascii_int(raw_all)
+    global_mode = parsed_all if parsed_all in (0, 1, 2) else None
     # all=0 can still be strict if every current/default interface is strict.
-    effective[all_key] = "1" if global_mode == 0 else actual.get(all_key)
+    effective[all_key] = "1" if global_mode == 0 else raw_all
     for k, value in actual.items():
         if k == all_key:
             continue
-        try:
-            mode = int(value)
-            effective[k] = (str(mode) if mode >= 2 else
-                            str(max(mode, global_mode)) if global_mode is not None else None)
-        except (TypeError, ValueError):
+        if value is None:
             effective[k] = None
+            continue
+        mode = _parse_ascii_int(value)
+        if mode is None or mode < 0 or mode > 2:
+            effective[k] = value
+        elif mode == 2:
+            effective[k] = "2"
+        else:
+            effective[k] = str(max(mode, global_mode)) if global_mode is not None else None
     return effective
 
 
@@ -1132,7 +1177,7 @@ def get_hardware() -> HardwareReport:
     def dmi(n):
         return read(f"/sys/class/dmi/id/{n}").replace("\x00", "").strip()
     sv, pn, bv, biosv, biosver = dmi("sys_vendor"), dmi("product_name"), dmi("board_vendor"), dmi("bios_vendor"), dmi("bios_version")
-    model = read("/proc/device-tree/model").strip("\x00\n ")
+    model = read("/proc/device-tree/model").replace("\x00", "").strip()
     # D-Bus hostname1 也提供厂商/型号/固件版本（宿主机视角），用于补全沙箱内读不到的字段
     chassis = ""
     try:
@@ -1153,7 +1198,7 @@ def get_hardware() -> HardwareReport:
     if chassis == "vm":
         vendor, matched = data.VM_VENDOR, "机箱类型: vm"
     else:
-        for label, text in candidates:
+        for label, text in candidates + [("固件厂商", biosv)]:
             t = (text or "").lower()
             if t and any(_vendor_kw_match(m, t) for m in data.VM_VENDOR["match"]):
                 vendor, matched = data.VM_VENDOR, f"{label}: {text}"
@@ -1288,20 +1333,24 @@ def check_uptime() -> HabitCheck:
                       ["您近期重启过系统，内核与固件更新能够及时生效。"], "请继续保持勤更新、勤重启的好习惯！")
 
 
+def _clean_sysfs(text):
+    return text.replace("\x00", "").strip()
+
+
 def _usb_devices():
     devs = []
     for d in sorted(glob.glob("/sys/bus/usb/devices/*")):
-        vid = read(os.path.join(d, "idVendor")).strip()
+        vid = _clean_sysfs(read(os.path.join(d, "idVendor")))
         if not vid:
             continue
-        pid = read(os.path.join(d, "idProduct")).strip().lower()
-        product = read(os.path.join(d, "product")).strip()
-        manufacturer = read(os.path.join(d, "manufacturer")).strip()
+        pid = _clean_sysfs(read(os.path.join(d, "idProduct"))).lower()
+        product = _clean_sysfs(read(os.path.join(d, "product")))
+        manufacturer = _clean_sysfs(read(os.path.join(d, "manufacturer")))
         # 若 sysfs 字符串为空，从 udev 数据库补全 hwdb 名称：
         # USB 设备带有字符设备号（189:<minor>），udev 数据库文件名是 c<major>:<minor>，
         # 而非 +usb:<sysname>（后者仅用于无设备号的接口）；保留 +usb: 作为兜底。
         if not product or not manufacturer:
-            devnum = read(os.path.join(d, "dev")).strip()
+            devnum = _clean_sysfs(read(os.path.join(d, "dev")))
             udev_txt = read(f"/run/udev/data/c{devnum}") if devnum else ""
             if not udev_txt:
                 udev_txt = read(f"/run/udev/data/+usb:{os.path.basename(d)}")
@@ -1309,13 +1358,21 @@ def _usb_devices():
                 if not manufacturer:
                     m_v = re.search(r"^E:ID_VENDOR_FROM_DATABASE=(.+)$", udev_txt, re.M)
                     if m_v:
-                        manufacturer = m_v.group(1).strip()
+                        manufacturer = _clean_sysfs(m_v.group(1))
                 if not product:
                     m_p = re.search(r"^E:ID_MODEL_FROM_DATABASE=(.+)$", udev_txt, re.M)
                     if m_p:
-                        product = m_p.group(1).strip()
+                        product = _clean_sysfs(m_p.group(1))
+        cls = _clean_sysfs(read(os.path.join(d, "bDeviceClass"))).lower()
+        if cls in ("", "00", "ef"):
+            if_classes = {
+                _clean_sysfs(read(p)).lower()
+                for p in sorted(glob.glob(os.path.join(d, f"{os.path.basename(d)}:*", "bInterfaceClass")))
+            } - {""}
+            if if_classes and if_classes.issubset(data.USB_NON_INPUT_CLASSES):
+                cls = sorted(if_classes)[0]
         devs.append(dict(vid=vid.lower(), pid=pid, product=product, manufacturer=manufacturer,
-                         cls=read(os.path.join(d, "bDeviceClass")).strip().lower()))
+                         cls=cls))
     if devs:
         return devs, "sysfs"
     rc, out = run(["lsusb"])
@@ -1436,8 +1493,10 @@ def _ntfs_from_lsblk_json(j):
         return []
     found = []
 
-    def walk(nodes):
-        for n in nodes:
+    if isinstance(j, dict) and isinstance(j.get("blockdevices"), list):
+        stack = list(reversed(j["blockdevices"]))
+        while stack:
+            n = stack.pop()
             if not isinstance(n, dict):
                 continue
             ftype = (n.get("fstype") or "").lower()
@@ -1456,16 +1515,19 @@ def _ntfs_from_lsblk_json(j):
                     # 加密卷看不出里面是 NTFS，界面上要说清楚是被什么加密的。
                     line += "  （BitLocker 加密）"
                 found.append(line)
-            walk(n.get("children", []) or [])
-
-    if isinstance(j, dict) and isinstance(j.get("blockdevices"), list):
-        walk(j["blockdevices"])
+            children = n.get("children") or []
+            if isinstance(children, list):
+                stack.extend(reversed(children))
     return found
 
 
 def _unescape_mount_field(s):
-    """解码 /proc/mounts 中的八进制转义（如空格 \040、反斜杠 \134）。"""
-    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), s)
+    """解码 /proc/mounts 中的八进制字节转义（如空格 \040、反斜杠 \134 及多字节 UTF-8）。"""
+    def _decode_run(m):
+        raw = bytes(int(o, 8) for o in re.findall(r"\\([0-3][0-7]{2})", m.group(0)))
+        return raw.decode("utf-8", errors="replace")
+
+    return re.sub(r"(?:\\[0-3][0-7]{2})+", _decode_run, s)
 
 
 def _ntfs_partitions():
@@ -1544,7 +1606,7 @@ def _ntfs_partitions():
         # udev 数据库可能缺少后挂载设备的记录；即使已有 udev 数据，也必须用挂载表补全。
         # 但 fuseblk 也用于 exfat-fuse / fuse-ext2 等非 NTFS 文件系统，不能覆盖 udev 已确认为非 Windows 的设备。
         for line in read("/proc/mounts").splitlines():
-            parts = line.split()
+            parts = [p for p in re.split(r"[ \t]+", line.strip(" \t\r\n")) if p]
             if len(parts) <= 2:
                 continue
             dev = _unescape_mount_field(parts[0])
