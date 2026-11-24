@@ -73,7 +73,7 @@ main{flex:1;width:100%;max-width:1600px;margin:0 auto;padding:22px max(28px,env(
 table.diff{border-collapse:collapse;width:100%;font:12.5px/1.6 var(--mono);table-layout:fixed;tab-size:4}
 table.diff thead th{position:sticky;top:0;z-index:2;padding:8px 12px;background:var(--bg2);border-bottom:1px solid var(--border);box-shadow:inset 0 -1px 0 var(--border);font:13px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;text-align:left;font-weight:400;vertical-align:middle}
 html[lang="zh"] table.diff thead th{font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif}
-table.diff thead th+th{border-left:1px solid var(--border)}
+table.diff thead th+th{border-left:1px solid var(--border);box-shadow:inset 1px 0 0 var(--border),inset 0 -1px 0 var(--border)}
 table.diff thead .th-in{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;min-width:0;overflow-wrap:anywhere}
 table.diff thead .title{font-weight:600;margin-right:auto}
 table.diff thead .fname{color:var(--fg2)}
@@ -98,8 +98,8 @@ mark.i{background:var(--ins-hl);color:var(--ins-fg);border-radius:2px;padding:1p
 @media not print{[data-theme="dark"] .preset-redline mark.d{color:#ff9680}[data-theme="dark"] .preset-redline mark.i{color:#5bd494}}
 .preset-accessible mark.d{background:#ffd9b3;color:#5c2d00}.preset-accessible mark.i{background:#bcd8ff;color:#002b63}
 .preset-accessible td.code.del{background:rgba(255,160,60,.14)}.preset-accessible td.code.ins{background:rgba(60,140,255,.14)}
-tr.collapsed td{background:var(--bg2);color:var(--fg2);text-align:center;font-family:system-ui,sans-serif;font-size:12px;padding:4px;cursor:pointer;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
-tr.collapsed td:hover,tr.collapsed:focus-visible td{color:var(--accent2)}
+table.diff tr.collapsed td{background:var(--bg2);color:var(--fg2);text-align:center;font-family:system-ui,sans-serif;font-size:12px;padding:4px;cursor:pointer;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+table.diff tr.collapsed td:hover,table.diff tr.collapsed:focus-visible td{color:var(--accent2)}
 tr.collapsed .fold-lbl{display:inline-block;position:sticky;left:12px;right:12px;max-width:calc(100vw - 48px)}
 tr.focus td.code{box-shadow:inset 3px 0 0 var(--accent)}
 .k{color:var(--syn-k)}.s{color:var(--syn-s)}.n{color:var(--syn-n)}.c{color:var(--syn-c);font-style:italic}.tg{color:var(--syn-t)}.at{color:var(--syn-a)}
@@ -121,10 +121,10 @@ tr.focus td.code{box-shadow:inset 3px 0 0 var(--accent)}
 .rules{display:flex;flex-direction:column;gap:6px}
 .rule{display:flex;gap:6px;align-items:center}
 .rule input{flex:1;min-width:0;border:1px solid var(--border2);border-radius:6px;padding:4px 8px;background:var(--bg)}
-.modal-bg{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);border:0;background:transparent;color:inherit;display:none;align-items:center;justify-content:center}
+.modal-bg{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));border:0;background:transparent;color:inherit;display:none;align-items:center;justify-content:center}
 .modal-bg::backdrop{background:rgba(0,0,0,.35)}
 .modal-bg[open]{display:flex}
-.modal{background:var(--bg);border-radius:14px;width:440px;max-width:94vw;max-height:92vh;max-height:92dvh;overflow:auto;overscroll-behavior:contain;box-shadow:var(--shadow);padding:20px 22px}
+.modal{background:var(--bg);border-radius:14px;width:440px;max-width:100%;max-height:100%;overflow:auto;overscroll-behavior:contain;box-shadow:var(--shadow);padding:20px 22px}
 .modal h3{margin:0 0 12px;font-size:17px}
 .modal label{display:block;font-size:12px;color:var(--fg2);margin:12px 0 6px}
 .choices{display:grid;grid-template-columns:1fr 1fr;gap:8px}
@@ -132,7 +132,7 @@ tr.focus td.code{box-shadow:inset 3px 0 0 var(--accent)}
 .choice[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-bg)}
 .choice b{display:block;font-size:13px}.choice small{color:var(--fg2);font-size:11px;line-height:1.3;display:block;margin-top:2px}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;flex-wrap:wrap}
-.offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 32px);transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s}
+.offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 32px);transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;overflow-wrap:anywhere;opacity:0;pointer-events:none;transition:opacity .2s}
 .offline-notice.show{opacity:1}
 [data-theme="dark"] .offline-notice{border-color:#2f4a3a;background:#1c2b23;color:#c8f5e6;box-shadow:0 5px 24px #00000066}
 footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));border-top:1px solid var(--border)}
@@ -143,7 +143,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 @media (max-width:480px){.offline-navigation{gap:4px 10px;padding:0 max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left))}.offline-tools{gap:10px}.offline-actions{gap:6px}.offline-language{padding:5px 8px;font-size:12px}.choices{grid-template-columns:1fr}}
 @media (max-width:640px){.hero{margin:2px 0 12px}.hero h1{font-size:24px}.input-card textarea{min-height:160px;font-size:16px}.row select,.row input[type=text],.rule input{font-size:16px}.toolbar{position:static}.stats{margin-left:0;width:100%}.diff-head{font-size:12px}.diff-head>div{padding:6px 8px}table.diff thead th{padding:6px 8px;font-size:12px}.diff-scroll{max-height:70vh;max-height:70dvh}table.diff{font-size:12px}table.diff td{padding:0 6px 0 4px}table.diff td.num{width:36px;min-width:36px;padding:0 5px 0 3px;font-size:11px}table.diff col.cn{width:36px}table.diff td.sign,table.diff col.cs{width:14px;min-width:14px;padding-left:3px}table.diff.is-split:not(.nowrap){min-width:580px}.modal{padding:16px}}
 @media (max-height:520px){.toolbar{position:static}}
-@media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.row{padding:8px 0}.switch::before{content:"";position:absolute;inset:-6px -10px}.input-card textarea,.row select,.row input[type=text],.rule input{font-size:16px}tr.collapsed td{padding:9px 4px}}
+@media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.row{padding:8px 0}.switch::before{content:"";position:absolute;inset:-6px -10px}.input-card textarea,.row select,.row input[type=text],.rule input{font-size:16px}table.diff tr.collapsed td{padding:9px 4px}}
 @media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar,.panel,.panel-bg,footer,.modal-bg,.offline-notice,.no-print,.hero{display:none!important}main{padding:0;max-width:none}.diff-scroll{max-height:none;overflow:visible}.diff-wrap{border:0}body{font-size:11px;display:block;height:auto;background:#fff}.printing-text-result #result{display:none!important}.printing-text-result #printResult{display:block}#printResult .preset-redline mark.d{color:#d13415}#printResult .preset-redline mark.i{color:#0f7a4a}table.diff{font-size:10.5px}table.diff thead{display:table-header-group}table.diff thead th{position:static;box-shadow:none}table.diff tr{break-inside:avoid}tr.collapsed .fold-lbl{position:static;max-width:none}table.diff.is-split,table.diff.nowrap{table-layout:fixed;width:100%;min-width:0}table.diff.nowrap td.code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}table.diff.nowrap tr.split td.code{width:50%}}
 </style>
 </head>
@@ -466,10 +466,10 @@ function countText(v){let lines=1,words=0,run=false;const n=v.length;for(let i=0
   if(c===10||c===13){if(c===13&&v.charCodeAt(i+1)===10)i++;if(i<n-1)lines++;run=false}else if(isWs(c))run=false;else if(isCjk(c)){words++;run=false}else if(!run){run=true;words++}}
   return {lines,words,chars:n}}
 function updateMeta(side){for(const [s,id,ta] of [['A','metaA',txtA],['B','metaB',txtB]])if(!side||side===s){const v=ta.value,c=(n,k)=>`${n} ${t(n===1?k+'1':k)}`;/* 数量为 1 时英文用单数（1 line · 1 word），与差异统计的写法一致 */if(!v){$(id).textContent='';continue}const {lines,words,chars}=countText(v);$(id).textContent=`${c(lines,'lines')} · ${c(words,'words')} · ${c(chars,'characters')}`}}
-function run(keep){clearPrintResult();clearTimeout(rt);rt=0;const input={left:txtA.value,right:txtB.value,leftName:fileNames.A,rightName:fileNames.B},d=computeDiff(input.left,input.right,opts);d.input=input;lastDiff=d;expanded=new Set();focusIdx=-1;$('result').classList.remove('hidden');render();if(!opts.realtime&&!keep)$('result').scrollIntoView({behavior:'smooth',block:'start'})}
+function run(keep){clearPrintResult();clearTimeout(rt);rt=0;const input={left:txtA.value,right:txtB.value,leftName:fileNames.A,rightName:fileNames.B},d=computeDiff(input.left,input.right,opts);d.input=input;lastDiff=d;expanded=new Set();focusIdx=-1;$('result').classList.remove('hidden');render();if(!opts.realtime&&!keep)$('result').scrollIntoView({behavior:scrollBehavior(),block:'start'})}
 const CTX=3;// 隐藏未修改行时，每个折叠块首尾各保留的行数（页面、PNG 导出共用）
 function render(){
-  const d=lastDiff;if(!d)return;const scroll=$('diffScroll');
+  const d=lastDiff;if(!d)return;if(!printMedia.matches)clearPrintResult();const scroll=$('diffScroll');
   $('statDel').textContent=d.nDel;$('statIns').textContent=d.nIns;$('statDelL').textContent=t(d.nDel===1?'removal':'removals');$('statInsL').textContent=t(d.nIns===1?'addition':'additions');
   $('headA').textContent=d.input.leftName;$('headB').textContent=d.input.rightName;
   const identical=d.nDel===0&&d.nIns===0;$('diffWrap').className='diff-wrap preset-'+opts.preset;$('diffHead').classList.toggle('unified',opts.type==='unified');$('diffHead').classList.toggle('hidden',opts.type==='split'&&!identical);
@@ -529,7 +529,7 @@ function diffView(d,layout,interactive=true){
    有很多折叠块时每展开一个都得重新 Tab 过来。重绘后折叠条原来的位置正好是展开出来的第一行，把焦点放到这一行，Tab 就从这里继续 */
 function focusRow(wrap,i){const row=wrap.querySelector('table')?.rows[i];if(!row)return;row.tabIndex=-1;try{row.focus({preventScroll:true})}catch(e){row.focus()}}
 const scrollBehavior=()=>matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth';
-function scrollToEl(box,el){const br=box.getBoundingClientRect(),er=el.getBoundingClientRect(),bh=scrollBehavior(),head=box.querySelector('thead')?.getBoundingClientRect().height||0;const top=box.scrollTop+(er.top-br.top)-head-Math.max(0,(box.clientHeight-head-er.height)/2);box.scrollTo({top:Math.max(0,top),behavior:bh});if(br.bottom<=40||br.top>=window.innerHeight-40)box.scrollIntoView({behavior:bh,block:'nearest'})}
+function scrollToEl(box,el){const br=box.getBoundingClientRect(),er=el.getBoundingClientRect(),bh=scrollBehavior(),head=box.querySelector('thead')?.getBoundingClientRect().height||0,opt={top:Math.max(0,box.scrollTop+(er.top-br.top)-head-Math.max(0,(box.clientHeight-head-er.height)/2)),behavior:bh};if(el.classList?.contains('split')&&box.scrollWidth>box.clientWidth){const del=el.querySelector('td.code.del'),ins=el.querySelector('td.code.ins'),side=!del?ins:!ins?del:null;if(side){const sr=side.getBoundingClientRect();if(sr.left<br.left||sr.right>br.right)opt.left=Math.max(0,box.scrollLeft+(sr.left-br.left)-44)}}box.scrollTo(opt);if(br.bottom<=40||br.top>=window.innerHeight-40)box.scrollIntoView({behavior:bh,block:'nearest'})}
 function goChange(dir){const box=$('diffScroll'),n=+box.dataset.changes||0;if(!n)return;focusIdx=focusIdx<0&&dir<0?n-1:((focusIdx+dir)%n+n)%n;document.querySelectorAll('tr.focus').forEach(e=>e.classList.remove('focus'));const el=$('focus-'+focusIdx);if(el){el.classList.add('focus');scrollToEl(box,el)}}
 $('prevBtn').onclick=()=>goChange(-1);$('nextBtn').onclick=()=>goChange(1);
 $('findBtn').onclick=()=>run();
@@ -542,7 +542,7 @@ document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Ente
 $('swapBtn').onclick=()=>{cancelLoads();const v=txtA.value;txtA.value=txtB.value;txtB.value=v;fileNames={A:fileNames.B,B:fileNames.A};updateMeta();if(lastDiff||opts.realtime)run(true)};
 $('clearAllBtn').onclick=()=>{cancelLoads();txtA.value='';txtB.value='';fileNames={A:'',B:''};updateMeta();clearResult()};
 document.querySelectorAll('[data-clear]').forEach(b=>b.onclick=()=>{const s=b.dataset.clear;loadVersion[s]++;(s==='A'?txtA:txtB).value='';fileNames[s]='';updateMeta(s);if(lastDiff||opts.realtime)run(true)});
-document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{const ta=b.dataset.copy==='A'?txtA:txtB;let ok=true;try{await navigator.clipboard.writeText(ta.value)}catch(e){const prev=document.activeElement;try{ta.focus({preventScroll:true})}catch(e1){ta.focus()}ta.select();ta.setSelectionRange?.(0,ta.value.length);try{ok=document.execCommand('copy')}catch(e2){ok=false}if(prev!==ta){ta.setSelectionRange?.(0,0);ta.blur();try{prev?.focus?.({preventScroll:true})}catch(e3){}}}notice(t(ok?'copied':'copyFailed'))});/* 两种方式都失败时不能谎报“已复制” */
+document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=async()=>{const ta=b.dataset.copy==='A'?txtA:txtB;let ok=true;try{await navigator.clipboard.writeText(ta.value)}catch(e){const prev=document.activeElement,ro=ta.readOnly;if(prev!==ta)ta.readOnly=true;try{try{ta.focus({preventScroll:true})}catch(e1){ta.focus()}ta.select();ta.setSelectionRange?.(0,ta.value.length);try{ok=document.execCommand('copy')}catch(e2){ok=false}if(prev!==ta){ta.setSelectionRange?.(0,0);ta.blur();try{prev?.focus?.({preventScroll:true})}catch(e3){}}}finally{ta.readOnly=ro}}notice(t(ok?'copied':'copyFailed'))});/* 两种方式都失败时不能谎报“已复制” */
 /* file open & drag/drop */
 let openTarget='A';
 document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>{openTarget=b.dataset.open;$('fileInput').value='';$('fileInput').click()});
@@ -582,8 +582,9 @@ $('fmtChoices').onclick=e=>{const b=e.target.closest('.choice');if(!b)return;exp
 $('exportLayout').onclick=e=>{const b=e.target.closest('button');if(!b)return;exportLayout=b.dataset.l;$('exportLayout').querySelectorAll('button').forEach(c=>c.setAttribute('aria-pressed',String(c===b)))};
 // 打印树与交互树隔离：浏览器异步打印时也不会暂时改动或保存当前布局、主题。
 function clearPrintResult(){$('printResult').replaceChildren();document.body.classList.remove('printing-text-result')}
+const printMedia=matchMedia('print');
 window.addEventListener('afterprint',clearPrintResult);
-matchMedia('print').addEventListener?.('change',e=>{if(!e.matches)clearPrintResult()});
+printMedia.addEventListener?.('change',e=>{if(!e.matches)clearPrintResult()});
 function printComparison(layout){
   const wrap=document.createElement('div'),scroll=document.createElement('div'),identical=lastDiff.nDel===0&&lastDiff.nIns===0;
   wrap.className='diff-wrap preset-'+opts.preset;scroll.className='diff-scroll';scroll.innerHTML=diffView(lastDiff,layout,false).html;
@@ -632,7 +633,7 @@ async function exportPng(){
     const right=r.r!=null&&(!unified||r.changed)?wrap(d.B[r.r],segs,'r'):null;
     if(unified){if(left)add({...r,left});if(right)add({...r,right})}else add({...r,left,right});
   }
-  const H=HEADER+total*LH;cv.height=H;ctx.fillStyle=dark?'#17191c':'#fff';ctx.fillRect(0,0,W,H);ctx.font='bold 15px system-ui';ctx.fillStyle=dark?'#ebedef':'#202329';
+  const H=HEADER+total*LH;cv.height=H;ctx.fillStyle=dark?'#17191c':'#fff';ctx.fillRect(0,0,W,H);if(ctx.getImageData(0,0,1,1).data[3]!==255)throw Object.assign(new Error('image too tall'),{tooTall:true});ctx.font='bold 15px system-ui';ctx.fillStyle=dark?'#ebedef':'#202329';
   const hA=`${t('original')}${fileNames.A?' · '+fileNames.A:''}`,hB=`${t('changed')}${fileNames.B?' · '+fileNames.B:''}`;ctx.fillText(unified?`${hA}  →  ${hB}`:hA,PAD,PAD+14,unified?colW:colW-PAD);if(!unified)ctx.fillText(hB,W/2+PAD,PAD+14,colW-PAD);
   ctx.font=font;let y=PAD+40;
   // 统一视图与页面一致，用两列行号（原始 / 修改后）；删除行只有原始行号，新增行只有修改后行号
@@ -731,10 +732,10 @@ $('exampleBtn').onclick=()=>{cancelLoads();txtA.value=EX_A;txtB.value=EX_B;fileN
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('exportModal').open&&$('panel').classList.contains('open')){e.preventDefault();setPanel(false)}});
 /* 点击导出弹窗的遮罩（而不是弹窗本身）即可关闭，与 Esc 一致 */
 /* 按下时就关闭会让触屏随后合成的 click 落到遮罩下面的页面上：按下与点击都落在遮罩上才关闭；在遮罩上拖动也不去滚动背后的页面 */
-function closeOnBackdrop(dlg,close){let down=false;dlg.addEventListener('pointerdown',e=>{down=e.target===dlg});dlg.addEventListener('pointercancel',()=>{down=false});dlg.addEventListener('click',e=>{const hit=down&&e.target===dlg;down=false;if(hit)close()});dlg.addEventListener('touchmove',e=>{if(e.target===dlg){e.preventDefault();return}const box=e.target?.closest?.('.modal');if(box&&box.scrollHeight<=box.clientHeight&&!e.target.closest('input,textarea,select'))e.preventDefault()},{passive:false})}
+function closeOnBackdrop(dlg,close){let down=false;dlg.addEventListener('pointerdown',e=>{down=e.target===dlg});dlg.addEventListener('pointercancel',()=>{down=false});dlg.addEventListener('click',e=>{const hit=down&&e.target===dlg;down=false;if(hit)close()});dlg.addEventListener('touchmove',e=>{if(e.target===dlg){e.preventDefault();return}const el=e.target?.nodeType===3?e.target.parentElement:e.target,box=el?.closest?.('.modal');if(box&&box.scrollHeight<=box.clientHeight&&!el.closest('input,textarea,select'))e.preventDefault()},{passive:false})}
 closeOnBackdrop($('exportModal'),()=>$('exportModal').close());
 closeOnBackdrop($('panelBg'),()=>setPanel(false));
-$('panel').addEventListener('touchmove',e=>{const b=e.target.closest('.panel-body');if(!b||(b.scrollHeight<=b.clientHeight&&!e.target.closest('input,textarea,select')))e.preventDefault()},{passive:false});
+$('panel').addEventListener('touchmove',e=>{const el=e.target?.nodeType===3?e.target.parentElement:e.target,b=el?.closest?.('.panel-body');if(!b||(b.scrollHeight<=b.clientHeight&&!el?.closest?.('input,textarea,select')))e.preventDefault()},{passive:false});
 applyTheme();syncUI(true);applyLang();updateMeta();
 </script>
 </body>

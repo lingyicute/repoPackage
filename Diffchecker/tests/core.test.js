@@ -1656,3 +1656,121 @@ test('scrollToEl: 在结果容器内定位差异时不拖动外层页面，表�
     if (f.startsWith('excel')) assert.equal(got.left, 528);
   }
 });
+
+test('弹窗遮罩：触控目标为文本节点时仍可识别未溢出弹窗并阻止滚动背景页', () => {
+  for (const f of ['text-compare.html', 'image-compare.html', 'excel-compare.html']) {
+    const { closeOnBackdrop } = run(between(script(f), 'function closeOnBackdrop', '\ncloseOnBackdrop('), 'closeOnBackdrop');
+    const h = {}, dlg = { addEventListener: (n, fn) => { h[n] = fn; } };
+    closeOnBackdrop(dlg, () => {});
+    const shortModal = { scrollHeight: 200, clientHeight: 200 };
+    const parentEl = { closest: s => (s === '.modal' ? shortModal : null) };
+    const textNode = { nodeType: 3, parentElement: parentEl };
+    let blocked = 0;
+    h.touchmove({ target: textNode, preventDefault: () => blocked++ });
+    assert.equal(blocked, 1, f);
+  }
+});
+
+test('文本页 scrollToEl: 并排视图横向溢出时定位到纯新增或纯删除一侧，双侧改动不强行横滚', () => {
+  const code = between(script('text-compare.html'), 'const scrollBehavior=', '\nfunction goChange');
+  const ctx = { matchMedia: () => ({ matches: false }), window: { innerHeight: 800 } };
+  vm.createContext(ctx);
+  vm.runInContext(code + ';this.scrollToEl=scrollToEl;', ctx);
+  let got = null;
+  const mkBox = scrollLeft => ({
+    scrollTop: 0, scrollLeft, clientHeight: 400, clientWidth: 360, scrollWidth: 640,
+    getBoundingClientRect: () => ({ top: 100, bottom: 500, left: 0, right: 360 }),
+    querySelector: () => ({ getBoundingClientRect: () => ({ height: 32 }) }),
+    scrollTo: o => { got = o; },
+    scrollIntoView: () => {},
+  });
+  const mkRow = (delRect, insRect) => ({
+    classList: { contains: c => c === 'split' },
+    getBoundingClientRect: () => ({ top: 300, height: 20 }),
+    querySelector: s => s === 'td.code.del' ? (delRect && { getBoundingClientRect: () => delRect }) : s === 'td.code.ins' ? (insRect && { getBoundingClientRect: () => insRect }) : null,
+  });
+  ctx.scrollToEl(mkBox(0), mkRow(null, { left: 340, right: 620 }));
+  assert.equal(got.left, 296);
+  ctx.scrollToEl(mkBox(280), mkRow({ left: -240, right: 20 }, null));
+  assert.equal(got.left, 0);
+  ctx.scrollToEl(mkBox(100), mkRow({ left: -60, right: 200 }, { left: 240, right: 500 }));
+  assert.equal(got.left, undefined);
+});
+
+test('image.cropThumb: 编码缩略图后立即归零释放临时画布，且忽略无效的空数据 URL', () => {
+  const s = script('image-compare.html');
+  const code = between(s, 'function cropCanvas', 'function renderList');
+  const created = [];
+  let nextUrl = 'data:image/png;base64,AA==';
+  const ctx = {
+    mk: (w, h) => {
+      const c = { width: Math.round(w), height: Math.round(h), getContext: () => ({ drawImage() {} }), toDataURL: () => nextUrl };
+      created.push(c);
+      return c;
+    },
+    dropCanvas: c => { if (c) { c.width = 0; c.height = 0; } },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code + ';this.cropThumb=cropThumb;', ctx);
+  assert.equal(ctx.cropThumb({}, { x: 0, y: 0, w: 40, h: 30 }), 'data:image/png;base64,AA==');
+  assert.equal(created[0].width, 0);
+  assert.equal(created[0].height, 0);
+  nextUrl = 'data:,';
+  assert.equal(ctx.cropThumb({}, { x: 0, y: 0, w: 40, h: 30 }), '');
+  assert.equal(created[1].width, 0);
+  assert.equal(created[1].height, 0);
+});
+
+test('image.buildBases: 画布不可用时释放失败画布并按比例降级，不再静默读出全零像素', () => {
+  const s = script('image-compare.html');
+  const code = between(s, 'function makeBases', 'function drawAligned');
+  const canvases = [];
+  const ctx = {
+    S: { A: { c: {}, w: 2000, h: 2000 }, B: { c: {}, w: 2000, h: 2000 }, align: { dx: 0, dy: 0, rot: 0, scale: 1, fh: false, fv: false }, W: 0, H: 0, scale: 1, frame: null },
+    baseA: null, baseB: null, mainCanvas: null, overlay: null, dataA: null, dataB: null, diffMap: null, signMap: null,
+    stage: { replaceChildren() {} },
+    $: () => ({}),
+    clearList() {},
+    comparisonFrame: () => ({ x: 0, y: 0, w: 2000, h: 2000 }),
+    workingFrame: () => ({ w: 2000, h: 2000, scale: 1 }),
+    mk: (w, h) => {
+      const c = {
+        width: Math.round(w), height: Math.round(h),
+        getContext: () => ({ drawImage() {}, translate() {}, getImageData: () => ({ data: new Uint8ClampedArray(4) }) }),
+      };
+      canvases.push(c);
+      return c;
+    },
+    canvasUsable: c => c.width * c.height <= 2000000,
+    dropCanvas: c => { if (c) { c.width = 0; c.height = 0; } },
+    drawAligned() {},
+    computeDiffMap() {},
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code + ';this.buildBases=buildBases;', ctx);
+  ctx.buildBases();
+  assert.ok(ctx.S.W < 2000 && ctx.S.W * ctx.S.H <= 2000000);
+  assert.ok(ctx.S.scale < 1);
+  assert.equal(canvases[0].width, 0);
+  assert.equal(canvases[0].height, 0);
+});
+
+test('image.hideLoading: 任一侧仍在载入时不隐藏提示，取消全部载入后不论语言均收起提示', () => {
+  const s = script('image-compare.html');
+  const code = between(s, 'function hideLoading', 'function cancelLoads');
+  const noticeEl = { textContent: 'Loading image...', _t: 1, shown: true, classList: { remove(c) { if (c === 'show') noticeEl.shown = false; } } };
+  const ctx = {
+    I18N: { en: { loading: 'Loading image...' }, zh: { loading: '正在加载图片…' } },
+    loadVersion: { A: 0, B: 0 },
+    pending: { A: true, B: true },
+    $: () => noticeEl,
+    clearTimeout() {},
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code + ';this.hideLoading=hideLoading;this.cancelLoad=cancelLoad;', ctx);
+  ctx.cancelLoad('A');
+  assert.equal(noticeEl.shown, true);
+  noticeEl.textContent = '正在加载图片…';
+  ctx.cancelLoad('B');
+  assert.equal(noticeEl.shown, false);
+});

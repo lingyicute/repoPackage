@@ -65,8 +65,8 @@ td.chg{background:var(--chg-block)}td.cdel{background:var(--del-block)}td.cins{b
 td.colx{background:repeating-linear-gradient(135deg,rgba(100,110,120,.08) 0 6px,transparent 6px 12px)}
 mark.d{background:var(--del-hl);color:var(--del-fg);border-radius:2px;text-decoration:line-through}mark.i{background:var(--ins-hl);color:var(--ins-fg);border-radius:2px}
 .old{opacity:.8}.arrow{color:var(--fg3);padding:0 4px}
-tr.collapsed:focus-visible td{color:var(--accent2);box-shadow:inset 0 0 0 2px #159b58}
-tr.collapsed td{background:var(--bg2);color:var(--fg2);text-align:center;font-family:system-ui,sans-serif;font-size:12px;cursor:pointer;padding:4px}
+table.grid tr.collapsed:focus-visible td{color:var(--accent2);box-shadow:inset 0 0 0 2px #159b58}
+table.grid tr.collapsed td{background:var(--bg2);color:var(--fg2);text-align:center;font-family:system-ui,sans-serif;font-size:12px;cursor:pointer;padding:4px;max-width:none}
 tr.collapsed .fold-lbl{display:inline-block;position:sticky;left:12px;right:12px;max-width:calc(100vw - 48px)}
 tr.focus td,th.focus{box-shadow:inset 0 -2px 0 var(--accent)}
 .identical{display:flex;flex-direction:column;align-items:center;gap:6px;padding:54px 20px;text-align:center}
@@ -82,18 +82,18 @@ tr.focus td,th.focus{box-shadow:inset 0 -2px 0 var(--accent)}
 .switch{position:relative;width:34px;height:20px;flex:none;border-radius:20px;background:var(--border2);border:0;transition:.15s}
 .switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:.15s}
 .switch[aria-checked="true"]{background:var(--accent)}.switch[aria-checked="true"]::after{left:16px}
-.modal-bg{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);border:0;background:transparent;color:inherit;display:none;align-items:center;justify-content:center}
+.modal-bg{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:max(12px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));border:0;background:transparent;color:inherit;display:none;align-items:center;justify-content:center}
 .modal-bg::backdrop{background:rgba(0,0,0,.35)}
 .modal-bg[open]{display:flex}
-.modal{background:var(--bg);border-radius:14px;width:440px;max-width:94vw;max-height:92vh;max-height:92dvh;overflow:auto;overscroll-behavior:contain;box-shadow:var(--shadow);padding:20px 22px}.modal h3{margin:0 0 12px;font-size:17px}
+.modal{background:var(--bg);border-radius:14px;width:440px;max-width:100%;max-height:100%;overflow:auto;overscroll-behavior:contain;box-shadow:var(--shadow);padding:20px 22px}.modal h3{margin:0 0 12px;font-size:17px}
 .modal label{display:block;font-size:12px;color:var(--fg2);margin:12px 0 6px}
 .choices{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .choice{border:1px solid var(--border2);border-radius:10px;padding:10px 12px;cursor:pointer;background:var(--bg);text-align:left}.choice[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-bg)}
 .choice b{display:block;font-size:13px}.choice small{color:var(--fg2);font-size:11px;line-height:1.3;display:block;margin-top:2px}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;flex-wrap:wrap}
-.offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 32px);transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s}.offline-notice.show{opacity:1}
+.offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 32px);transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;overflow-wrap:anywhere;opacity:0;pointer-events:none;transition:opacity .2s}.offline-notice.show{opacity:1}
 [data-theme="dark"] .offline-notice{border-color:#2f4a3a;background:#1c2b23;color:#c8f5e6;box-shadow:0 5px 24px #00000066}
-.err{color:var(--danger);font-size:13px;padding:0 12px 10px}
+.err{color:var(--danger);font-size:13px;padding:0 12px 10px;overflow-wrap:anywhere}
 footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));border-top:1px solid var(--border)}
 .hidden{display:none!important}
 .file-input{position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;overflow:hidden;clip-path:inset(50%);pointer-events:none}
@@ -101,7 +101,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 @media (max-width:480px){.offline-navigation{gap:4px 10px;padding:0 max(10px,env(safe-area-inset-right)) 0 max(10px,env(safe-area-inset-left))}.offline-tools{gap:10px}.offline-actions{gap:6px}.offline-language{padding:5px 8px;font-size:12px}.choices{grid-template-columns:1fr}}
 @media (max-width:640px){.hero{margin:2px 0 12px}.hero h1{font-size:24px}.drop{min-height:120px;margin:8px;padding:12px}.preview{margin:0 8px 8px;max-height:180px}.details select,.details input[type=number]{font-size:16px}.toolbar{position:static}.stats{margin-left:0;width:100%}.grid-wrap{max-height:70vh;max-height:70dvh}table.grid{--nw:36px;font-size:12px}table.grid th,table.grid td{padding:2px 6px;min-width:7ch;max-width:min(240px,68vw)}table.grid th.num,table.grid td.num{padding:2px 4px}.modal{padding:16px}}
 @media (max-height:520px){.toolbar{position:static}}
-@media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.row{padding:8px 0}.switch::before{content:"";position:absolute;inset:-6px -10px}.details select,.details input[type=number]{font-size:16px}tr.collapsed td{padding:9px 4px}}
+@media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.row{padding:8px 0}.switch::before{content:"";position:absolute;inset:-6px -10px}.details select,.details input[type=number]{font-size:16px}table.grid tr.collapsed td{padding:9px 4px}}
 @media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar .btn,.toolbar .seg,.panel,.panel-bg,footer,.modal-bg,.offline-notice,.hero,.no-print{display:none!important}main{padding:0;max-width:none}.toolbar{position:static;border:0;padding:0 0 8px}.grid-wrap{max-height:none;min-height:0;overflow:visible;border:0}table.grid{font-size:10px;width:100%}table.grid th,table.grid td{position:static!important;min-width:0;max-width:none;overflow-wrap:anywhere;padding:1px 4px}table.grid tr{break-inside:avoid}tr.collapsed .fold-lbl{position:static;max-width:none}table.grid thead{display:table-header-group}body{font-size:11px;display:block;height:auto}}
 </style>
 </head>
@@ -634,7 +634,7 @@ async function loadFile(f,side){const saved=/\.diffchecker$/i.test(f.name);if(sa
       mergeOpts(j.options);saveOpts();syncUI();
       setWorkbook('A',left,typeof j.leftName==='string'?j.leftName:'');setWorkbook('B',right,typeof j.rightName==='string'?j.rightName:'');
       for(const [sd,g] of [['A',j.left],['B',j.right]])if(g.header!=null){SEL[sd].header=g.header;SEL[sd].auto=false;renderDetails(sd)}
-      notice(t('restored'));run();return}
+      notice(t('restored'));if(run())$('result').scrollIntoView({behavior:scrollBehavior(),block:'start'});return}
     else{const text=decodeBuf(buf);if(text.includes('\0'))throw new Error(t('binaryTable'));wb=parseCsv(text,/\.tsv$/i.test(f.name)?'\t':undefined)}
     setWorkbook(side,wb,f.name);if(!RES||run())notice(t('loaded',{name:f.name}))}catch(e){if(!current())return;console.error(e);$('err'+side).textContent=t('parseError',{name:f.name,msg:e.message})}}
 function validateSavedRows(rows,error){
@@ -669,7 +669,7 @@ function renderDetails(side){const wb=WB[side],sel=SEL[side],det=$('det'+side);c
   if(fq)det.querySelector(fq).focus();det.querySelector('[data-sheet]').onchange=e=>{const prev=sel.sheet;let ok=true;sel.sheet=+e.target.value;$('err'+side).textContent='';/* 选中的工作表损坏读不出来时退回原来的表并给出提示，而不是停在一张一比较就报错的表上 */try{autoHeader(side)}catch(err){console.error(err);ok=false;$('err'+side).textContent=t('parseError',{name:wb.sheets[sel.sheet].name,msg:err.message});sel.sheet=prev}renderDetails(side);if(ok&&RES)run()};det.querySelector('[data-header]').onchange=e=>{const raw=Math.floor(e.target.valueAsNumber);sel.header=Number.isSafeInteger(raw)&&raw>=1?Math.min(raw,1048576)-1:0;sel.auto=false;renderDetails(side);if(RES)run()};
   const pv=$('prev'+side);pv.classList.remove('hidden');const rows=body.slice(0,30);let h='<table><tr><th></th>';for(let c=0;c<Math.min(cols,40);c++)h+=`<th>${colName(c)}</th>`;h+='</tr>';rows.forEach((r,i)=>{h+=`<tr class="${i===sel.header&&opts.mode==='table'?'hdr':''}"><th>${i+1}</th>`;for(let c=0;c<Math.min(cols,40);c++)h+=`<td title="${esc(r[c]?.f||'')}">${esc(cellText(r[c]))}</td>`;h+='</tr>'});pv.innerHTML=h+'</table>'}
 $('swapBtn').onclick=()=>{if(!WB.A||!WB.B)return;cancelLoads();[WB.A,WB.B]=[WB.B,WB.A];[NAMES.A,NAMES.B]=[NAMES.B,NAMES.A];[SEL.A,SEL.B]=[SEL.B,SEL.A];for(const s of ['A','B']){$('name'+s).textContent=NAMES[s];$('err'+s).textContent='';renderDetails(s)}if(RES)run()};
-$('findBtn').onclick=()=>{if(!WB.A||!WB.B)return notice(t('needTwo'));if(run())$('result').scrollIntoView({behavior:'smooth',block:'start'})};
+$('findBtn').onclick=()=>{if(!WB.A||!WB.B)return notice(t('needTwo'));if(run())$('result').scrollIntoView({behavior:scrollBehavior(),block:'start'})};
 function clearResult(){RES=null;expanded.clear();$('result').classList.add('hidden');$('exportModal').close();$('gridWrap').replaceChildren()}
 function run(){if(!WB.A||!WB.B)return false;
   try{const gA=WB.A.load(WB.A.sheets[SEL.A.sheet]),gB=WB.B.load(WB.B.sheets[SEL.B.sheet]);RES=compare(gA,gB,SEL.A.header,SEL.B.header);expanded=new Set();focusIdx=-1;$('result').classList.remove('hidden');render();return true}
@@ -758,16 +758,16 @@ function exportXlsx(){const R=RES;const rows=[[{v:t('origRow'),s:1},{v:t('chgRow
 function exampleWb(v){const H=['Order ID','Site','Severity','Assigned within (h)','Attachment limit (MB)','Rule','Review date','Owner'];const base=[['WO-1047','North Depot B','High',8,20,'VR-12','2026-05-12','R. Okafor'],['WO-1048','East Yard','Low',24,20,'VR-03','2026-05-13','M. Chen'],['WO-1049','Harbour Gate','Critical',2,20,'VR-12','2026-05-13','S. Patel'],['WO-1050','North Depot A','Medium',16,20,'VR-07','2026-05-14','R. Okafor'],['WO-1051','West Plant','High',8,20,'VR-12','2026-05-15','L. Novak'],['WO-1052','Harbour Gate','Low',24,20,'VR-03','2026-05-16','S. Patel']];
   let rows=[['Atlas Field Operations — work order register'],[],H,...base];if(v){rows=[['Atlas Field Operations — work order register'],[],[...H.slice(0,6),'Review date','Owner','Status'],['WO-1047','North Depot B','Major',6,25,'VR-14','2026-06-09','R. Okafor','Approved'],['WO-1048','East Yard','Low',24,25,'VR-03','2026-05-13','M. Chen','Closed'],['WO-1050','North Depot A','Medium',16,25,'VR-07','2026-05-14','R. Okafor','Scheduled'],['WO-1051','West Plant','High',6,25,'VR-14','2026-05-15','L. Novák','In Progress'],['WO-1052','Harbour Gate','Low',24,25,'VR-03','2026-05-16','S. Patel','Closed'],['WO-1053','South Ring','Critical',2,25,'VR-14','2026-06-10','D. Haddad','Awaiting Approval']]}
   const cols=Math.max(...rows.map(r=>r.length));return {type:'json',sheets:[{name:'Work orders',grid:{rows:rows.map(r=>r.map(x=>({v:String(x),f:null,d:false}))),cols}}],load:s=>s.grid}}
-$('exampleBtn').onclick=()=>{cancelLoads();setWorkbook('A',exampleWb(0),'work-orders-v1.xlsx');setWorkbook('B',exampleWb(1),'work-orders-v2.xlsx');run();$('result').scrollIntoView({behavior:'smooth',block:'start'})};
+$('exampleBtn').onclick=()=>{cancelLoads();setWorkbook('A',exampleWb(0),'work-orders-v1.xlsx');setWorkbook('B',exampleWb(1),'work-orders-v2.xlsx');run();$('result').scrollIntoView({behavior:scrollBehavior(),block:'start'})};
 ['dragover','drop'].forEach(n=>window.addEventListener(n,e=>{if(hasFiles(e))e.preventDefault()}));
 /* Esc 关闭侧栏与弹窗 */
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('exportModal').open&&$('panel').classList.contains('open')){e.preventDefault();setPanel(false)}});
 /* 点击导出弹窗的遮罩（而不是弹窗本身）即可关闭，与 Esc 一致 */
 /* 按下时就关闭会让触屏随后合成的 click 落到遮罩下面的页面上：按下与点击都落在遮罩上才关闭；在遮罩上拖动也不去滚动背后的页面 */
-function closeOnBackdrop(dlg,close){let down=false;dlg.addEventListener('pointerdown',e=>{down=e.target===dlg});dlg.addEventListener('pointercancel',()=>{down=false});dlg.addEventListener('click',e=>{const hit=down&&e.target===dlg;down=false;if(hit)close()});dlg.addEventListener('touchmove',e=>{if(e.target===dlg){e.preventDefault();return}const box=e.target?.closest?.('.modal');if(box&&box.scrollHeight<=box.clientHeight&&!e.target.closest('input,textarea,select'))e.preventDefault()},{passive:false})}
+function closeOnBackdrop(dlg,close){let down=false;dlg.addEventListener('pointerdown',e=>{down=e.target===dlg});dlg.addEventListener('pointercancel',()=>{down=false});dlg.addEventListener('click',e=>{const hit=down&&e.target===dlg;down=false;if(hit)close()});dlg.addEventListener('touchmove',e=>{if(e.target===dlg){e.preventDefault();return}const el=e.target?.nodeType===3?e.target.parentElement:e.target,box=el?.closest?.('.modal');if(box&&box.scrollHeight<=box.clientHeight&&!el.closest('input,textarea,select'))e.preventDefault()},{passive:false})}
 closeOnBackdrop($('exportModal'),()=>$('exportModal').close());
 closeOnBackdrop($('panelBg'),()=>setPanel(false));
-$('panel').addEventListener('touchmove',e=>{const b=e.target.closest('.panel-body');if(!b||(b.scrollHeight<=b.clientHeight&&!e.target.closest('input,textarea,select')))e.preventDefault()},{passive:false});
+$('panel').addEventListener('touchmove',e=>{const el=e.target?.nodeType===3?e.target.parentElement:e.target,b=el?.closest?.('.panel-body');if(!b||(b.scrollHeight<=b.clientHeight&&!el?.closest?.('input,textarea,select')))e.preventDefault()},{passive:false});
 applyTheme();syncUI();applyLang();
 </script>
 </body>
