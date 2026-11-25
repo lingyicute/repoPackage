@@ -1637,19 +1637,19 @@ test('image.grayPatch: 采样读取像素后立即归零释放临时画布', () 
 test('scrollToEl: 在结果容器内定位差异时不拖动外层页面，表格页同时横向滚到改动单元格', () => {
   for (const [f, end] of [['text-compare.html', '\nfunction goChange'], ['excel-compare.html', "\n$('prevBtn')"]]) {
     const code = between(script(f), 'const scrollBehavior=', end);
-    const ctx = { matchMedia: () => ({ matches: false }), window: { innerHeight: 800 } };
+    let outer = 0, got = null;
+    const ctx = { matchMedia: () => ({ matches: false }), window: { innerHeight: 800, scrollBy: () => outer++ } };
     vm.createContext(ctx);
     vm.runInContext(code + ';this.scrollToEl=scrollToEl;', ctx);
-    let outer = 0, got = null;
     const box = {
-      scrollTop: 0, scrollLeft: 0, clientHeight: 400, clientWidth: 360,
+      scrollTop: 0, scrollLeft: 0, clientHeight: 400, scrollHeight: 1800, clientWidth: 360, closest: () => null,
       getBoundingClientRect: () => ({ top: 100, bottom: 500, left: 0, right: 360 }),
       querySelector: s => s === 'thead' ? { getBoundingClientRect: () => ({ height: 36 }) } : s === 'th.num.b' ? { getBoundingClientRect: () => ({ right: 80 }) } : null,
       scrollTo: o => { got = o; },
-      scrollIntoView: () => { outer++; },
+
     };
     const cell = { getBoundingClientRect: () => ({ left: 620, right: 700 }) };
-    const row = { tagName: 'TR', getBoundingClientRect: () => ({ top: 900, height: 20 }), querySelector: () => cell };
+    const row = { tagName: 'TR', classList: { contains: () => false }, getBoundingClientRect: () => ({ top: 900, height: 20 }), querySelector: () => cell };
     ctx.scrollToEl(box, row);
     assert.equal(outer, 0, f);
     assert.equal(got.top, 592, f);
@@ -1678,11 +1678,10 @@ test('文本页 scrollToEl: 并排视图横向溢出时定位到纯新增或纯�
   vm.runInContext(code + ';this.scrollToEl=scrollToEl;', ctx);
   let got = null;
   const mkBox = scrollLeft => ({
-    scrollTop: 0, scrollLeft, clientHeight: 400, clientWidth: 360, scrollWidth: 640,
+    scrollTop: 0, scrollLeft, clientHeight: 400, scrollHeight: 1800, clientWidth: 360, scrollWidth: 640, closest: () => null,
     getBoundingClientRect: () => ({ top: 100, bottom: 500, left: 0, right: 360 }),
     querySelector: () => ({ getBoundingClientRect: () => ({ height: 32 }) }),
     scrollTo: o => { got = o; },
-    scrollIntoView: () => {},
   });
   const mkRow = (delRect, insRect) => ({
     classList: { contains: c => c === 'split' },
@@ -1701,10 +1700,10 @@ test('image.cropThumb: 编码缩略图后立即归零释放临时画布，且忽
   const s = script('image-compare.html');
   const code = between(s, 'function cropCanvas', 'function renderList');
   const created = [];
-  let nextUrl = 'data:image/png;base64,AA==';
+  let nextUrl = 'data:image/png;base64,AA==', hasContext = true;
   const ctx = {
     mk: (w, h) => {
-      const c = { width: Math.round(w), height: Math.round(h), getContext: () => ({ drawImage() {} }), toDataURL: () => nextUrl };
+      const c = { width: Math.round(w), height: Math.round(h), getContext: () => hasContext ? ({ drawImage() {} }) : null, toDataURL: () => nextUrl };
       created.push(c);
       return c;
     },
@@ -1719,6 +1718,9 @@ test('image.cropThumb: 编码缩略图后立即归零释放临时画布，且忽
   assert.equal(ctx.cropThumb({}, { x: 0, y: 0, w: 40, h: 30 }), '');
   assert.equal(created[1].width, 0);
   assert.equal(created[1].height, 0);
+  hasContext = false;
+  assert.equal(ctx.cropThumb({}, { x: 0, y: 0, w: 40, h: 30 }), '');
+  assert.equal(created[2].width, 0);
 });
 
 test('image.buildBases: 画布不可用时释放失败画布并按比例降级，不再静默读出全零像素', () => {
@@ -1748,11 +1750,15 @@ test('image.buildBases: 画布不可用时释放失败画布并按比例降级�
   };
   vm.createContext(ctx);
   vm.runInContext(code + ';this.buildBases=buildBases;', ctx);
-  ctx.buildBases();
-  assert.ok(ctx.S.W < 2000 && ctx.S.W * ctx.S.H <= 2000000);
+  const attempts = [];
+  ctx.buildBases(() => {
+    attempts.push(ctx.S.W);
+    if (attempts.length === 1) throw new Error('main canvas unavailable');
+  });
+  assert.deepEqual(attempts, [1414, 1000]);
+  assert.equal(ctx.S.W, 1000);
   assert.ok(ctx.S.scale < 1);
-  assert.equal(canvases[0].width, 0);
-  assert.equal(canvases[0].height, 0);
+  assert.ok(canvases.slice(0, -2).every(c => c.width === 0 && c.height === 0));
 });
 
 test('image.hideLoading: 任一侧仍在载入时不隐藏提示，取消全部载入后不论语言均收起提示', () => {
@@ -1817,7 +1823,7 @@ test('image.exportCanvas: 原分辨率导出时在分配叠加画布前先释放
   const s = script('image-compare.html');
   const code = between(s, 'function exportCanvas', 'function pngUrl');
   const events = [];
-  let seq = 0;
+  let seq = 0, drawingFails = false;
   const ctx = {
     MAX_EXPORT_PIXELS: 16 * 1024 * 1024,
     S: { mode: 'highlight', frame: { x: 0, y: 0, w: 400, h: 300 }, W: 200, H: 150, A: { c: {}, w: 400, h: 300 }, B: { c: {} }, align: {}, regions: [{ x: 0, y: 0, w: 10, h: 10 }], boxes: true, darken: false },
@@ -1830,7 +1836,7 @@ test('image.exportCanvas: 原分辨率导出时在分配叠加画布前先释放
     mk(w, h) {
       const id = ++seq;
       events.push('mk:' + id);
-      return { id, width: w, height: h, getContext: () => ({ drawImage() {}, translate() {}, scale() {} }) };
+      return { id, width: w, height: h, getContext: () => ({ drawImage() { if (drawingFails) throw new Error('draw failed'); }, translate() {}, scale() {} }) };
     },
     dropCanvas(c) { if (c) { events.push('drop:' + c.id); c.width = 0; c.height = 0; } },
   };
@@ -1841,16 +1847,28 @@ test('image.exportCanvas: 原分辨率导出时在分配叠加画布前先释放
   assert.ok(events.indexOf('drop:1') < events.indexOf('mk:4'));
   assert.ok(events.indexOf('drop:2') < events.indexOf('mk:4'));
   assert.ok(events.includes('drop:4'));
+  drawingFails = true;
+  assert.throws(() => ctx.exportCanvas(true), /draw failed/);
+  assert.deepEqual(events.slice(-4), ['mk:5', 'mk:6', 'drop:5', 'drop:6']);
 });
 
 test('image.alignKeyboardOpen 与 drawAlign: 大屏软键盘弹出取消吸顶，仅改修改图时不重绘原图', () => {
   const s = script('image-compare.html');
-  const kbCode = between(s, 'function alignKeyboardOpen', 'function syncAlignLayout');
+  const kbCode = between(s, 'function keyboardViewport', 'function syncAlignLayout');
   const drawCode = between(s, 'function drawAlign(', '\nfunction syncAlignInputs');
   const ctx = { window: { innerHeight: 932, visualViewport: { height: 610 } } };
   vm.createContext(ctx);
-  vm.runInContext(kbCode + ';this.alignKeyboardOpen=alignKeyboardOpen;', ctx);
+  vm.runInContext(kbCode + ';this.alignKeyboardOpen=alignKeyboardOpen;this.syncKeyboardViewport=syncKeyboardViewport;', ctx);
   assert.equal(ctx.alignKeyboardOpen(), true);
+  const props = new Map(), dialog = { style: { setProperty: (k, v) => props.set(k, v), removeProperty: k => props.delete(k) } };
+  ctx.window.visualViewport.offsetTop = 40;
+  ctx.syncKeyboardViewport(dialog);
+  assert.deepEqual([...props], [['--dialog-top', '40px'], ['--dialog-height', '610px']]);
+  ctx.window.visualViewport.scale = 2;
+  assert.equal(ctx.alignKeyboardOpen(), false); // 捏合放大页面不是键盘
+  ctx.syncKeyboardViewport(dialog);
+  assert.equal(props.size, 0);
+  ctx.window.visualViewport.scale = 1;
   ctx.window.visualViewport.height = 900;
   assert.equal(ctx.alignKeyboardOpen(), false);
   ctx.window.innerHeight = 420; ctx.window.visualViewport.height = 420;
@@ -1874,27 +1892,33 @@ test('image.alignKeyboardOpen 与 drawAlign: 大屏软键盘弹出取消吸顶�
   assert.deepEqual(drawn, ['B']);
 });
 
-test('scrollToEl: 仅顶部或底部窄条可见时滚入视口，短容器完整可见时不额外滚动', () => {
+test('scrollToEl: 按滚动后的差异行判定是否超出可视视口或被工具条遮住', () => {
   for (const [f, end] of [['text-compare.html', '\nfunction goChange'], ['excel-compare.html', "\n$('prevBtn')"]]) {
     const code = between(script(f), 'const scrollBehavior=', end);
-    const ctx = { matchMedia: () => ({ matches: false }), window: { innerHeight: 667 } };
+    let outer = [];
+    const win = { innerHeight: 667, scrollBy: opt => outer.push(opt.top) };
+    const ctx = { matchMedia: () => ({ matches: true }), window: win, getComputedStyle: () => ({ position: 'sticky', top: '0px' }) };
     vm.createContext(ctx);
     vm.runInContext(code + ';this.scrollToEl=scrollToEl;', ctx);
-    const runWith = (top, bottom) => {
-      let outer = 0;
+    const runWith = (top, rowTop, max = 1400, sticky = false) => {
+      outer = [];
       const box = {
-        scrollTop: 0, scrollLeft: 0, clientHeight: bottom - top, clientWidth: 360, scrollWidth: 360,
-        getBoundingClientRect: () => ({ top, bottom, left: 0, right: 360 }),
-        querySelector: () => null, scrollTo() {}, scrollIntoView() { outer++; },
+        scrollTop: 0, scrollLeft: 0, clientHeight: 400, scrollHeight: 400 + max, clientWidth: 360, scrollWidth: 360,
+        getBoundingClientRect: () => ({ top, bottom: top + 400, left: 0, right: 360 }),
+        closest: () => sticky ? { querySelector: () => ({ offsetHeight: 60 }) } : null,
+        querySelector: () => null, scrollTo() {},
       };
-      const row = { tagName: 'TR', getBoundingClientRect: () => ({ top: top + 20, height: 20 }), querySelector: () => null };
+      const row = { tagName: 'TR', classList: { contains: () => false }, getBoundingClientRect: () => ({ top: rowTop, height: 20 }), querySelector: () => null };
       ctx.scrollToEl(box, row);
       return outer;
     };
-    assert.equal(runWith(600, 1000), 1, f);
-    assert.equal(runWith(-340, 60), 1, f);
-    assert.equal(runWith(100, 180), 0, f);
-    assert.equal(runWith(0, 600), 0, f);
+    assert.deepEqual(runWith(475, 1250), [26], f); // 相当一段容器可见，居中的目标仍在屏外
+    assert.deepEqual(runWith(475, 495), [], f); // 不需要移动已可见的差异
+    assert.deepEqual(runWith(100, 490, 0), [], f); // 容器不能再向下滚动
+    assert.deepEqual(runWith(-100, 200, 0), [], f); // 不把实际留在容器底部的差异拉回中心
+    assert.deepEqual(runWith(-100, 45, 1400, true), [-23], f); // 被吸顶工具条挡住
+    win.visualViewport = { offsetTop: 80, height: 270 };
+    assert.deepEqual(runWith(250, 750), [118], f);
   }
 });
 
@@ -1914,4 +1938,155 @@ test('翻译插值与导出文件名: 单遍替换不误改文件名中的占位
     assert.equal(ctx.t('m', { name: 'a{msg}.txt', msg: 'err' }), 'a{msg}.txt: err', f);
     assert.equal(ctx.baseName(), exp, f);
   }
+});
+
+test('文本页：实时模式只在后台刷新时保留输入焦点和滚动位置', () => {
+  const code = between(script('text-compare.html'), 'function run(keep)', '\nconst CTX=');
+  let jumps = 0, blurs = 0;
+  const editor = { value: 'a', blur() { blurs++; } };
+  const ctx = {
+    rt: 0, opts: { realtime: true }, fileNames: {}, txtA: editor, txtB: { value: 'b' },
+    lastDiff: null, expanded: null, focusIdx: -1, document: { activeElement: editor },
+    clearPrintResult() {}, clearTimeout() {}, computeDiff: () => ({}), render() {}, scrollBehavior: () => 'auto',
+    $: () => ({ classList: { remove() {} }, scrollIntoView() { jumps++; } }),
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code + ';run(true);', ctx);
+  assert.deepEqual([jumps, blurs], [0, 0]);
+  vm.runInContext('run();', ctx);
+  assert.deepEqual([jumps, blurs], [1, 1]);
+});
+
+test('文本页：输入法组词暂停排队的对比，提交后恢复而快捷键不抢占组词或模态框', () => {
+  const code = between(script('text-compare.html'), 'let rt=0;', "\n$('swapBtn')");
+  const handlers = {}, editor = side => ({ addEventListener(n, fn) { handlers[side + n] = fn; } });
+  let next = 0, dialog = false, comparisons = 0;
+  const timers = new Map();
+  const ctx = {
+    txtA: editor('A'), txtB: editor('B'), opts: { realtime: true },
+    document: { addEventListener(n, fn) { handlers[n] = fn; }, querySelector: () => dialog },
+    clearTimeout(id) { timers.delete(id); }, setTimeout(fn, ms) { timers.set(++next, { fn, ms }); return next; },
+    updateMeta() {}, run() { comparisons++; },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  const key = (extra = {}) => handlers.keydown({ ctrlKey: true, key: 'Enter', preventDefault() {}, ...extra });
+  handlers.Ainput({});
+  assert.equal(timers.size, 2);
+  handlers.Acompositionstart(); handlers.Ainput({}); key();
+  assert.equal(timers.size, 0);
+  assert.equal(comparisons, 0);
+  handlers.Acompositionend();
+  const job = [...timers.values()].find(t => t.ms === 250);
+  assert.ok(job);
+  job.fn(); key({ isComposing: true }); key({ keyCode: 229 });
+  dialog = true; key(); dialog = false;
+  assert.equal(comparisons, 1);
+  key();
+  assert.equal(comparisons, 2);
+});
+
+test('文本字符串高亮：转义引号不能充当闭合引号，反斜杠只消费实际转义的字符', () => {
+  const { synClasses } = run(between(script('text-compare.html'), 'const SYN={', '/* ===================== state'), 'synClasses');
+  const slash = String.fromCharCode(92);
+  for (const lang of ['js', 'py']) for (const quote of ['"', "'"]) {
+    const unclosed = quote + 'quote ' + slash + quote;
+    assert.equal(synClasses(unclosed, lang)[0], '');
+    const closed = quote + 'path ' + slash + slash + quote;
+    assert.ok(synClasses(closed, lang).every(c => c === 's'));
+  }
+  assert.ok(synClasses('`line' + slash, 'js').every(c => c === 's'));
+});
+
+test('图片视口：只有高度改变时也重新适应，手动放大后保留中心点和缩放', () => {
+  const code = between(script('image-compare.html'), 'function fit()', "\nviewport.addEventListener('wheel'");
+  const viewport = { clientWidth: 380, clientHeight: 400 }, S = { W: 400, H: 200, mode: 'highlight' };
+  const ctx = { viewport, S, lastVpW: 0, lastVpH: 0, viewFitted: true, $: () => ({}), applyTransform() {}, drawOverlay() {}, scheduleOverlay() {} };
+  vm.createContext(ctx);
+  vm.runInContext(code + ';fit();', ctx);
+  const initialY = S.py;
+  viewport.clientHeight = 300;
+  vm.runInContext('syncViewportSize();', ctx);
+  assert.equal(S.py, initialY - 50);
+  vm.runInContext('setZoom(2,190,150);', ctx);
+  const center = [(190 - S.px) / S.zoom, (150 - S.py) / S.zoom];
+  viewport.clientWidth = 540;
+  viewport.clientHeight = 250;
+  vm.runInContext('syncViewportSize();', ctx);
+  assert.equal(S.zoom, 2);
+  assert.deepEqual([(270 - S.px) / S.zoom, (125 - S.py) / S.zoom], center);
+});
+
+test('图片切换模式：主画布分配失败时释放新画布，但不清空现有舞台', () => {
+  const code = between(script('image-compare.html'), 'function renderStage()', 'function syncFlickerButton');
+  let replacements = 0;
+  const canvas = { width: 100, height: 80 };
+  const ctx = {
+    S: { W: 100, H: 80, mode: 'highlight' }, mainCanvas: null,
+    stage: { replaceChildren() { replacements++; } }, mk: () => canvas, canvasUsable: () => false,
+    dropCanvas(c) { c.width = c.height = 0; },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  assert.throws(() => ctx.renderStage(), /compareFailed/);
+  assert.equal(replacements, 0);
+  assert.equal(canvas.width, 0);
+  assert.equal(canvas.height, 0);
+});
+
+test('交换图片时复用两张源图和已生成的缩略图', () => {
+  const code = between(script('image-compare.html'), "$('swapBtn').onclick=", "$('resetBtn').onclick=");
+  const btn = {}, shown = [], a = { c: {}, thumb: 'one' }, b = { c: {}, thumb: 'two' }, inverse = {};
+  const S = { A: a, B: b }, ctx = {
+    S, $: () => btn, invertAlign: () => inverse, comparisonFrame() {}, cancelLoads() {}, clearComparison() {},
+    renderInput(side) { shown.push(S[side].thumb); }, compare() {},
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  btn.onclick();
+  assert.equal(S.A, b);
+  assert.equal(S.B, a);
+  assert.equal(S.align, inverse);
+  assert.deepEqual(shown, ['two', 'one']);
+});
+
+test('表格文件识别尊重会话名及 ZIP 签名，不把笼统 ZIP MIME 当成工作簿', () => {
+  const s = script('excel-compare.html');
+  const code = between(s, 'const isZipSig=', '// OOXML 部件') + between(s, 'function workbookKind', 'async function loadFile');
+  const { workbookKind } = run(code, 'workbookKind');
+  const plain = Uint8Array.from([65, 44, 66]).buffer, zip = Uint8Array.of(0x50, 0x4B, 3, 4).buffer, ole = Uint8Array.of(0xD0, 0xCF, 0x11, 0xE0).buffer;
+  assert.equal(workbookKind({ name: 'save.diffchecker', type: 'application/zip' }, plain), 'saved');
+  assert.equal(workbookKind({ name: 'data.csv', type: 'application/zip' }, plain), 'csv');
+  assert.equal(workbookKind({ name: 'data.tsv', type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, plain), 'csv');
+  assert.equal(workbookKind({ name: 'data.dat' }, zip), 'xlsx');
+  assert.equal(workbookKind({ name: 'data.XLSM' }, ole), 'encrypted');
+  assert.equal(workbookKind({ name: 'data.xls' }, ole), 'legacyXls');
+});
+
+test('Excel 按表头排序后，排序同权但实际不同的列仍按同一顺序配对', () => {
+  const grid = rows => ({ rows: rows.map(r => r.map(v => ({ v }))) });
+  const a = 'é', b = 'e\u0301', old = { ...excel.opts };
+  try {
+    Object.assign(excel.opts, { mode: 'table', matchHeaders: false, sortCols: true, sortRows: false });
+    const result = excel.compare(grid([[a, b], ['one', 'two']]), grid([[b, a], ['two', 'one']]), 0, 0);
+    assert.equal(result.identical, true);
+    assert.equal(result.stats.cells, 0);
+  } finally { Object.assign(excel.opts, old); }
+});
+
+test('替换图片失败时保留输入，并尝试恢复为载入腾空的对比画布', () => {
+  const code = between(script('image-compare.html'), 'function setImage(', 'function renderInput');
+  const old = { c: {} }, S = { W: 120, A: old, B: { c: {} } }, events = [];
+  const ctx = {
+    S, HTMLCanvasElement: class {}, MAX_SOURCE_PIXELS: 1, fitsCanvas: () => true,
+    clearComparison() { events.push('release'); S.W = 0; },
+    sourceCanvas() { throw new Error('imageTooLarge'); }, dropCanvas() {},
+    compare() { events.push('compare'); S.W = 120; },
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  assert.throws(() => ctx.setImage('A', { naturalWidth: 60, naturalHeight: 60 }, 'replacement'), /imageTooLarge/);
+  assert.equal(S.A, old);
+  assert.equal(S.W, 120);
+  assert.deepEqual(events, ['release', 'compare']);
 });

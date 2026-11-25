@@ -364,13 +364,18 @@ test('DOM ping lists retain Unicode URL characters and ASCII separators', () => 
 	assert.equal(a.getAttribute('ping'), ` ${proxy('/a%C2%A0b')}\t${proxy('/next')} `);
 });
 
-test('history state updates resolve empty URLs against base and block dot-segment escapes', () => {
+test('history state updates preserve empty URLs, resolve whitespace against base, and block dot-segment escapes', () => {
 	const calls = [];
 	const save = (...args) => calls.push(args[2]);
 	const { ctx } = createBrowser({ DOMException, history: { pushState: save, replaceState: save } });
-	ctx.document.querySelectorAll = () => [{ getAttribute: name => name === 'data-pe-base' ? 'https://example.com/sub/index.html' : null }];
+	ctx.document.querySelectorAll = () => [{ getAttribute: name => name === 'data-pe-base' ? 'https://other.example/sub/index.html' : null }];
 	ctx.history.pushState(null, '', '');
-	assert.equal(calls[0], proxy('/sub/index.html'));
+	assert.equal(calls[0], '');
+	assert.throws(() => ctx.history.pushState(null, '', ' '), { name: 'SecurityError' });
+	ctx.document.querySelectorAll = () => [{ getAttribute: name => name === 'data-pe-base' ? 'https://example.com/sub/index.html' : null }];
+	ctx.history.pushState(null, '', ' ');
+	assert.equal(calls[1], proxy('/sub/index.html'));
+	calls.length = 1;
 	ctx.history.replaceState(null, '', '/~https%3A%2F%2Fexample.com./sub/next');
 	assert.equal(calls[1], '/~https%3A%2F%2Fexample.com./sub/next');
 	ctx.history.pushState(null, '', '/~https%3A%2F%2Fexample.com/../other.example/inside');
@@ -548,4 +553,46 @@ test('link events traverse shadow boundaries and prefer the nearest composed-pat
 		listeners[type]({ target: host, composedPath() { return []; } });
 		assert.equal(outer.getAttribute('href'), origin + '/~' + encodeURIComponent('https://other.example') + '/outer');
 	}
+});
+
+test('shim strips userinfo when normalizing already-proxied WebSocket URLs', () => {
+	const { ctx } = createBrowser();
+	const encoded = encodeURIComponent('wss://example.com');
+	assert.equal(
+		ctx.window.__PE__.rp(`wss://user:pass@proxy.example/~${encoded}/live?x=1`),
+		`wss://proxy.example/~${encoded}/live?x=1`
+	);
+	assert.equal(
+		ctx.window.__PE__.rp(`wss://user:pass@proxy.example./~${encoded}/live`),
+		`wss://proxy.example/~${encoded}/live`
+	);
+});
+
+test('attachShadow rewrites submitted forms and clicked links inside shadow roots', () => {
+	const shadowListeners = {};
+	const shadowRoot = { addEventListener(type, fn) { shadowListeners[type] = fn; } };
+	class ShadowElement {
+		constructor(tag) { this.tagName = tag.toUpperCase(); this.attrs = new Map(); }
+		getAttribute(name) { return this.attrs.has(name) ? this.attrs.get(name) : null; }
+		setAttribute(name, value) { this.attrs.set(name, String(value)); }
+		removeAttribute(name) { this.attrs.delete(name); }
+		attachShadow() { return shadowRoot; }
+	}
+	const { ctx } = createBrowser({ Element: ShadowElement });
+	const host = new ctx.Element('div');
+	assert.equal(host.attachShadow({ mode: 'closed' }), shadowRoot);
+
+	const form = new ctx.Element('form');
+	form.attrs.set('action', 'https://other.example/login');
+	const submitter = new ctx.Element('button');
+	submitter.attrs.set('formaction', 'https://other.example/alt');
+	shadowListeners.submit({ target: form, submitter });
+	assert.equal(form.getAttribute('action'), origin + '/~' + encodeURIComponent('https://other.example') + '/login');
+	assert.equal(submitter.getAttribute('formaction'), origin + '/~' + encodeURIComponent('https://other.example') + '/alt');
+
+	const link = new ctx.Element('a');
+	link.attrs.set('href', 'https://other.example/closed');
+	link.matches = selector => selector === 'a,area';
+	shadowListeners.click({ target: link, composedPath() { return [link]; } });
+	assert.equal(link.getAttribute('href'), origin + '/~' + encodeURIComponent('https://other.example') + '/closed');
 });

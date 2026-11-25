@@ -247,7 +247,9 @@ function decodeProxiedTarget(rawPath, suffix = '') {
 		const extraQuery = query ? (baseTarget.includes('?') ? (query.length > 1 ? sep + query.slice(1) : '') : query) : '';
 		const target = new URL(baseTarget + extraQuery + hash);
 		if (!['http:', 'https:', 'ws:', 'wss:'].includes(target.protocol) || target.username || target.password) return null;
-		const host = normalizeHostname(target.hostname);
+		const rawHost = target.hostname;
+		if (!rawHost || rawHost.startsWith('.') || rawHost.includes('..')) return null;
+		const host = normalizeHostname(rawHost);
 		if (!host) return null;
 		target.hostname = host;
 		return target;
@@ -771,7 +773,7 @@ function cookiePathMatches(cookiePath, requestPath) {
 /** Domain 必须匹配原始目标主机，不能因移除 Domain 而接受原本会被浏览器拒绝的 Cookie。 */
 function cookieDomainMatches(domain, targetUrl) {
 	if (!targetUrl) return false;
-	let value = String(domain).replace(/^\./, '');
+	const value = String(domain).replace(/^\./, '');
 	if (!value || value.endsWith('.') || value.includes('..') || !/^[a-z0-9_\-.\u0080-\u{10ffff}]+$/iu.test(value)) return false;
 	try {
 		const host = normalizeHostname(new URL(targetUrl).hostname);
@@ -1270,6 +1272,9 @@ function buildResponse(upstream, request, ck, baseUrl) {
 
 function isCacheableMethod(m) { return m === 'GET' || m === 'HEAD'; }
 
+// 浏览器按这些目标使用响应时不会把它当作文档、脚本或样式，因此 304 不必再回源判断是否会变换。
+const UNTRANSFORMED_FETCH_DEST = new Set(['audio', 'video', 'track', 'font']);
+
 /** 确认重新取到的未变换表示仍是 304 所验证的同一版本。 */
 function sameRevalidationIdentity(notModified, current) {
 	const oldTag = notModified.headers.get('ETag');
@@ -1391,16 +1396,12 @@ function normProxied(raw,keepOrigin,parsed){
   var rawPath=(cut<0?clean:clean.slice(0,cut)).replace(/^(?:[a-z][a-z0-9+.-]*:[\\/\\\\]*|[\\/\\\\]{2,})[^\\/\\\\?#]*/i,'').replace(/\\\\/g,'/');
   var tu=decodeProxiedTarget(rawPath,cut<0?'':clean.slice(cut));
   if(!tu)return null;
+  var wsHost=location.host||(location.hostname?location.hostname+(location.port?':'+location.port:''):WOU.host);
   if(!/\\/(?:\\.|%2e){2}(?:\\/|$)/i.test(rawPath)&&isProxiedPath(pu.pathname)){
     if(!keepOrigin)return pu.pathname+urlSuffix(pu);
-    if(isWs){
-      var canonH=location.hostname||WOU.hostname;
-      if(canonH&&pu.hostname!==canonH)pu.hostname=canonH;
-      return pu.href;
-    }
-    return WO+pu.pathname+urlSuffix(pu);
+    return (isWs?pu.protocol+'//'+wsHost:WO)+pu.pathname+urlSuffix(pu);
   }
-  var prefix=keepOrigin?(isWs?pu.protocol+'//'+(location.host||WOU.host):WO):'';
+  var prefix=keepOrigin?(isWs?pu.protocol+'//'+wsHost:WO):'';
   return prefix+encodeProxyPath(tu);
 }
 function rp(v){
@@ -1556,7 +1557,9 @@ if(WS)['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k,i){try{WS[k]=i
 /* ---- history / window.open / location.assign ---- */
 function wrapHistory(fn){return function(st,t,u){
   if(u!=null){
-    var next=rwNavigation(String(u),true);
+    var raw=String(u);
+    if(!raw){arguments[2]=raw;return fn.apply(this,arguments);}
+    var next=rwNavigation(raw,true);
     var link;
     try{link=new URL(next,location.href);}catch(e){throw new DOMException('Invalid history URL','SecurityError');}
     if(isSelfHost(link)){
@@ -1855,7 +1858,23 @@ function rwForm(f,sub){
     }
   }catch(e){}
 }
-document.addEventListener('submit',function(ev){rwForm(ev.target,ev.submitter);},true);
+function onSubmitEv(ev){rwForm(ev.target,ev.submitter);}
+document.addEventListener('submit',onSubmitEv,true);
+if(window.Element&&Element.prototype&&Element.prototype.attachShadow){
+  var oAS=Element.prototype.attachShadow;
+  Element.prototype.attachShadow=function(){
+    var sr=oAS.apply(this,arguments);
+    try{
+      if(sr&&sr.addEventListener){
+        sr.addEventListener('submit',onSubmitEv,true);
+        sr.addEventListener('click',rwLinkEv,true);
+        sr.addEventListener('auxclick',rwLinkEv,true);
+        sr.addEventListener('contextmenu',rwLinkEv,true);
+      }
+    }catch(e){}
+    return sr;
+  };
+}
 if(window.HTMLFormElement&&HTMLFormElement.prototype){
   var oSub=HTMLFormElement.prototype.submit;
   if(oSub)HTMLFormElement.prototype.submit=function(){rwForm(this,null);return oSub.apply(this,arguments);};
@@ -3469,12 +3488,17 @@ Disallow: /
 			// 因此无条件重取以判断是否会转换；未变换且版本未改变时仍返回原来的 304。
 			if (upstream.status === 304 && isCacheableMethod(request.method) &&
 				(fwdHeaders.has('If-None-Match') || fwdHeaders.has('If-Modified-Since')) &&
+				!UNTRANSFORMED_FETCH_DEST.has((request.headers.get('Sec-Fetch-Dest') || '').toLowerCase()) &&
 				!hasNoTransform(request.headers.get('Cache-Control')) && !hasNoTransform(upstream.headers.get('Cache-Control'))) {
 				const retryHeaders = new Headers(fwdHeaders);
 				retryHeaders.delete('If-None-Match');
 				retryHeaders.delete('If-Modified-Since');
 				let current = await fetch(fetchUrl, { ...options, headers: retryHeaders });
-				if (current.status === 304) return errorPage(); // 没有验证条件的 304 无法安全使用。
+				if (current.status === 304 || current.status < 200 || current.status > 599) {
+					if (current.body) current.body.cancel().catch(() => {});
+					if (upstream.body) upstream.body.cancel().catch(() => {});
+					return errorPage(); // 没有验证条件的 304 或非法状态码无法安全使用。
+				}
 				const transforms = current.status === 200 && Boolean(transformKind(current.headers, request));
 				const wildcard = fwdHeaders.get('If-None-Match')?.trim() === '*';
 				if (current.status === 200 && (wildcard || (!transforms && !current.headers.has('Set-Cookie') && sameRevalidationIdentity(upstream, current)))) {
@@ -3489,6 +3513,7 @@ Disallow: /
 					}
 					transformedWildcard304 = transforms && wildcard;
 				} else {
+					if (upstream.body) upstream.body.cancel().catch(() => {});
 					// 首次 304 的 Set-Cookie 同样有效，不能因为改用第二个响应而丢掉。
 					if (upstream.headers.has('Set-Cookie')) {
 						const list = h => typeof h.getSetCookie === 'function' ? h.getSetCookie()

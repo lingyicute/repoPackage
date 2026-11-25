@@ -52,6 +52,22 @@ test('untransformed 304 responses are retained only if the retry confirms their 
 	assert.equal(seen.length, 2);
 });
 
+test('media and font requests keep a source 304 without a retry', async t => {
+	const dests = ['audio', 'video', 'track', 'font'];
+	const seen = fixtures(t, [...dests.map(() => notModified({ ETag: '"source"' })),
+		notModified({ ETag: '"source"' }), response('image/png', '"source"', 'image')]);
+	for (const dest of dests) {
+		const r = await worker.fetch(new Request(proxy, { headers: { 'If-None-Match': '"source"', 'Sec-Fetch-Dest': dest } }), env);
+		assert.equal(r.status, 304, dest);
+		assert.equal(r.headers.get('etag'), '"source"', dest);
+	}
+	assert.equal(seen.length, dests.length);
+	// 其它目标（含可能是 SVG 的图片）仍按原规则重新取回。
+	const r = await worker.fetch(new Request(proxy, { headers: { 'If-None-Match': '"source"', 'Sec-Fetch-Dest': 'image' } }), env);
+	assert.equal(r.status, 304);
+	assert.equal(seen.length, dests.length + 2);
+});
+
 test('a changed or cookie-setting retry returns the new complete response', async t => {
 	const seen = fixtures(t, [
 		notModified({ ETag: '"source"' }), response('image/png', '"new"', 'new image'),
@@ -105,4 +121,17 @@ test('cookies from the original 304 and the replacement 200 are both retained', 
 	assert.deepEqual(r.headers.getSetCookie().map(cookie => cookie.match(/_(first|second)=/)[1]), ['first', 'second']);
 	assert.equal(r.headers.get('Cache-Control'), 'no-store');
 	assert.equal(await r.text(), 'a{}');
+});
+
+test('failed or out-of-range 304 retries cancel their response body before returning 502', async t => {
+	let canceled = 0;
+	const stream = () => new ReadableStream({ cancel() { canceled++; } });
+	fixtures(t, [
+		notModified({ ETag: '"source"', 'Set-Cookie': 'first=1; Path=/' }),
+		() => ({ status: 999, statusText: 'Custom', headers: new Headers(), body: stream() }),
+	]);
+	const r = await worker.fetch(new Request(proxy, { headers: { 'If-None-Match': '"source"' } }), env);
+	assert.equal(r.status, 502);
+	assert.equal(r.headers.get('Cache-Control'), 'no-store');
+	assert.equal(canceled, 1);
 });

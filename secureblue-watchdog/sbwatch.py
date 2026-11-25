@@ -827,7 +827,8 @@ class Registry:
                 self._tok = ""
                 return None
         except urllib.error.HTTPError as e:
-            h = e.headers.get("Www-Authenticate") or ""
+            all_h = e.headers.get_all("Www-Authenticate") if hasattr(e.headers, "get_all") else None
+            h = ", ".join(all_h) if all_h else (e.headers.get("Www-Authenticate") or "")
             m = re.search(r"(?:^|,\s*)Bearer\s+(.+)", h, re.I | re.S)
             if not m:
                 log(T(f"  ! {self.host}/v2/ answered {e.code} without a Bearer challenge "
@@ -2009,10 +2010,12 @@ def _is_third_party(pkg: dict) -> bool:
     vendor = (pkg.get("vendor") or "").strip()
     if vendor:
         return vendor != "Fedora Project"
-    # The live image's Trivalent RPM has no Vendor, but it is Secureblue's
-    # browser, not a Fedora build. Its upgrades use the name-based desktop rule.
+    # Live Secureblue images ship Trivalent, akmods-built kmod-nvidia / kmod-zfs,
+    # and OpenZFS RPMs without a Vendor header; none are Fedora Bodhi builds.
     # Other missing vendors are ambiguous, including Secureblue's rebuilt kernel.
-    return (pkg.get("src") or pkg.get("name")) == "trivalent"
+    return (pkg.get("src") or pkg.get("name")) in {
+        "trivalent", "nvidia-kmod", "zfs", "zfs-kmod"
+    }
 
 
 def nvr_candidates_split(pkg: dict) -> tuple:
@@ -2999,6 +3002,7 @@ def verdict_of(diff: dict, ldiff: dict, meta: dict, xc: dict | None = None,
             (bodhi_state or {}).get(k) for k in ("failed", "skipped", "truncated", "disabled", "unavailable")))
           and not sbn.get("unconditional") and any(
               c.get("dir") != "arch-change" and not _is_third_party(c.get("new") or {})
+              and not re.search(r"\.secureblue\.\d+", _build_evr(c.get("new") or {}))
               for c in diff["changed"])):
         obs_max = sbn.get("max_advisory_severity")
         sbn = dict(sbn, advisory_coverage_complete=False,
@@ -3806,8 +3810,8 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
         W(f"| 内核（`ostree.linux` 注解，来自 Fedora 基础镜像） | {_md_cell(a['annotations'].get('ostree.linux', '?'))} | {_md_cell(b['annotations'].get('ostree.linux', '?'))} |")
         if any(kernel_evr):
             W(f"| `kernel` 软件包（rpmdb，实际安装的内核） | {_md_cell(kernel_evr[0] or '—')} | {_md_cell(kernel_evr[1] or '—')} |")
-        W(f"| rpm-ostree 输入哈希 | `{clip_hash(a['annotations'].get('rpmostree.inputhash'), 12)}` | `{clip_hash(b['annotations'].get('rpmostree.inputhash'), 12)}` |")
-        W(f"| ostree 提交 | `{clip_hash(a['annotations'].get('ostree.commit') or '—', 12)}` | `{clip_hash(b['annotations'].get('ostree.commit') or '—', 12)}` |")
+        W(f"| rpm-ostree 输入哈希 | `{_md_cell(clip_hash(a['annotations'].get('rpmostree.inputhash') or '—', 12))}` | `{_md_cell(clip_hash(b['annotations'].get('rpmostree.inputhash') or '—', 12))}` |")
+        W(f"| ostree 提交 | `{_md_cell(clip_hash(a['annotations'].get('ostree.commit') or '—', 12))}` | `{_md_cell(clip_hash(b['annotations'].get('ostree.commit') or '—', 12))}` |")
         W(f"| 镜像摘要 (manifest) | `{a['digest'][:19]}…` | `{b['digest'][:19]}…` |")
         W(f"| 镜像内软件包数 | {diff.get('count_a', '?')} | {diff.get('count_b', '?')} |")
     else:
@@ -3819,8 +3823,8 @@ def _render_markdown_lang(lang: str, subject, a, b, diff, ldiff, verdict, notes,
         W(f"| kernel (`ostree.linux` annotation, from the Fedora base) | {_md_cell(a['annotations'].get('ostree.linux', '?'))} | {_md_cell(b['annotations'].get('ostree.linux', '?'))} |")
         if any(kernel_evr):
             W(f"| `kernel` package (rpmdb, the kernel actually installed) | {_md_cell(kernel_evr[0] or '—')} | {_md_cell(kernel_evr[1] or '—')} |")
-        W(f"| rpm-ostree inputhash | `{clip_hash(a['annotations'].get('rpmostree.inputhash'), 12)}` | `{clip_hash(b['annotations'].get('rpmostree.inputhash'), 12)}` |")
-        W(f"| ostree.commit | `{clip_hash(a['annotations'].get('ostree.commit') or '—', 12)}` | `{clip_hash(b['annotations'].get('ostree.commit') or '—', 12)}` |")
+        W(f"| rpm-ostree inputhash | `{_md_cell(clip_hash(a['annotations'].get('rpmostree.inputhash') or '—', 12))}` | `{_md_cell(clip_hash(b['annotations'].get('rpmostree.inputhash') or '—', 12))}` |")
+        W(f"| ostree.commit | `{_md_cell(clip_hash(a['annotations'].get('ostree.commit') or '—', 12))}` | `{_md_cell(clip_hash(b['annotations'].get('ostree.commit') or '—', 12))}` |")
         W(f"| manifest digest | `{a['digest'][:19]}…` | `{b['digest'][:19]}…` |")
         W(f"| packages in image | {diff.get('count_a', '?')} | {diff.get('count_b', '?')} |")
     W("")
@@ -4753,28 +4757,30 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
         d = "sha256:" + hexdig
         if d in recs or d in branch_digests:
             continue
-        try:
-            img = resolve(reg, d, light=True)
-        except NoArchManifest:
-            # a push without this architecture (e.g. before arm64 was built) is
-            # no build of it; as a bare SystemExit it killed the whole scan
-            continue
-        except MalformedManifest:
-            probe_failures.append((d[:19] + "…", "malformed manifest"))
-            continue
-        except RegistryError as e:
-            if e.http_code != 404:   # a dangling .sig tag (404) is normal
-                probe_failures.append((d[:19] + "…", e.http_code or "network error"))
-            continue
-        except Exception as e:       # malformed manifest, JSON error, ...
-            probe_failures.append((d[:19] + "…", type(e).__name__))
+        def _hist_resolve(ref, *, light):
+            try:
+                return resolve(reg, ref, light=light)
+            except NoArchManifest:
+                # a push without this architecture (e.g. before arm64 was built) is
+                # no build of it; as a bare SystemExit it killed the whole scan
+                return None
+            except MalformedManifest:
+                probe_failures.append((ref[:19] + "…", "malformed manifest"))
+                return None
+            except RegistryError as e:
+                if e.http_code != 404:   # a dangling .sig tag (404) is normal
+                    probe_failures.append((ref[:19] + "…", e.http_code or "network error"))
+                return None
+            except Exception as e:       # malformed manifest, JSON error, ...
+                probe_failures.append((ref[:19] + "…", type(e).__name__))
+                return None
+
+        img = _hist_resolve(d, light=True)
+        if img is None:
             continue
         if not img.get("is_index"):
             # secureblue also publishes single-arch UKI images into this same repo
             # (latest-uki, 20260917-uki, ...); they are not builds of this image
-            continue
-        if stream_maj and not str((img.get("annotations") or {}).get(
-                "org.opencontainers.image.version") or "").startswith(stream_maj + "."):
             continue
         if chunked and rpmdb_chunk(img) is None:
             # ...and its integration-test images (`integrationtest-<sha>` tags):
@@ -4786,6 +4792,19 @@ def build_history(reg: Registry, scan: int = 12, days: int = 7,
             # ever saved.
             continue
         candidate_time = _image_order(img)
+        if cur_time and candidate_time and candidate_time > cur_time:
+            continue
+        # Fedora CoreOS-based securecore manifests keep version in config Labels.
+        if ((not (img.get("annotations") or {}).get("org.opencontainers.image.version")
+                or (cur_time and not candidate_time))
+                and ((img.get("manifest") or {}).get("config") or {}).get("digest")):
+            img = _hist_resolve(d, light=False)
+            if img is None:
+                continue
+            candidate_time = _image_order(img)
+        if stream_maj and not str((img.get("annotations") or {}).get(
+                "org.opencontainers.image.version") or "").startswith(stream_maj + "."):
+            continue
         if cur_time and (not candidate_time or candidate_time > cur_time):
             # Signature publication and image creation can happen in different
             # orders. A later image should never use up a slot in this history.
@@ -6217,6 +6236,7 @@ def add_common(p):
 def _check_output_paths(parser, args):
     """Fail before any network work if two outputs can overwrite each other."""
     paths = {}
+    extra_keys = []
     if args.cmd == "check":
         report = args.report or "report.md"
         paths = {"--report": report, "report JSON": report + ".json",
@@ -6228,7 +6248,14 @@ def _check_output_paths(parser, args):
                            "Markdown 与 JSON 不能同时写入标准输出"))
         paths = {"--markdown": args.markdown,
                  "--json-out": None if args.json_out == "-" else args.json_out}
+        if args.json_out == "-":
+            try:
+                st = os.fstat(sys.stdout.fileno())
+                extra_keys.append(("--json-out", ((st.st_dev, st.st_ino),)))
+            except (OSError, ValueError, AttributeError):
+                pass
     seen = {}
+    items = []
     for option, path in paths.items():
         if not path:
             continue
@@ -6238,6 +6265,9 @@ def _check_output_paths(parser, args):
             keys = (canonical, (st.st_dev, st.st_ino))
         except OSError:
             keys = (canonical,)
+        items.append((option, keys))
+    items.extend(extra_keys)
+    for option, keys in items:
         for key in keys:
             if key in seen:
                 other = seen[key]

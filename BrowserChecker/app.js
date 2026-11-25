@@ -300,7 +300,7 @@ const app = createApp({
           const matches = storage.getItem(key) === key;
           storage.removeItem(key);
           written = false;
-          if (storage.getItem(key) === key) {
+          if (storage.getItem(key) !== null) {
             return { skipped: true, reason: '浏览器未清除网站存储探测键' };
           }
           if (!matches) return false;
@@ -313,7 +313,7 @@ const app = createApp({
         } finally {
           if (written) {
             try {
-              if (storage.getItem(key) === key) storage.removeItem(key);
+              storage.removeItem(key);
             } catch (e) { /* 策略可能在检测期间变化。 */ }
           }
         }
@@ -364,40 +364,42 @@ const app = createApp({
         request.onerror = () => { if (!settled) fail(optionalValue(request, 'error')); };
         request.onupgradeneeded = (event) => {
           // 万一名称碰撞，不读写、更不删除已有数据库；超时后的升级直接回滚。
-          if (settled || event.oldVersion !== 0) {
-            try { request.transaction?.abort(); } catch (e) {}
+          if (settled || !event || event.oldVersion !== 0) {
+            try { optionalValue(request, 'transaction')?.abort(); } catch (e) {}
             if (!settled) finish(restricted);
             return;
           }
           created = true;
           // 升级写入可能异步触发 QuotaExceededError，open 请求随后只报告 AbortError。
           // 保留原始事务错误，避免把存储限制误算为浏览器缺少 IndexedDB。
-          const upgrade = request.transaction;
+          const upgrade = optionalValue(request, 'transaction');
           let write;
-          if (upgrade) upgrade.onabort = () => {
-            if (!settled) fail(optionalValue(upgrade, 'error') || optionalValue(write, 'error'));
-          };
           try {
+            if (upgrade) upgrade.onabort = () => {
+              if (!settled) fail(optionalValue(upgrade, 'error') || optionalValue(write, 'error'));
+            };
             write = request.result.createObjectStore('probe').put('ok', 'probe');
           } catch (error) {
             if (upgrade) {
-              upgrade.onabort = null;
+              try { upgrade.onabort = null; } catch (e) {}
               try { upgrade.abort(); } catch (e) {}
             }
             fail(error);
           }
         };
         request.onsuccess = () => {
-          database = request.result;
-          if (settled) { cleanup(); return; }
-          if (!created) { finish(restricted); return; }
           try {
+            database = request.result;
+            if (settled) { cleanup(); return; }
+            if (!created) { finish(restricted); return; }
             const transaction = database.transaction('probe', 'readonly');
             const read = transaction.objectStore('probe').get('probe');
             transaction.oncomplete = () => {
               try { finish(read.result === 'ok'); } catch (error) { fail(error); }
             };
-            transaction.onabort = () => fail(optionalValue(transaction, 'error') || optionalValue(read, 'error'));
+            const onAbortOrError = () => fail(optionalValue(transaction, 'error') || optionalValue(read, 'error'));
+            transaction.onabort = onAbortOrError;
+            read.onerror = onAbortOrError;
             database.onversionchange = () => finish(restricted);
           } catch (error) { fail(error); }
         };
@@ -419,6 +421,19 @@ const app = createApp({
     // `in` 会把扩展留下的 undefined / null / 空对象占位符误判为支持。
     const hasMethods = (object, methods) => !!object &&
       methods.every(method => typeof object[method] === 'function');
+
+    const hasProperty = (object, property) => {
+      if (!object || (typeof object !== 'object' && typeof object !== 'function')) return false;
+      for (let current = object; current; current = Object.getPrototypeOf(current)) {
+        const descriptor = Object.getOwnPropertyDescriptor(current, property);
+        if (descriptor) {
+          return typeof descriptor.get === 'function' ||
+            typeof descriptor.set === 'function' ||
+            descriptor.value !== undefined;
+        }
+      }
+      return false;
+    };
 
     const supportsCSS = (...args) => hasMethods(window.CSS, ['supports']) &&
       !!window.CSS.supports(...args);
@@ -554,8 +569,8 @@ const app = createApp({
           hasMethods(HTMLScriptElement, ['supports']) && !!HTMLScriptElement.supports('speculationrules') },
         // Baseline 2026 / ECMAScript 2026 新增能力：仅探测稳定、无需权限的接口，不执行导航或设备操作。
         { name: 'Navigation API', test: () => hasMethods(window.navigation, ['navigate', 'entries']) },
-        { name: 'Math.sumPrecise()', test: () => typeof Math.sumPrecise === 'function' &&
-          Math.sumPrecise([1e20, 0.1, -1e20]) === 0.1 },
+        { name: 'Math.sumPrecise()', test: () => typeof Math === 'object' && !!Math &&
+          typeof Math.sumPrecise === 'function' && Math.sumPrecise([1e20, 0.1, -1e20]) === 0.1 },
         { name: 'Iterator.concat()', test: () => typeof Iterator === 'function' &&
           typeof Iterator.concat === 'function' },
         { name: 'Intl.Locale 信息 API', test: () => typeof Intl === 'object' && !!Intl &&
@@ -568,17 +583,20 @@ const app = createApp({
         { name: 'Iterator Helpers', test: () => typeof Iterator === 'function' &&
           hasMethods(Iterator.prototype, ['map', 'filter', 'take', 'toArray']) },
         { name: 'RegExp.escape()', test: () => typeof RegExp === 'function' && typeof RegExp.escape === 'function' },
-        { name: 'Float16Array', test: () => typeof Float16Array === 'function' && typeof Math.f16round === 'function' },
+        { name: 'Float16Array', test: () => typeof Float16Array === 'function' &&
+          typeof Math === 'object' && !!Math && typeof Math.f16round === 'function' },
         { name: 'Uint8Array Base64 / Hex 编解码', test: () => typeof Uint8Array === 'function' &&
           hasMethods(Uint8Array, ['fromBase64', 'fromHex']) && hasMethods(Uint8Array.prototype, ['toBase64', 'toHex']) },
         { name: 'Temporal API', test: () => typeof Temporal === 'object' && !!Temporal &&
           hasMethods(Temporal.Now, ['instant', 'plainDateISO']) && typeof Temporal.PlainDate === 'function' },
-        { name: 'Object.groupBy() / Map.groupBy()', test: () => hasMethods(Object, ['groupBy']) &&
-          typeof Map === 'function' && hasMethods(Map, ['groupBy']) },
-        { name: 'Promise.withResolvers()', test: () => hasMethods(window.Promise, ['withResolvers']) },
-        { name: 'Promise.try()', test: () => hasMethods(window.Promise, ['try']) },
-        { name: 'Array.fromAsync()', test: () => typeof Array.fromAsync === 'function' },
-        { name: 'Error.isError()', test: () => typeof Error.isError === 'function' },
+        { name: 'Object.groupBy() / Map.groupBy()', test: () => typeof Object === 'function' &&
+          hasMethods(Object, ['groupBy']) && typeof Map === 'function' && hasMethods(Map, ['groupBy']) },
+        { name: 'Promise.withResolvers()', test: () => typeof window.Promise === 'function' &&
+          hasMethods(window.Promise, ['withResolvers']) },
+        { name: 'Promise.try()', test: () => typeof window.Promise === 'function' &&
+          hasMethods(window.Promise, ['try']) },
+        { name: 'Array.fromAsync()', test: () => typeof Array === 'function' && typeof Array.fromAsync === 'function' },
+        { name: 'Error.isError()', test: () => typeof Error === 'function' && typeof Error.isError === 'function' },
         // --- Baseline 与较新的 CSS 能力 ---
         { name: 'CSS @scope', test: () => typeof window.CSSScopeRule === 'function' },
         { name: 'CSS @starting-style', test: () => typeof window.CSSStartingStyleRule === 'function' },
@@ -597,13 +615,14 @@ const app = createApp({
         { name: 'CSS 类型化 attr()', test: () => supportsCSS('width', 'attr(data-width type(<length>), 1px)') },
         // --- Baseline 与较新的 Web 平台能力：不创建元素实例、不发起解析或任务 ---
         { name: '声明式 Shadow DOM / setHTMLUnsafe()', test: () => typeof window.HTMLTemplateElement === 'function' &&
-          'shadowRootMode' in window.HTMLTemplateElement.prototype &&
-          !!window.Element && hasMethods(window.Element.prototype, ['setHTMLUnsafe']) },
+          hasProperty(window.HTMLTemplateElement.prototype, 'shadowRootMode') &&
+          typeof window.Element === 'function' && hasMethods(window.Element.prototype, ['setHTMLUnsafe']) },
         { name: 'Invoker Commands（commandfor）', test: () => typeof window.HTMLButtonElement === 'function' &&
-          'commandForElement' in window.HTMLButtonElement.prototype && typeof window.CommandEvent === 'function' },
-        { name: 'Element.moveBefore()', test: () => !!window.Element && hasMethods(window.Element.prototype, ['moveBefore']) },
-        { name: 'scrollend 事件', test: () => 'onscrollend' in document ||
-          (!!window.Element && 'onscrollend' in window.Element.prototype) },
+          hasProperty(window.HTMLButtonElement.prototype, 'commandForElement') && typeof window.CommandEvent === 'function' },
+        { name: 'Element.moveBefore()', test: () => typeof window.Element === 'function' &&
+          hasMethods(window.Element.prototype, ['moveBefore']) },
+        { name: 'scrollend 事件', test: () => hasProperty(document, 'onscrollend') ||
+          (typeof window.Element === 'function' && hasProperty(window.Element.prototype, 'onscrollend')) },
         { name: 'URLPattern API', test: () => typeof window.URLPattern === 'function' },
         { name: 'Import Maps', test: () => typeof HTMLScriptElement !== 'undefined' &&
           hasMethods(HTMLScriptElement, ['supports']) && !!HTMLScriptElement.supports('importmap') },
@@ -622,7 +641,7 @@ const app = createApp({
         { name: 'Origin Private File System（OPFS）', secure: true, siteOrigin: true,
           test: () => hasMethods(navigator.storage, ['getDirectory']) },
         { name: 'Sanitizer API', test: () => typeof window.Sanitizer === 'function' &&
-          hasMethods(window.Element && window.Element.prototype, ['setHTML']) },
+          typeof window.Element === 'function' && hasMethods(window.Element.prototype, ['setHTML']) },
         // 与 WebUSB / Web Bluetooth 同类的硬件接口：只检查入口方法，不请求设备。
         { name: 'Web Serial API', policy: 'serial', secure: true, desktopOnly: true, test: () => hasMethods(navigator.serial, ['requestPort']) },
         { name: 'WebHID API', policy: 'hid', secure: true, desktopOnly: true, test: () => hasMethods(navigator.hid, ['requestDevice']) }
@@ -846,15 +865,19 @@ const app = createApp({
 
     // 收尾不依赖动画事件，后台标签页和减少动态效果模式也能正常结束。
     const finishLoading = () => {
-      if (window.browserCheckerStartup) window.browserCheckerStartup.complete();
       isFadingOut.value = true;
       if (prefersReducedMotion() || optionalValue(document, 'hidden') === true) {
         isLoading.value = false;
-        return;
+      } else {
+        setTimeout(() => {
+          isLoading.value = false;
+        }, 800);
       }
-      setTimeout(() => {
-        isLoading.value = false;
-      }, 800);
+      Promise.resolve().then(() => {
+        if (!renderFailed && window.browserCheckerStartup) {
+          window.browserCheckerStartup.complete();
+        }
+      });
     };
 
     // 页面加载后立即检测，无需人为等待一秒。
@@ -915,15 +938,35 @@ const app = createApp({
   }
 });
 
+let renderFailed = false;
+const root = document.getElementById('app');
+if (!root) throw new Error('缺少应用挂载节点');
+const failStartup = () => {
+  renderFailed = true;
+  if (window.browserCheckerStartup && typeof window.browserCheckerStartup.fail === 'function') {
+    window.browserCheckerStartup.fail();
+  } else {
+    root.hidden = true;
+    const fallback = document.getElementById('startup-error');
+    if (fallback) fallback.hidden = false;
+    const loading = document.getElementById('startup-loading');
+    if (loading) loading.hidden = true;
+  }
+};
 // 让未处理的渲染异常到达启动守卫，不把空白页标记为成功。
 app.config.throwUnhandledErrorInProduction = true;
-const root = document.getElementById('app');
+app.config.errorHandler = (error) => {
+  failStartup();
+  throw error;
+};
 app.mount(root);
-if (window.browserCheckerStartup) {
-  window.browserCheckerStartup.mounted();
-} else {
-  // 启动守卫本身被单独禁用时，若 Vue 和应用仍能运行就显示结果。
-  root.hidden = false;
-  const fallback = document.getElementById('startup-error');
-  if (fallback) fallback.hidden = true;
+if (!renderFailed) {
+  if (window.browserCheckerStartup) {
+    window.browserCheckerStartup.mounted();
+  } else {
+    // 启动守卫本身被单独禁用时，若 Vue 和应用仍能运行就显示结果。
+    root.hidden = false;
+    const fallback = document.getElementById('startup-error');
+    if (fallback) fallback.hidden = true;
+  }
 }

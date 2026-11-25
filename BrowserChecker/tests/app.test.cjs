@@ -49,7 +49,7 @@ function harness() {
       ref: value => ({ value }),
       computed: getter => ({ get value() { return getter(); } }),
       onMounted: fn => { mounted = fn; },
-      createApp: options => ({ config: {}, mount() { state = options.setup(); } })
+      createApp: options => ({ config: (context.appConfig = {}), mount() { state = options.setup(); } })
     }
   };
   context.window = {
@@ -1269,4 +1269,95 @@ test('OPFS requires a secure site origin and never opens the directory', async (
   assert.match((await detect(h))(name).reason, /file:/);
   h.context.location.protocol = 'http:';
   assert.equal((await detect(h))(name).supported, true);
+});
+
+test('missing mount root throws immediately and post-mount render failure triggers startup fallback', async () => {
+  const h = harness();
+  const calls = [];
+  h.context.window.browserCheckerStartup = {
+    mounted() { calls.push('mounted'); },
+    fail() { calls.push('fail'); },
+    complete() { calls.push('complete'); }
+  };
+  const pending = h.mounted();
+  completeImages(h);
+  await pending;
+  await Promise.resolve();
+  assert.deepEqual(calls, ['complete']);
+
+  const h2 = harness();
+  const calls2 = [];
+  h2.context.window.browserCheckerStartup = {
+    mounted() { calls2.push('mounted'); },
+    fail() { calls2.push('fail'); },
+    complete() { calls2.push('complete'); }
+  };
+  assert.throws(() => h2.context.appConfig.errorHandler(new Error('results render failed')));
+  const pending2 = h2.mounted();
+  completeImages(h2);
+  await pending2;
+  await Promise.resolve();
+  assert.deepEqual(calls2, ['fail']);
+
+  assert.throws(() => vm.runInNewContext(source, {
+    Vue: h.context.Vue,
+    window: { browserCheckerRender() {} },
+    document: { getElementById: () => null }
+  }), /缺少应用挂载节点/);
+});
+
+test('non-constructor intrinsics and undefined prototype descriptors are rejected', async () => {
+  const h = harness();
+  const w = h.context.window;
+  h.context.Math = Object.assign(Object.create(Math), { sumPrecise: {}, f16round: null });
+  h.context.Map = Object.assign(function Map() {}, { groupBy: () => {} });
+  h.context.Object = Object.assign(Object.create(Object), { groupBy: () => {} });
+  h.context.Array = Object.assign(Object.create(Array), { fromAsync: () => {} });
+  h.context.Error = Object.assign(Object.create(Error), { isError: () => {} });
+  w.Promise = { withResolvers: () => {}, try: () => {} };
+  w.HTMLTemplateElement = Object.assign(function HTMLTemplateElement() {}, { prototype: { shadowRootMode: undefined } });
+  w.HTMLButtonElement = Object.assign(function HTMLButtonElement() {}, { prototype: { commandForElement: undefined } });
+  w.CommandEvent = function CommandEvent() {};
+  w.Sanitizer = function Sanitizer() {};
+  w.Element = { prototype: { setHTMLUnsafe: () => {}, moveBefore: () => {}, setHTML: () => {}, onscrollend: null } };
+  h.context.document.onscrollend = undefined;
+  const find = await detect(h);
+  for (const name of ['Math.sumPrecise()', 'Float16Array', 'Object.groupBy() / Map.groupBy()',
+    'Promise.withResolvers()', 'Promise.try()', 'Array.fromAsync()', 'Error.isError()',
+    '声明式 Shadow DOM / setHTMLUnsafe()', 'Invoker Commands（commandfor）',
+    'Element.moveBefore()', 'scrollend 事件', 'Sanitizer API']) {
+    assert.equal(find(name).supported, false, name);
+  }
+});
+
+test('storage cleanup removes probe keys when post-write getItem throws and IndexedDB guards async getters', async () => {
+  const h = harness();
+  const s = h.context.window.localStorage;
+  const set = s.setItem;
+  let reads = 0;
+  s.getItem = () => {
+    if (++reads === 1) return null;
+    throw { name: 'SecurityError' };
+  };
+  s.setItem = (key, value) => set(key, value);
+  assert.equal(h.api.testStorage().skipped, true);
+  assert.equal(s.values.size, 0);
+
+  const h2 = harness();
+  const m = indexedDBMock(h2);
+  Object.defineProperty(m.request, 'result', { get() { throw { name: 'SecurityError' }; } });
+  const pending = h2.api.testIndexedDB();
+  m.request.onupgradeneeded({ oldVersion: 0 });
+  assert.equal((await pending).skipped, true);
+  assert.equal(h2.timers.size, 0);
+
+  const h3 = harness();
+  const m3 = indexedDBMock(h3);
+  const pending3 = h3.api.testIndexedDB();
+  m3.request.onupgradeneeded({ oldVersion: 0 });
+  m3.request.onsuccess();
+  m3.read.error = { name: 'QuotaExceededError' };
+  m3.read.onerror();
+  assert.equal((await pending3).skipped, true);
+  assert.equal(h3.timers.size, 0);
 });

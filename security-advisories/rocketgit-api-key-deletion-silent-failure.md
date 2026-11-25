@@ -5,7 +5,7 @@
 - **Affected Versions**: `v0.55` through `v0.83` (introduced in commit `e503666df79ef1553d0bb7ffd1d12a6b62748b1c`)
 - **Patched Version**: `v0.84`
 - **CWE**: CWE-672 (Operation on a Resource after Expiration or Release)
-- **CVSS v3.1**: 7.5 (High)
+- **CVSS v3.1**: 9.1 (Critical) - `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N`
 - **Finder / Credit**: lingyicute (`lingyicute@gmail.com`)
 
 ## Summary

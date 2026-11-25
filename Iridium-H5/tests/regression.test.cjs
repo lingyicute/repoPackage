@@ -1142,3 +1142,62 @@ test('quick settings use Ash primary and compact tile rows and container colors'
   assert.equal(await page.locator('#qs').evaluate(e => e.offsetWidth), 344);
   assert.ok(await page.locator('#qs').evaluate(e => e.getBoundingClientRect().top >= 0));
 });
+
+test('snapped windows switch the shelf to the square maximized ChromeOS style', async t => {
+  const { page, frame } = await desktop(t);
+  await frame.locator('#wmax').click();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('#shelf')).borderTopLeftRadius === '24px');
+  await frame.evaluate(() => IWM.post('snapl'));
+  await page.waitForFunction(() => WM.wins[0].snap === 'l' && getComputedStyle(document.querySelector('#shelf')).borderTopLeftRadius === '0px');
+  assert.equal(await page.evaluate(() => document.body.classList.contains('shmax')), true);
+  await frame.evaluate(() => IWM.post('togglemax'));
+  await frame.evaluate(() => IWM.post('togglemax'));
+  await page.waitForFunction(() => !WM.wins[0].max && !WM.wins[0].snap && getComputedStyle(document.querySelector('#shelf')).borderTopLeftRadius === '24px');
+});
+
+test('auto-hide shelf expands snapped work area and retracts after closing system bubbles', async t => {
+  const { page, frame } = await desktop(t);
+  await frame.evaluate(() => IWM.post('snapl'));
+  await page.waitForFunction(() => WM.wins[0].snap === 'l' && WM.wins[0].b.h === 800 - 48);
+  await page.evaluate(() => toggleAutohide());
+  assert.equal(await page.evaluate(() => WM.wins[0].b.h), 800);
+  const phantom = await page.evaluate(() => {
+    snapHint({ clientX: 0, clientY: 300 });
+    return Math.round(document.querySelector('#snapprev').getBoundingClientRect().height);
+  });
+  assert.equal(phantom, 800 - 16);
+  await page.evaluate(() => toggleLauncher());
+  assert.equal(await page.evaluate(() => document.body.classList.contains('shpeek')), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => document.body.classList.contains('shpeek')), false);
+  await page.evaluate(() => { openOsSettings('display'); });
+  await page.locator('#osset label.sw:has(input[data-o="autohide"])').click();
+  assert.equal(await page.evaluate(() => WM.wins[0].b.h), 800 - 48);
+});
+
+test('desktop system menus close on Escape and quick settings power menu stays paired with quick settings', async t => {
+  const { page } = await desktop(t);
+  await page.locator('#shelf').click({ button: 'right', position: { x: 300, y: 24 } });
+  assert.equal(await page.locator('#layer .osmenu').count(), 1);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#layer .osmenu').count(), 0);
+
+  await page.locator('#status').click();
+  await page.locator('#qs [data-a="pwr"]').click();
+  assert.equal(await page.locator('#layer .osmenu').count(), 1);
+  // Clicking non-item padding inside the power menu must not close Quick Settings.
+  await page.locator('#layer .osmenu').click({ position: { x: 24, y: 3 } });
+  assert.equal(await page.locator('#qs').count(), 1);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#layer .osmenu').count(), 0);
+  assert.equal(await page.locator('#qs').count(), 1);
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('#qs [data-a="pwr"]')), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#qs').count(), 0);
+
+  await page.locator('#status').click();
+  await page.locator('#qs [data-a="pwr"]').click();
+  await page.evaluate(() => closeOS());
+  assert.equal(await page.locator('#layer .osmenu').count(), 0);
+});
+

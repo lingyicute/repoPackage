@@ -11,11 +11,11 @@
 :root{color-scheme:light;--bg:#fff;--bg2:#f6f8f7;--bg3:#eef1f0;--fg:#202329;--fg2:#626971;--fg3:#9aa1a8;--border:#e6e8eb;--border2:#d5d9dd;--accent:#20a464;--accent2:#15834a;--accent-bg:#ecf8f1;--danger:#d13415;--shadow:0 6px 28px rgba(0,0,0,.08);--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 --ins-block:rgba(0,180,144,.13);--ins-hl:rgba(0,180,144,.36);--ins-fg:#0d5c4c;--del-block:rgba(255,46,0,.09);--del-hl:rgba(255,46,0,.32);--del-fg:#6b1a0a;--chg-block:rgba(255,190,0,.16);--mov-block:rgba(120,90,255,.12)}
 @media not print{[data-theme="dark"]{color-scheme:dark;--bg:#17191c;--bg2:#1f2226;--bg3:#262a2f;--fg:#ebedef;--fg2:#aeb6be;--fg3:#7d858d;--border:#353a3f;--border2:#454a50;--accent:#5bd494;--accent2:#5bd494;--accent-bg:#1c2b23;--danger:#ff9680;--shadow:0 6px 28px rgba(0,0,0,.4);--ins-fg:#c8f5e6;--del-fg:#ffd7cc;--chg-block:rgba(255,190,0,.14)}[data-theme="dark"] .btn.primary{color:#0d2618}[data-theme="dark"] .btn.primary:hover{background:#72dea4;border-color:#72dea4}}
-*{box-sizing:border-box}html{-webkit-text-size-adjust:100%;text-size-adjust:100%}html,body{margin:0;min-height:100%}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%;text-size-adjust:100%;scroll-padding-top:env(safe-area-inset-top);scroll-padding-bottom:env(safe-area-inset-bottom)}html,body{margin:0;min-height:100%}
 body{background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;min-height:100vh;min-height:100dvh}
 html[lang="zh"] body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif}
 button,select,input{font:inherit;color:inherit}button,a,select,label,.drop,tr.collapsed{touch-action:manipulation}button{cursor:pointer}
-.offline-header{flex:none;width:100%;background:var(--bg);border-bottom:1px solid var(--border)}
+.offline-header{flex:none;width:100%;padding-top:env(safe-area-inset-top);background:var(--bg);border-bottom:1px solid var(--border)}
 .offline-navigation{display:flex;align-items:center;min-height:64px;gap:32px;padding:0 max(28px,env(safe-area-inset-right)) 0 max(28px,env(safe-area-inset-left))}
 .offline-brand{display:inline-flex;align-items:center;gap:9px;color:inherit;text-decoration:none;font-size:20px;font-weight:700;letter-spacing:-.65px;white-space:nowrap}
 .offline-tools{display:flex;align-self:stretch;gap:28px}
@@ -45,7 +45,7 @@ main{flex:1;width:100%;max-width:1700px;margin:0 auto;padding:22px max(28px,env(
 .btn:hover{background:var(--bg2)}.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;padding:8px 22px;min-height:40px;font-size:15px}.btn.primary:hover{background:var(--accent2);border-color:var(--accent2)}
 .btn.sm{min-height:28px;padding:3px 9px;font-size:12px;border-radius:6px}.btn.ghost{border-color:transparent;background:transparent}.btn.ghost:hover{background:var(--bg3)}.btn:disabled{opacity:.5;cursor:not-allowed}
 .actions{display:flex;justify-content:center;align-items:center;gap:12px;margin:18px 0 8px;flex-wrap:wrap}
-.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0;position:sticky;top:0;background:var(--bg);z-index:5;border-bottom:1px solid var(--border)}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0;position:sticky;top:env(safe-area-inset-top);background:var(--bg);z-index:5;border-bottom:1px solid var(--border)}
 .seg{display:inline-flex;border:1px solid var(--border2);border-radius:8px;overflow:hidden}
 .seg button{border:0;background:transparent;padding:6px 12px;font-size:13px;color:var(--fg2)}.seg button+button{border-left:1px solid var(--border2)}
 .seg button[aria-pressed="true"]{background:var(--accent-bg);color:var(--accent2);font-weight:600}
@@ -72,12 +72,11 @@ tr.focus td,th.focus{box-shadow:inset 0 -2px 0 var(--accent)}
 .identical{display:flex;flex-direction:column;align-items:center;gap:6px;padding:54px 20px;text-align:center}
 .identical .ic{width:44px;height:44px;border-radius:50%;background:var(--accent-bg);color:var(--accent2);display:grid;place-items:center;font-size:22px}
 .identical h3{margin:6px 0 0;font-size:18px}.identical p{margin:0;color:var(--fg2)}
-.panel-bg{position:fixed;inset:0;touch-action:none;background:rgba(0,0,0,.3);opacity:0;visibility:hidden;transition:opacity .2s,visibility 0s linear .2s;z-index:49}
-.panel-bg.open{opacity:1;visibility:visible;transition-delay:0s}
-.panel{position:fixed;top:0;right:0;height:100%;width:min(320px,100vw);background:var(--bg);border-left:1px solid var(--border);box-shadow:var(--shadow);transform:translateX(100%);visibility:hidden;transition:transform .2s,visibility 0s linear .2s;z-index:50;display:flex;flex-direction:column}
-.panel.open{transform:none;visibility:visible;transition-delay:0s}
-.panel-head{display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 14px 16px;border-bottom:1px solid var(--border);font-weight:600}
-.panel-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:8px max(16px,env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) 16px}.panel h4{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--fg3);margin:18px 0 8px}
+@media screen{html:has(dialog[open]){overflow:hidden;scrollbar-gutter:stable}}
+.modal-bg.drawer{justify-content:flex-end;padding:0}
+.panel{height:100%;width:min(320px,100%);background:var(--bg);border-left:1px solid var(--border);box-shadow:var(--shadow);display:flex;flex-direction:column}
+.panel-head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 14px max(16px,env(safe-area-inset-left));border-bottom:1px solid var(--border);font-weight:600}
+.panel-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:8px max(16px,env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}.panel h4{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--fg3);margin:18px 0 8px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;font-size:13px}
 .switch{position:relative;width:34px;height:20px;flex:none;border-radius:20px;background:var(--border2);border:0;transition:.15s}
 .switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:.15s}
@@ -91,7 +90,7 @@ tr.focus td,th.focus{box-shadow:inset 0 -2px 0 var(--accent)}
 .choice{border:1px solid var(--border2);border-radius:10px;padding:10px 12px;cursor:pointer;background:var(--bg);text-align:left}.choice[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-bg)}
 .choice b{display:block;font-size:13px}.choice small{color:var(--fg2);font-size:11px;line-height:1.3;display:block;margin-top:2px}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;flex-wrap:wrap}
-.offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 32px);transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;overflow-wrap:anywhere;opacity:0;pointer-events:none;transition:opacity .2s}.offline-notice.show{opacity:1}
+.offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 2 * max(16px,env(safe-area-inset-left),env(safe-area-inset-right)));transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;overflow-wrap:anywhere;opacity:0;pointer-events:none;transition:opacity .2s}.offline-notice.show{opacity:1}
 [data-theme="dark"] .offline-notice{border-color:#2f4a3a;background:#1c2b23;color:#c8f5e6;box-shadow:0 5px 24px #00000066}
 .err{color:var(--danger);font-size:13px;padding:0 12px 10px;overflow-wrap:anywhere}
 footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));border-top:1px solid var(--border)}
@@ -102,7 +101,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 @media (max-width:640px){.hero{margin:2px 0 12px}.hero h1{font-size:24px}.drop{min-height:120px;margin:8px;padding:12px}.preview{margin:0 8px 8px;max-height:180px}.details select,.details input[type=number]{font-size:16px}.details input[type=number]{width:84px}.toolbar{position:static}.stats{margin-left:0;width:100%}.grid-wrap{max-height:70vh;max-height:70dvh}table.grid{--nw:36px;font-size:12px}table.grid th,table.grid td{padding:2px 6px;min-width:7ch;max-width:min(240px,68vw)}table.grid th.num,table.grid td.num{padding:2px 4px}.modal{padding:16px}}
 @media (max-height:520px){.toolbar{position:static}}
 @media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.row{padding:8px 0}.switch::before{content:"";position:absolute;inset:-6px -10px}.details select,.details input[type=number]{font-size:16px}.details input[type=number]{width:84px}table.grid tr.collapsed td{padding:9px 4px}}
-@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar .btn,.toolbar .seg,.panel,.panel-bg,footer,.modal-bg,.offline-notice,.hero,.no-print{display:none!important}main{padding:0;max-width:none}.toolbar{position:static;border:0;padding:0 0 8px}.grid-wrap{max-height:none;min-height:0;overflow:visible;border:0}table.grid{font-size:10px;width:100%}table.grid th,table.grid td{position:static!important;min-width:0;max-width:none;overflow-wrap:anywhere;padding:1px 4px}table.grid tr{break-inside:avoid}tr.collapsed .fold-lbl{position:static;max-width:none}table.grid thead{display:table-header-group}body{font-size:11px;display:block;height:auto}}
+@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar .btn,.toolbar .seg,.panel,footer,.modal-bg,.offline-notice,.hero,.no-print{display:none!important}main{padding:0;max-width:none}.toolbar{position:static;border:0;padding:0 0 8px}.grid-wrap{max-height:none;min-height:0;overflow:visible;border:0}table.grid{font-size:10px;width:100%}table.grid th,table.grid td{position:static!important;min-width:0;max-width:none;overflow-wrap:anywhere;padding:1px 4px}table.grid tr{break-inside:avoid}tr.collapsed .fold-lbl{position:static;max-width:none}table.grid thead{display:table-header-group}body{font-size:11px;display:block;height:auto}}
 </style>
 </head>
 <body>
@@ -126,7 +125,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
     <button class="btn primary" id="findBtn" data-i18n="find">Find difference</button>
     <button class="btn" id="exampleBtn" data-i18n="tryExample">Try example</button>
     <button class="btn" id="swapBtn" data-i18n="swap">Swap</button>
-    <button class="btn" id="toolsBtn" aria-controls="panel" aria-expanded="false">⚙ <span data-i18n="tools">Tools</span></button>
+    <button class="btn" id="toolsBtn" aria-controls="panel" aria-haspopup="dialog" aria-expanded="false">⚙ <span data-i18n="tools">Tools</span></button>
     <div class="seg" id="modeSeg"><button data-mode="table" aria-pressed="true" data-i18n-title="tipTable" title="Match up rows and columns using the header row, best for structured tables" data-i18n="table">Table</button><button data-mode="rows" aria-pressed="false" data-i18n-title="tipRows" title="Compare row by row in order, works with any layout" data-i18n="rows">Rows</button></div>
     <div class="seg" id="valSeg"><button data-val="standard" aria-pressed="true" data-i18n="standard">Standard</button><button data-val="formulas" aria-pressed="false" data-i18n="formulas">Formulas</button></div>
   </div>
@@ -141,8 +140,8 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 </main>
 <footer>Diffchecker · <span data-i18n="footer">rewritten as a dependency-free single page — all processing happens locally in your browser</span></footer>
 
-<div class="panel-bg" id="panelBg" aria-hidden="true"></div>
-<aside class="panel" id="panel" inert><div class="panel-head"><span data-i18n="tools">Tools</span><button class="btn sm ghost" id="panelClose">✕</button></div>
+<dialog class="modal-bg drawer" id="panel" aria-labelledby="panelTitle"><div class="panel">
+  <div class="panel-head"><span id="panelTitle" data-i18n="tools">Tools</span><button class="btn sm ghost" id="panelClose" autofocus>✕</button></div>
   <div class="panel-body">
     <h4 data-i18n="compOptions">Comparison options</h4>
     <div class="row"><span data-i18n="matchHeaders">Match columns by headers</span><button class="switch" data-opt="matchHeaders" role="switch"></button></div>
@@ -155,7 +154,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
     <div class="row"><span data-i18n="hideRows">Hide unchanged rows</span><button class="switch" data-opt="hideRows" role="switch"></button></div>
     <div class="row"><span data-i18n="hideCols">Hide unchanged columns</span><button class="switch" data-opt="hideCols" role="switch"></button></div>
     <div class="row"><span data-i18n="showOld">Show old value in changed cells</span><button class="switch" data-opt="showOld" role="switch"></button></div>
-  </div></aside>
+  </div></div></dialog>
 
 <dialog class="modal-bg" id="exportModal" aria-labelledby="exportModalTitle"><div class="modal"><h3 id="exportModalTitle" data-i18n="export">Export</h3><label data-i18n="format">Format</label>
   <div class="choices" id="fmtChoices"><button class="choice" data-fmt="xlsx" aria-pressed="true"><b>Excel</b><small data-i18n="fmtXlsx">Merged comparison sheet with coloured rows and cells.</small></button><button class="choice" data-fmt="csv" aria-pressed="false"><b>CSV</b><small data-i18n="fmtCsv">Plain comparison table.</small></button><button class="choice" data-fmt="pdf" aria-pressed="false"><b>PDF</b><small data-i18n="fmtPdf">Print the comparison via your browser's PDF printer.</small></button><button class="choice" data-fmt="diffchecker" aria-pressed="false"><b data-i18n="fmtDiff">Diffchecker file</b><small data-i18n="fmtDiffDesc">Save a .diffchecker file that reopens this diff later.</small></button></div>
@@ -189,7 +188,7 @@ I18N.zh.exportXlsxLimit='结果超出 Excel 规格的行数、列数或单元格
 let lang=lsGet('offline-lang'),theme=lsGet('offline-theme');if(theme!=='dark'&&theme!=='light')theme=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';if(lang!=='en'&&lang!=='zh')lang=/^zh/i.test(navigator.language||'')?'zh':'en';
 const t=(k,v)=>{const s=I18N[lang][k]??I18N.en[k]??k;return v?s.replace(/\{(\w+)\}/g,(m,x)=>Object.hasOwn(v,x)?String(v[x]):m):s};
 const $=id=>document.getElementById(id);
-function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.dataset.i18n));$('langBtn').textContent=lang==='en'?'中文':'English';$('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.querySelectorAll('[data-i18n-title]').forEach(e=>e.title=t(e.dataset.i18nTitle));document.title=t('hero.title')+' — Diffchecker';document.querySelectorAll('.switch').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});{const p=document.getElementById('panel'),c=document.getElementById('panelClose');if(p)p.setAttribute('aria-label',t('tools'));if(c)c.setAttribute('aria-label',t('cancel'))}for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)render()}
+function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=t(e.dataset.i18n));$('langBtn').textContent=lang==='en'?'中文':'English';$('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.querySelectorAll('[data-i18n-title]').forEach(e=>e.title=t(e.dataset.i18nTitle));document.title=t('hero.title')+' — Diffchecker';document.querySelectorAll('.switch').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});$('panelClose').setAttribute('aria-label',t('cancel'));for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)render()}
 function applyTheme(){document.documentElement.dataset.theme=theme;$('themeBtn').textContent=t(theme==='dark'?'light':'dark')}
 $('langBtn').onclick=()=>{lang=lang==='en'?'zh':'en';lsSet('offline-lang',lang);applyLang()};
 $('themeBtn').onclick=()=>{theme=theme==='dark'?'light':'dark';lsSet('offline-theme',theme);applyTheme()};
@@ -558,6 +557,8 @@ function pairBlock(delIdx,insIdx,rowKeyA,rowKeyB,cellsA,cellsB){// returns order
     ps.forEach((x,k)=>{if(!keepK.has(k)){usedB.delete(pairs.get(x));pairs.delete(x)}})}
   let bp=0;for(let x=0;x<delIdx.length;x++){if(pairs.has(x)){const y=pairs.get(x);while(bp<y){if(!usedB.has(bp))out.push({type:'ins',bi:insIdx[bp]});bp++}out.push({type:'chg',ai:delIdx[x],bi:insIdx[y]});bp=y+1}else out.push({type:'del',ai:delIdx[x]})}
   while(bp<insIdx.length){if(!usedB.has(bp))out.push({type:'ins',bi:insIdx[bp]});bp++}return out}
+// localeCompare 可以把不同的列名排为同一顺位；在按位置配对前仍须给它们确定的先后顺序。
+const compareLabels=(a,b)=>a.localeCompare(b)||(a<b?-1:a>b?1:0);
 const MAX_COMPARE_CELLS=500000;
 function compare(gA,gB,hA,hB){
   const rowsA=trimRows(gA.rows),rowsB=trimRows(gB.rows);let columns=[];let dataA,dataB,startA,startB;
@@ -571,9 +572,9 @@ function compare(gA,gB,hA,hB){
       const byPred=new Map();let pred=-1;for(let j=0;j<nB;j++){if(usedB.has(j))pred=j;else{if(!byPred.has(pred))byPred.set(pred,[]);byPred.get(pred).push(j)}}
       (byPred.get(-1)||[]).forEach(j=>columns.push({name:String(cellText(headB[j])||colName(j)),ia:-1,ib:j,st:'ins'}));
       for(let i=0;i<nA;i++){const j=mapAB.has(i)?mapAB.get(i):-1;columns.push({name:String(cellText(headA[i])||colName(i)),ia:i,ib:j,st:j<0?'del':movedA.has(i)&&!opts.sortCols?'mov':'eq'/* 对列排序后列的先后不再有意义，不标记“已移动” */});if(j>=0)(byPred.get(j)||[]).forEach(jj=>columns.push({name:String(cellText(headB[jj])||colName(jj)),ia:-1,ib:jj,st:'ins'}))}
-    }else{/* 按位置匹配时，“对列排序”要先把两侧的列各自按表头排好再逐个对应：否则只是把已经按原位置配好的列换个显示顺序，仅列顺序不同的两张表仍会被逐列报成修改 */const ord=(h,m)=>{const o=Array.from({length:m},(_,i)=>i);if(opts.sortCols){const key=o.map(i=>normalize(String(cellText(h[i])||'')));o.sort((x,y)=>key[x].localeCompare(key[y])||x-y)}return o},oA=ord(headA,nA),oB=ord(headB,nB);
+    }else{/* 按位置匹配时，“对列排序”要先把两侧的列各自按表头排好再逐个对应：否则只是把已经按原位置配好的列换个显示顺序，仅列顺序不同的两张表仍会被逐列报成修改 */const ord=(h,m)=>{const o=Array.from({length:m},(_,i)=>i);if(opts.sortCols){const key=o.map(i=>normalize(String(cellText(h[i])||'')));o.sort((x,y)=>compareLabels(key[x],key[y])||x-y)}return o},oA=ord(headA,nA),oB=ord(headB,nB);
       const n=Math.max(nA,nB);for(let i=0;i<n;i++){const ia=i<nA?oA[i]:-1,ib=i<nB?oB[i]:-1,ha=ia>=0?String(cellText(headA[ia])||''):'',hb=ib>=0?String(cellText(headB[ib])||''):'',hc=ia>=0&&ib>=0&&normalize(ha)!==normalize(hb);columns.push({name:hc?(ha&&hb?`${ha} → ${hb}`:`${JSON.stringify(ha)} → ${JSON.stringify(hb)}`):(hb||ha||colName(ia>=0?ia:ib)),ia,ib,st:ia<0?'ins':ib<0?'del':'eq',hdrChg:hc})}}
-    if(opts.sortCols)columns.sort((x,y)=>x.name.localeCompare(y.name));
+    if(opts.sortCols)columns.sort((x,y)=>compareLabels(x.name,y.name));
     dataA=rowsA.slice(hA+1);dataB=rowsB.slice(hB+1);startA=hA+2;startB=hB+2;
   }else{const cA=usedCols(rowsA),cB=usedCols(rowsB),n=Math.max(cA,cB);for(let i=0;i<n;i++)columns.push({name:colName(i),ia:i<cA?i:-1,ib:i<cB?i:-1,st:i>=cA?'ins':i>=cB?'del':'eq'});dataA=rowsA;dataB=rowsB;startA=1;startB=1}
   // 两个稀疏网格合并后仍会按行 × 列展开；在分配中间数组或渲染前限制实际展开量。
@@ -623,12 +624,24 @@ const readBuf=f=>f.arrayBuffer?f.arrayBuffer():new Promise((r,j)=>{const fr=new 
   for(const enc of ['utf-8','gb18030']){try{return new TextDecoder(enc,{fatal:true}).decode(u)}catch(e){}}
   try{return new TextDecoder('windows-1252').decode(u)}catch(e){return new TextDecoder().decode(u)}
 }
+function workbookKind(f,buf){
+  // 部分移动文件选择器会给不认识的扩展名一个笼统的 MIME。真正的 ZIP 仍按签名识别。
+  if(/\.diffchecker$/i.test(f.name))return 'saved';
+  const mg=new Uint8Array(buf,0,Math.min(4,buf.byteLength)),xlsx=/\.(xlsx|xlsm|xltx|xltm)$/i.test(f.name);
+  if(isZipSig(mg))return 'xlsx';
+  const ole=mg[0]===0xD0&&mg[1]===0xCF&&mg[2]===0x11&&mg[3]===0xE0;
+  if(ole&&xlsx)return 'encrypted';
+  if(ole||/\.xls$/i.test(f.name))return 'legacyXls';
+  if(xlsx||(!/\.(csv|tsv)$/i.test(f.name)&&(f.type||'').includes('spreadsheetml')))return 'xlsx';
+  return 'csv';
+}
 async function loadFile(f,side){const saved=/\.diffchecker$/i.test(f.name);if(saved)cancelLoads();else loadVersion[side]++;
   const start={...loadVersion},current=()=>loadVersion[side]===start[side]&&(!saved||(loadVersion.A===start.A&&loadVersion.B===start.B));
-  $('err'+side).textContent='';try{let wb;const buf=await readBuf(f);if(!current())return;const mg=new Uint8Array(buf,0,Math.min(4,buf.byteLength)),isZip=isZipSig(mg),isOle=mg[0]===0xD0&&mg[1]===0xCF&&mg[2]===0x11&&mg[3]===0xE0;
-    if(isOle&&/\.(xlsx|xlsm|xltx|xltm)$/i.test(f.name))throw new Error(t('encrypted'));/* 加密的 .xlsx 外层是 OLE 容器，不是旧版 .xls */
-    if(isOle||(/\.xls$/i.test(f.name)&&!isZip))throw new Error(t('legacyXls'));if(isZip||/\.(xlsx|xlsm|xltx|xltm)$/i.test(f.name)||(f.type||'').includes('spreadsheetml')||(f.type||'').includes('zip')){wb=parseXlsx(buf)}
-    else if(saved){let j;try{j=JSON.parse(decodeBuf(buf))}catch(e){throw new Error(t('wrongFile'))}
+  $('err'+side).textContent='';try{let wb;const buf=await readBuf(f);if(!current())return;
+    const kind=workbookKind(f,buf);
+    if(kind==='xlsx')wb=parseXlsx(buf);
+    else if(kind==='encrypted'||kind==='legacyXls')throw new Error(t(kind));
+    else if(kind==='saved'){let j;try{j=JSON.parse(decodeBuf(buf))}catch(e){throw new Error(t('wrongFile'))}
       if(j?.type!=='excel'||(j.version!=null&&j.version!==1))throw new Error(t('wrongFile'));
       const left=fromJsonGrid(j.left),right=fromJsonGrid(j.right); // 两侧都验证通过才替换当前会话。
       mergeOpts(j.options);saveOpts();syncUI();
@@ -666,8 +679,29 @@ function autoHeader(side){const g=WB[side].load(WB[side].sheets[SEL[side].sheet]
 function renderDetails(side){const wb=WB[side],sel=SEL[side],det=$('det'+side);const g=wb.load(wb.sheets[sel.sheet]),body=trimRows(g.rows),cols=usedCols(body);/* 行数、列数都只算有内容的部分，与对比时的口径一致：整列为空的尾部列（如 CSV 行尾多出的分隔符）不计入列数，也不在预览里占位 */det.classList.remove('hidden');
   /* 重绘会把整块控件换掉：先记下带焦点的是哪个控件，绘完把焦点还给新的那个。否则用方向键 / 微调按钮改表头行号、或用键盘切换工作表时，每改一步焦点就丢一次，接下来的按键变成了滚动页面 */const ae=document.activeElement,fq=ae&&det.contains(ae)?['[data-sheet]','[data-header]'].find(q=>ae.matches(q)):'';
   det.innerHTML=`<label>${t('sheet')} <select data-sheet>${wb.sheets.map((s,i)=>`<option value="${i}" ${i===sel.sheet?'selected':''}>${esc(s.name)}${s.hidden?` (${esc(t('hiddenSheet'))})`:''}</option>`).join('')}</select></label><label title="${esc(t('headerTip'))}">${t('headerLine')} <input type="number" min="1" max="1048576" inputmode="numeric" data-header value="${sel.header+1}"></label><span style="color:var(--fg2)">${t(body.length===1?'nRows1':'nRows',{n:body.length})} × ${t(cols===1?'nCols1':'nCols',{n:cols})}</span>${sel.auto&&sel.header>0?`<span class="note">${esc(t('headerDetected',{line:sel.header+1}))}</span>`:''}`;
-  if(fq)det.querySelector(fq).focus();det.querySelector('[data-sheet]').onchange=e=>{const prev=sel.sheet;let ok=true;sel.sheet=+e.target.value;$('err'+side).textContent='';/* 选中的工作表损坏读不出来时退回原来的表并给出提示，而不是停在一张一比较就报错的表上 */try{autoHeader(side)}catch(err){console.error(err);ok=false;$('err'+side).textContent=t('parseError',{name:wb.sheets[sel.sheet].name,msg:err.message});sel.sheet=prev}renderDetails(side);if(ok&&RES)run()};det.querySelector('[data-header]').onchange=e=>{const raw=Math.floor(e.target.valueAsNumber);sel.header=Number.isSafeInteger(raw)&&raw>=1?Math.min(raw,1048576)-1:0;sel.auto=false;renderDetails(side);if(RES)run()};
-  const pv=$('prev'+side);pv.classList.remove('hidden');const rows=body.slice(0,30);let h='<table><tr><th></th>';for(let c=0;c<Math.min(cols,40);c++)h+=`<th>${colName(c)}</th>`;h+='</tr>';rows.forEach((r,i)=>{h+=`<tr class="${i===sel.header&&opts.mode==='table'?'hdr':''}"><th>${i+1}</th>`;for(let c=0;c<Math.min(cols,40);c++)h+=`<td title="${esc(r[c]?.f||'')}">${esc(cellText(r[c]))}</td>`;h+='</tr>'});pv.innerHTML=h+'</table>'}
+  if(fq)det.querySelector(fq).focus({preventScroll:true});
+  det.querySelector('[data-sheet]').onchange=e=>{
+    const prev=sel.sheet;let ok=true;sel.sheet=+e.target.value;$('err'+side).textContent='';
+    // 选中的工作表损坏时退回原来的表，比较仍能继续使用已有数据。
+    try{autoHeader(side)}catch(err){console.error(err);ok=false;$('err'+side).textContent=t('parseError',{name:wb.sheets[sel.sheet].name,msg:err.message});sel.sheet=prev}
+    renderDetails(side);if(ok&&RES)run();
+  };
+  const header=det.querySelector('[data-header]');
+  header.onchange=()=>{
+    const raw=Math.floor(header.valueAsNumber);
+    sel.header=Number.isSafeInteger(raw)&&raw>=1?Math.min(raw,1048576)-1:0;sel.auto=false;
+    // 移除旧输入框会使触屏键盘收起；只刷新预览和自动检测提示。
+    const value=String(sel.header+1);if(header.value!==value)header.value=value;
+    det.querySelector('.note')?.remove();renderPreview(side,body,cols);if(RES)run();
+  };
+  renderPreview(side,body,cols);
+}
+function renderPreview(side,body,cols){
+  const pv=$('prev'+side);pv.classList.remove('hidden');const rows=body.slice(0,30),n=Math.min(cols,40);
+  let h='<table><tr><th></th>';for(let c=0;c<n;c++)h+=`<th>${colName(c)}</th>`;h+='</tr>';
+  rows.forEach((r,i)=>{h+=`<tr class="${i===SEL[side].header&&opts.mode==='table'?'hdr':''}"><th>${i+1}</th>`;for(let c=0;c<n;c++)h+=`<td title="${esc(r[c]?.f||'')}">${esc(cellText(r[c]))}</td>`;h+='</tr>'});
+  pv.innerHTML=h+'</table>';
+}
 $('swapBtn').onclick=()=>{if(!WB.A||!WB.B)return;cancelLoads();[WB.A,WB.B]=[WB.B,WB.A];[NAMES.A,NAMES.B]=[NAMES.B,NAMES.A];[SEL.A,SEL.B]=[SEL.B,SEL.A];for(const s of ['A','B']){$('name'+s).textContent=NAMES[s];$('err'+s).textContent='';renderDetails(s)}if(RES)run()};
 $('findBtn').onclick=()=>{if(!WB.A||!WB.B)return notice(t('needTwo'));if(run())$('result').scrollIntoView({behavior:scrollBehavior(),block:'start'})};
 function clearResult(){RES=null;expanded.clear();$('result').classList.add('hidden');$('exportModal').close();$('gridWrap').replaceChildren()}
@@ -700,12 +734,39 @@ function focusRow(wrap,i){const row=wrap.querySelector('table')?.rows[i];if(!row
 function rowHtml(r,cols,id){return `<tr class="${r.type}" ${id?`id="${id}"`:''}><td class="num a">${r.na??''}</td><td class="num b">${r.nb??''}</td>${cols.map(c=>{const cell=r.cells[c.k];const cls=r.type==='eq'||r.type==='chg'?(cell.st==='chg'?'chg':cell.st==='cdel'?'cdel':cell.st==='cins'?'cins':(c.st==='ins'||c.st==='del')&&!cell.a&&!cell.b?'colx':''):'';return `<td class="${cls}">${renderCell(cell)}</td>`}).join('')}</tr>`}
 function goChange(dir){const box=$('gridWrap'),n=+box.dataset.changes||0;if(!n)return;focusIdx=focusIdx<0&&dir<0?n-1:((focusIdx+dir)%n+n)%n;box.querySelectorAll('.focus').forEach(e=>e.classList.remove('focus'));const el=$('focus-'+focusIdx);if(el){el.classList.add('focus');scrollToEl(box,el)}}
 const scrollBehavior=()=>matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth';
-function scrollToEl(box,el){const br=box.getBoundingClientRect(),er=el.getBoundingClientRect(),bh=scrollBehavior(),head=box.querySelector('thead')?.getBoundingClientRect().height||0,numB=box.querySelector('th.num.b')?.getBoundingClientRect(),stickyL=numB?Math.max(0,numB.right-br.left):0,opt={behavior:bh};if(el.tagName==='TH'){opt.left=Math.max(0,box.scrollLeft+(er.left-br.left)-stickyL-Math.max(0,(box.clientWidth-stickyL-er.width)/2))}else{opt.top=Math.max(0,box.scrollTop+(er.top-br.top)-head-Math.max(0,(box.clientHeight-head-er.height)/2));const cell=el.querySelector('td.chg,td.cdel,td.cins');if(cell){const cr=cell.getBoundingClientRect();if(cr.left<br.left+stickyL||cr.right>br.right)opt.left=Math.max(0,box.scrollLeft+(cr.left-br.left)-stickyL-12)}}box.scrollTo(opt);if(Math.min(br.bottom,window.innerHeight)-Math.max(br.top,0)<Math.min(br.bottom-br.top,140))box.scrollIntoView({behavior:bh,block:'nearest'})}
+// 先预测容器滚动（包括触及底部后的钳位）后目标所在的位置，再只补足外层页面的滚动量。
+function revealChange(box,rect,opt){
+  const next=opt.top==null?box.scrollTop:Math.min(opt.top,Math.max(0,box.scrollHeight-box.clientHeight));
+  const targetTop=rect.top+box.scrollTop-next,targetBottom=targetTop+Math.min(rect.height,24);
+  const vv=window.visualViewport,viewTop=vv?.offsetTop??0,viewBottom=viewTop+(vv?.height||window.innerHeight);
+  const toolbar=box.closest('#result')?.querySelector('.toolbar'),style=toolbar&&getComputedStyle(toolbar);
+  const sticky=style?.position==='sticky'?toolbar.offsetHeight+(parseFloat(style.top)||0):0;
+  const top=viewTop+sticky+8,bottom=viewBottom-8;
+  const dy=targetTop<top?targetTop-top:targetBottom>bottom?targetBottom-bottom:0;
+  box.scrollTo(opt);
+  if(dy)window.scrollBy({top:dy,behavior:opt.behavior});
+}
+function scrollToEl(box,el){
+  const br=box.getBoundingClientRect(),er=el.getBoundingClientRect(),head=box.querySelector('thead')?.getBoundingClientRect().height||0;
+  const numB=box.querySelector('th.num.b')?.getBoundingClientRect(),stickyL=numB?Math.max(0,numB.right-br.left):0,opt={behavior:scrollBehavior()};
+  if(el.tagName==='TH'){
+    opt.left=Math.max(0,box.scrollLeft+er.left-br.left-stickyL-Math.max(0,(box.clientWidth-stickyL-er.width)/2));
+  }else{
+    opt.top=Math.max(0,box.scrollTop+er.top-br.top-head-Math.max(0,(box.clientHeight-head-er.height)/2));
+    const cell=el.querySelector('td.chg,td.cdel,td.cins');
+    if(cell){const cr=cell.getBoundingClientRect();if(cr.left<br.left+stickyL||cr.right>br.right)opt.left=Math.max(0,box.scrollLeft+cr.left-br.left-stickyL-12)}
+  }
+  revealChange(box,er,opt);
+}
 $('prevBtn').onclick=()=>goChange(-1);$('nextBtn').onclick=()=>goChange(1);
 $('modeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.mode=b.dataset.mode;saveOpts();syncUI();for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)run()};
 $('valSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.val=b.dataset.val;saveOpts();syncUI();for(const s of ['A','B'])if(WB[s])renderDetails(s);if(RES)run()};
-function setPanel(open){const panel=$('panel'),bg=$('panelBg'),el=$(open?'panelClose':'toolsBtn');panel.inert=!open;panel.classList.toggle('open',open);if(bg)bg.classList.toggle('open',open);$('toolsBtn').setAttribute('aria-expanded',String(open));try{el.focus({preventScroll:true})}catch(e){el.focus()}}
-$('toolsBtn').onclick=()=>setPanel(!$('panel').classList.contains('open'));$('panelClose').onclick=()=>setPanel(false);
+function setPanel(open){const panel=$('panel'),button=$('toolsBtn');
+  if(open===panel.open)return;
+  if(open){button.focus({preventScroll:true});panel.showModal()}else panel.close();
+  button.setAttribute('aria-expanded',String(open));
+}
+$('toolsBtn').onclick=()=>setPanel(true);$('panelClose').onclick=()=>setPanel(false);
 document.querySelectorAll('.switch[data-opt]').forEach(sw=>sw.onclick=()=>{const k=sw.dataset.opt;opts[k]=!opts[k];saveOpts();syncUI();if(!RES)return;if(k==='hideRows'){expanded=new Set();render()}else if(k==='hideCols'||k==='showOld')render();else run()});
 function syncUI(){document.querySelectorAll('.switch[data-opt]').forEach(sw=>sw.setAttribute('aria-checked',String(!!opts[sw.dataset.opt])));$('modeSeg').querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.mode===opts.mode)));$('valSeg').querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.val===opts.val)))}
 
@@ -760,13 +821,12 @@ function exampleWb(v){const H=['Order ID','Site','Severity','Assigned within (h)
   const cols=Math.max(...rows.map(r=>r.length));return {type:'json',sheets:[{name:'Work orders',grid:{rows:rows.map(r=>r.map(x=>({v:String(x),f:null,d:false}))),cols}}],load:s=>s.grid}}
 $('exampleBtn').onclick=()=>{cancelLoads();setWorkbook('A',exampleWb(0),'work-orders-v1.xlsx');setWorkbook('B',exampleWb(1),'work-orders-v2.xlsx');run();$('result').scrollIntoView({behavior:scrollBehavior(),block:'start'})};
 ['dragover','drop'].forEach(n=>window.addEventListener(n,e=>{if(hasFiles(e))e.preventDefault()}));
-/* Esc 关闭侧栏与弹窗 */
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('exportModal').open&&$('panel').classList.contains('open')){e.preventDefault();setPanel(false)}});
+$('panel').addEventListener('cancel',e=>{e.preventDefault();setPanel(false)});
 /* 点击导出弹窗的遮罩（而不是弹窗本身）即可关闭，与 Esc 一致 */
 /* 按下时就关闭会让触屏随后合成的 click 落到遮罩下面的页面上：按下与点击都落在遮罩上才关闭；在遮罩上拖动也不去滚动背后的页面 */
 function closeOnBackdrop(dlg,close){let down=false;dlg.addEventListener('pointerdown',e=>{down=e.target===dlg});dlg.addEventListener('pointercancel',()=>{down=false});dlg.addEventListener('click',e=>{const hit=down&&e.target===dlg;down=false;if(hit)close()});dlg.addEventListener('touchmove',e=>{if(e.target===dlg){e.preventDefault();return}const el=e.target?.nodeType===3?e.target.parentElement:e.target,box=el?.closest?.('.modal');if(box&&box.scrollHeight<=box.clientHeight&&!el.closest('input,textarea,select'))e.preventDefault()},{passive:false})}
 closeOnBackdrop($('exportModal'),()=>$('exportModal').close());
-closeOnBackdrop($('panelBg'),()=>setPanel(false));
+closeOnBackdrop($('panel'),()=>setPanel(false));
 $('panel').addEventListener('touchmove',e=>{const el=e.target?.nodeType===3?e.target.parentElement:e.target,b=el?.closest?.('.panel-body');if(!b||(b.scrollHeight<=b.clientHeight&&!el?.closest?.('input,textarea,select')))e.preventDefault()},{passive:false});
 applyTheme();syncUI();applyLang();
 </script>

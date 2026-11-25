@@ -16,12 +16,12 @@
 @media not print{[data-theme="dark"]{color-scheme:dark;--bg:#17191c;--bg2:#1f2226;--bg3:#262a2f;--fg:#ebedef;--fg2:#aeb6be;--fg3:#7d858d;--border:#353a3f;--border2:#454a50;--accent:#5bd494;--accent2:#5bd494;--accent-bg:#1c2b23;
 --ins-block:rgba(0,180,144,.16);--ins-hl:rgba(0,200,160,.4);--ins-fg:#c8f5e6;--del-block:rgba(255,80,40,.14);--del-hl:rgba(255,90,50,.42);--del-fg:#ffd7cc;--empty-block:rgba(255,255,255,.04);--shadow:0 6px 28px rgba(0,0,0,.4);--ins-num:rgba(120,225,195,.75);--del-num:rgba(255,150,125,.8);
 --syn-k:#d2a8ff;--syn-s:#a5d6ff;--syn-n:#79c0ff;--syn-c:#8b949e;--syn-t:#7ee787;--syn-a:#ffa657}[data-theme="dark"] .btn.primary{color:#0d2618}[data-theme="dark"] .btn.primary:hover{background:#72dea4;border-color:#72dea4}}
-*{box-sizing:border-box}html{-webkit-text-size-adjust:100%;text-size-adjust:100%}html,body{margin:0;min-height:100%}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%;text-size-adjust:100%;scroll-padding-top:env(safe-area-inset-top);scroll-padding-bottom:env(safe-area-inset-bottom)}html,body{margin:0;min-height:100%}
 body{background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:flex;flex-direction:column;min-height:100vh;min-height:100dvh}
 html[lang="zh"] body{font-family:"PingFang SC","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif}
 button,select,input{font:inherit;color:inherit}button,a,select,label,tr.collapsed{touch-action:manipulation}
 button{cursor:pointer}
-.offline-header{flex:none;width:100%;background:var(--bg);border-bottom:1px solid var(--border)}
+.offline-header{flex:none;width:100%;padding-top:env(safe-area-inset-top);background:var(--bg);border-bottom:1px solid var(--border)}
 .offline-navigation{display:flex;align-items:center;min-height:64px;gap:32px;padding:0 max(28px,env(safe-area-inset-right)) 0 max(28px,env(safe-area-inset-left))}
 .offline-brand{display:inline-flex;align-items:center;gap:9px;color:inherit;text-decoration:none;font-size:20px;font-weight:700;letter-spacing:-.65px;white-space:nowrap}
 .offline-tools{display:flex;align-self:stretch;gap:28px}
@@ -54,7 +54,7 @@ main{flex:1;width:100%;max-width:1600px;margin:0 auto;padding:22px max(28px,env(
 .btn.ghost:hover{background:var(--bg3)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 .actions{display:flex;justify-content:center;align-items:center;gap:14px;margin:18px 0 8px;flex-wrap:wrap}
-.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0;position:sticky;top:0;background:var(--bg);z-index:5;border-bottom:1px solid var(--border)}
+.toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0;position:sticky;top:env(safe-area-inset-top);background:var(--bg);z-index:5;border-bottom:1px solid var(--border)}
 .seg{display:inline-flex;border:1px solid var(--border2);border-radius:8px;overflow:hidden}
 .seg button{border:0;background:transparent;padding:6px 12px;font-size:13px;color:var(--fg2)}
 .seg button+button{border-left:1px solid var(--border2)}
@@ -106,12 +106,11 @@ tr.focus td.code{box-shadow:inset 3px 0 0 var(--accent)}
 .identical{display:flex;flex-direction:column;align-items:center;gap:6px;padding:54px 20px;text-align:center}
 .identical .ic{width:44px;height:44px;border-radius:50%;background:var(--accent-bg);color:var(--accent2);display:grid;place-items:center;font-size:22px}
 .identical h3{margin:6px 0 0;font-size:18px}.identical p{margin:0;color:var(--fg2)}
-.panel-bg{position:fixed;inset:0;touch-action:none;background:rgba(0,0,0,.3);opacity:0;visibility:hidden;transition:opacity .2s,visibility 0s linear .2s;z-index:49}
-.panel-bg.open{opacity:1;visibility:visible;transition-delay:0s}
-.panel{position:fixed;top:0;right:0;height:100%;width:min(320px,100vw);background:var(--bg);border-left:1px solid var(--border);box-shadow:var(--shadow);transform:translateX(100%);visibility:hidden;transition:transform .2s,visibility 0s linear .2s;z-index:50;display:flex;flex-direction:column}
-.panel.open{transform:none;visibility:visible;transition-delay:0s}
-.panel-head{display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 14px 16px;border-bottom:1px solid var(--border);font-weight:600}
-.panel-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:8px max(16px,env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) 16px}
+@media screen{html:has(dialog[open]){overflow:hidden;scrollbar-gutter:stable}}
+.modal-bg.drawer{justify-content:flex-end;padding:0;top:var(--dialog-top,0px);bottom:auto;height:var(--dialog-height,100%)}
+.panel{height:100%;width:min(320px,100%);background:var(--bg);border-left:1px solid var(--border);box-shadow:var(--shadow);display:flex;flex-direction:column}
+.panel-head{flex:none;display:flex;align-items:center;justify-content:space-between;padding:calc(14px + env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) 14px max(16px,env(safe-area-inset-left));border-bottom:1px solid var(--border);font-weight:600}
+.panel-body{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:8px max(16px,env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left))}
 .panel h4{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--fg3);margin:18px 0 8px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;font-size:13px}
 .row select,.row input[type=text]{border:1px solid var(--border2);border-radius:6px;padding:4px 8px;background:var(--bg);max-width:160px;min-width:0}
@@ -132,7 +131,7 @@ tr.focus td.code{box-shadow:inset 3px 0 0 var(--accent)}
 .choice[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-bg)}
 .choice b{display:block;font-size:13px}.choice small{color:var(--fg2);font-size:11px;line-height:1.3;display:block;margin-top:2px}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px;flex-wrap:wrap}
-.offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 32px);transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;overflow-wrap:anywhere;opacity:0;pointer-events:none;transition:opacity .2s}
+.offline-notice{position:fixed;z-index:10000;bottom:calc(24px + env(safe-area-inset-bottom));left:50%;width:max-content;max-width:calc(100vw - 2 * max(16px,env(safe-area-inset-left),env(safe-area-inset-right)));transform:translateX(-50%);padding:12px 18px;border:1px solid #d8e8de;border-radius:10px;background:#f2fcf5;color:#195735;box-shadow:0 5px 24px #00000010;font-size:14px;overflow-wrap:anywhere;opacity:0;pointer-events:none;transition:opacity .2s}
 .offline-notice.show{opacity:1}
 [data-theme="dark"] .offline-notice{border-color:#2f4a3a;background:#1c2b23;color:#c8f5e6;box-shadow:0 5px 24px #00000066}
 footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left));border-top:1px solid var(--border)}
@@ -144,7 +143,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 @media (max-width:640px){.hero{margin:2px 0 12px}.hero h1{font-size:24px}.input-card textarea{min-height:160px;font-size:16px}.row select,.row input[type=text],.rule input{font-size:16px}.toolbar{position:static}.stats{margin-left:0;width:100%}.diff-head{font-size:12px}.diff-head>div{padding:6px 8px}table.diff thead th{padding:6px 8px;font-size:12px}.diff-scroll{max-height:70vh;max-height:70dvh}table.diff{font-size:12px}table.diff td{padding:0 6px 0 4px}table.diff td.num{width:36px;min-width:36px;padding:0 5px 0 3px;font-size:11px}table.diff col.cn{width:36px}table.diff td.sign,table.diff col.cs{width:14px;min-width:14px;padding-left:3px}table.diff.is-split:not(.nowrap){min-width:580px}.modal{padding:16px}}
 @media (max-height:520px){.toolbar{position:static}}
 @media (pointer:coarse){.btn.sm{min-height:36px;padding:5px 12px}.seg button{min-height:36px}.offline-language{min-height:36px}.row{padding:8px 0}.switch::before{content:"";position:absolute;inset:-6px -10px}.input-card textarea,.row select,.row input[type=text],.rule input{font-size:16px}table.diff tr.collapsed td{padding:9px 4px}}
-@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar,.panel,.panel-bg,footer,.modal-bg,.offline-notice,.no-print,.hero{display:none!important}main{padding:0;max-width:none}.diff-scroll{max-height:none;overflow:visible}.diff-wrap{border:0}body{font-size:11px;display:block;height:auto;background:#fff}.printing-text-result #result{display:none!important}.printing-text-result #printResult{display:block}#printResult .preset-redline mark.d{color:#d13415}#printResult .preset-redline mark.i{color:#0f7a4a}table.diff{font-size:10.5px}table.diff thead{display:table-header-group}table.diff thead th{position:static;box-shadow:none}table.diff tr{break-inside:avoid}tr.collapsed .fold-lbl{position:static;max-width:none}table.diff.is-split,table.diff.nowrap{table-layout:fixed;width:100%;min-width:0}table.diff.nowrap td.code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}table.diff.nowrap tr.split td.code{width:50%}}
+@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.offline-header,.inputs,.actions,.toolbar,.panel,footer,.modal-bg,.offline-notice,.no-print,.hero{display:none!important}main{padding:0;max-width:none}.diff-scroll{max-height:none;overflow:visible}.diff-wrap{border:0}body{font-size:11px;display:block;height:auto;background:#fff}.printing-text-result #result{display:none!important}.printing-text-result #printResult{display:block}#printResult .preset-redline mark.d{color:#d13415}#printResult .preset-redline mark.i{color:#0f7a4a}table.diff{font-size:10.5px}table.diff thead{display:table-header-group}table.diff thead th{position:static;box-shadow:none}table.diff tr{break-inside:avoid}tr.collapsed .fold-lbl{position:static;max-width:none}table.diff.is-split,table.diff.nowrap{table-layout:fixed;width:100%;min-width:0}table.diff.nowrap td.code{white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal}table.diff.nowrap tr.split td.code{width:50%}}
 </style>
 </head>
 <body>
@@ -171,7 +170,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
     <button class="btn" id="exampleBtn" data-i18n="tryExample">Try example</button>
     <button class="btn" id="swapBtn" data-i18n="swap">Swap diffs</button>
     <button class="btn" id="clearAllBtn" data-i18n="clear">Clear</button>
-    <button class="btn" id="toolsBtn" aria-controls="panel" aria-expanded="false">⚙ <span data-i18n="tools">Tools</span></button>
+    <button class="btn" id="toolsBtn" aria-controls="panel" aria-haspopup="dialog" aria-expanded="false">⚙ <span data-i18n="tools">Tools</span></button>
   </div>
   <section id="result" class="hidden">
     <div class="toolbar">
@@ -191,9 +190,8 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
 </main>
 <footer>Diffchecker · <span data-i18n="footer">rewritten as a dependency-free single page — all processing happens locally in your browser</span></footer>
 
-<div class="panel-bg" id="panelBg" aria-hidden="true"></div>
-<aside class="panel" id="panel" inert aria-label="Tools">
-  <div class="panel-head"><span data-i18n="tools">Tools</span><button class="btn sm ghost" id="panelClose">✕</button></div>
+<dialog class="modal-bg drawer" id="panel" aria-labelledby="panelTitle"><div class="panel">
+  <div class="panel-head"><span id="panelTitle" data-i18n="tools">Tools</span><button class="btn sm ghost" id="panelClose" autofocus>✕</button></div>
   <div class="panel-body">
     <h4 data-i18n="display">Display</h4>
     <div class="row"><span data-i18n="realtime">Real-time editor</span><button class="switch" data-opt="realtime" role="switch" aria-checked="false"></button></div>
@@ -214,7 +212,7 @@ footer{text-align:center;color:var(--fg3);font-size:12px;padding:16px max(16px,e
     <div class="rules" id="rules"></div>
     <div style="display:flex;gap:8px;margin-top:8px"><button class="btn sm" id="addRule" data-i18n="addRule">Add rule</button><button class="btn sm primary" id="applyRules" data-i18n="apply">Apply changes</button></div>
   </div>
-</aside>
+</div></dialog>
 
 <dialog class="modal-bg" id="exportModal" aria-labelledby="exportModalTitle"><div class="modal">
   <h3 id="exportModalTitle" data-i18n="export">Export</h3>
@@ -243,7 +241,7 @@ I18N.en.exportXlsxLimit='Excel cannot store this many rows or columns, or a cell
 I18N.zh.exportXlsxLimit='结果超出 Excel 规格的行数、列数或单元格 32767 字符上限。请改用其他格式。';
 let lang=lsGet('offline-lang');if(lang!=='en'&&lang!=='zh')lang=/^zh/i.test(navigator.language||'')?'zh':'en';
 const t=(k,v)=>{const s=I18N[lang][k]??I18N.en[k]??k;return v?s.replace(/\{(\w+)\}/g,(m,x)=>Object.hasOwn(v,x)?String(v[x]):m):s};
-function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>{e.textContent=t(e.dataset.i18n)});document.getElementById('langBtn').textContent=lang==='en'?'中文':'English';document.getElementById('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.getElementById('rules').querySelectorAll('input').forEach(i=>{i.placeholder=t('rulePh');i.setAttribute('aria-label',i.placeholder)});document.querySelectorAll('[data-i18n-ph]').forEach(e=>{e.placeholder=t(e.dataset.i18nPh);e.setAttribute('aria-label',e.placeholder)});document.querySelectorAll('[data-i18n-title]').forEach(e=>e.title=t(e.dataset.i18nTitle));document.getElementById('rules').querySelectorAll('button').forEach(b=>{b.title=t('remove');b.setAttribute('aria-label',b.title)});document.title=t('hero.title')+' — Diffchecker';updateMeta();document.querySelectorAll('.switch,select[data-sel]').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});{const p=document.getElementById('panel'),c=document.getElementById('panelClose');if(p)p.setAttribute('aria-label',t('tools'));if(c)c.setAttribute('aria-label',t('cancel'))}if(lastDiff)render()}
+function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>{e.textContent=t(e.dataset.i18n)});document.getElementById('langBtn').textContent=lang==='en'?'中文':'English';document.getElementById('themeBtn').textContent=t(theme==='dark'?'light':'dark');document.getElementById('rules').querySelectorAll('input').forEach(i=>{i.placeholder=t('rulePh');i.setAttribute('aria-label',i.placeholder)});document.querySelectorAll('[data-i18n-ph]').forEach(e=>{e.placeholder=t(e.dataset.i18nPh);e.setAttribute('aria-label',e.placeholder)});document.querySelectorAll('[data-i18n-title]').forEach(e=>e.title=t(e.dataset.i18nTitle));document.getElementById('rules').querySelectorAll('button').forEach(b=>{b.title=t('remove');b.setAttribute('aria-label',b.title)});document.title=t('hero.title')+' — Diffchecker';updateMeta();document.querySelectorAll('.switch,select[data-sel]').forEach(s=>{const l=s.previousElementSibling;if(l)s.setAttribute('aria-label',l.textContent)});document.getElementById('panelClose').setAttribute('aria-label',t('cancel'));if(lastDiff)render()}
 let theme=lsGet('offline-theme');if(theme!=='dark'&&theme!=='light')theme=matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
 function applyTheme(){document.documentElement.dataset.theme=theme;document.getElementById('themeBtn').textContent=t(theme==='dark'?'light':'dark')}
 document.getElementById('langBtn').onclick=()=>{lang=lang==='en'?'zh':'en';lsSet('offline-lang',lang);applyLang()};
@@ -421,8 +419,8 @@ function computeDiff(textA,textB,o){
 // 未闭合的块持续到文末：既保留着色，也避免每次遇到起始标记都重新扫描到文末。
 const SYN={
  json:{rx:/("(?:\\.|[^"\\\n])*")(\s*:)?|(-?\d+\.?\d*(?:[eE][+-]?\d+)?)|\b(true|false|null)\b/g,map:(m)=>m[1]?(m[2]?'at':'s'):m[3]?'n':'k'},
- js:{rx:/(\/\/.*|\/\*[\s\S]*?(?:\*\/|$))|("(?:\\[\s\S]?|[^"\\\n])*"|'(?:\\[\s\S]?|[^'\\\n])*'|`(?:\\[\s\S]?|[^`\\])*(?:`|$))|\b(0x[\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b|\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|import|export|from|default|try|catch|finally|throw|typeof|instanceof|in|of|async|await|yield|this|super|null|undefined|true|false|interface|type|enum|implements|public|private|protected|readonly|static|void|delete)\b/g,map:m=>m[1]?'c':m[2]?'s':m[3]?'n':'k'},
- py:{rx:/(#.*)|("""(?:\\[\s\S]?|"(?!"")|[^"\\])*(?:"""|$)|'''(?:\\[\s\S]?|'(?!'')|[^'\\])*(?:'''|$)|"(?:\\[\s\S]?|[^"\\\n])*"|'(?:\\[\s\S]?|[^'\\\n])*')|\b(\d+\.?\d*)\b|\b(def|class|return|if|elif|else|for|while|in|not|and|or|is|None|True|False|import|from|as|try|except|finally|raise|with|lambda|yield|pass|break|continue|global|nonlocal|assert|del|async|await|self)\b/g,map:m=>m[1]?'c':m[2]?'s':m[3]?'n':'k'},
+ js:{rx:/(\/\/.*|\/\*[\s\S]*?(?:\*\/|$))|("(?:\\[\s\S]|[^"\\\n])*"|'(?:\\[\s\S]|[^'\\\n])*'|`(?:\\(?:[\s\S]|$)|[^`\\])*(?:`|$))|\b(0x[\da-fA-F]+|\d+\.?\d*(?:[eE][+-]?\d+)?)\b|\b(const|let|var|function|return|if|else|for|while|do|switch|case|break|continue|new|class|extends|import|export|from|default|try|catch|finally|throw|typeof|instanceof|in|of|async|await|yield|this|super|null|undefined|true|false|interface|type|enum|implements|public|private|protected|readonly|static|void|delete)\b/g,map:m=>m[1]?'c':m[2]?'s':m[3]?'n':'k'},
+ py:{rx:/(#.*)|("""(?:\\(?:[\s\S]|$)|"(?!"")|[^"\\])*(?:"""|$)|'''(?:\\(?:[\s\S]|$)|'(?!'')|[^'\\])*(?:'''|$)|"(?:\\[\s\S]|[^"\\\n])*"|'(?:\\[\s\S]|[^'\\\n])*')|\b(\d+\.?\d*)\b|\b(def|class|return|if|elif|else|for|while|in|not|and|or|is|None|True|False|import|from|as|try|except|finally|raise|with|lambda|yield|pass|break|continue|global|nonlocal|assert|del|async|await|self)\b/g,map:m=>m[1]?'c':m[2]?'s':m[3]?'n':'k'},
  xml:{rx:/(<!--[\s\S]*?(?:-->|$))|("[^"\n]*"|'[^'\n]*')|(<\/?[\w:.-]+|\/?>)|\s([\w:.-]+)(?==)/g,map:m=>m[1]?'c':m[2]?'s':m[3]?'tg':'at'},
  css:{rx:/(\/\*[\s\S]*?(?:\*\/|$))|("[^"\n]*"|'[^'\n]*')|(#[\da-fA-F]{3,8}\b|-?\d+\.?\d*(?:px|em|rem|%|vh|vw|s|ms|deg)?)|([.#]?[\w-]+)(?=\s*\{)|([\w-]+)(?=\s*:)|[\w-]+/g,map:m=>m[1]?'c':m[2]?'s':m[3]?'n':m[4]?'tg':m[5]?'at':''},// 末尾的 [\w-]+ 把既不是选择器也不是属性名的整段标识符一次吃掉：否则引擎会从这一段的每个字符重新起头再各扫一遍，超长的连续字母数字串（base64url、哈希…）上是 O(n²)
  sql:{rx:/(--.*|\/\*[\s\S]*?(?:\*\/|$))|('(?:''|[^'])*(?:'|$))|\b(\d+\.?\d*)\b|\b(SELECT|FROM|WHERE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|DROP|ALTER|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AND|OR|NOT|NULL|AS|ORDER|BY|GROUP|HAVING|LIMIT|OFFSET|UNION|DISTINCT|PRIMARY|KEY|INDEX|VIEW|CASE|WHEN|THEN|ELSE|END|IN|EXISTS|BETWEEN|LIKE|IS|COUNT|SUM|AVG|MIN|MAX)\b/gi,map:m=>m[1]?'c':m[2]?'s':m[3]?'n':'k'}};
@@ -466,7 +464,13 @@ function countText(v){let lines=1,words=0,run=false;const n=v.length;for(let i=0
   if(c===10||c===13){if(c===13&&v.charCodeAt(i+1)===10)i++;if(i<n-1)lines++;run=false}else if(isWs(c))run=false;else if(isCjk(c)){words++;run=false}else if(!run){run=true;words++}}
   return {lines,words,chars:n}}
 function updateMeta(side){for(const [s,id,ta] of [['A','metaA',txtA],['B','metaB',txtB]])if(!side||side===s){const v=ta.value,c=(n,k)=>`${n} ${t(n===1?k+'1':k)}`;/* 数量为 1 时英文用单数（1 line · 1 word），与差异统计的写法一致 */if(!v){$(id).textContent='';continue}const {lines,words,chars}=countText(v);$(id).textContent=`${c(lines,'lines')} · ${c(words,'words')} · ${c(chars,'characters')}`}}
-function run(keep){clearPrintResult();clearTimeout(rt);rt=0;const input={left:txtA.value,right:txtB.value,leftName:fileNames.A,rightName:fileNames.B},d=computeDiff(input.left,input.right,opts);d.input=input;lastDiff=d;expanded=new Set();focusIdx=-1;$('result').classList.remove('hidden');render();if(!opts.realtime&&!keep)$('result').scrollIntoView({behavior:scrollBehavior(),block:'start'})}
+function run(keep){
+  if(!keep){const editor=document.activeElement;if(editor===txtA||editor===txtB)editor.blur()}
+  clearPrintResult();clearTimeout(rt);rt=0;
+  const input={left:txtA.value,right:txtB.value,leftName:fileNames.A,rightName:fileNames.B},d=computeDiff(input.left,input.right,opts);
+  d.input=input;lastDiff=d;expanded=new Set();focusIdx=-1;$('result').classList.remove('hidden');render();
+  if(!keep)$('result').scrollIntoView({behavior:scrollBehavior(),block:'start'});
+}
 const CTX=3;// 隐藏未修改行时，每个折叠块首尾各保留的行数（页面、PNG 导出共用）
 function render(){
   const d=lastDiff;if(!d)return;if(!printMedia.matches)clearPrintResult();const scroll=$('diffScroll');
@@ -529,7 +533,27 @@ function diffView(d,layout,interactive=true){
    有很多折叠块时每展开一个都得重新 Tab 过来。重绘后折叠条原来的位置正好是展开出来的第一行，把焦点放到这一行，Tab 就从这里继续 */
 function focusRow(wrap,i){const row=wrap.querySelector('table')?.rows[i];if(!row)return;row.tabIndex=-1;try{row.focus({preventScroll:true})}catch(e){row.focus()}}
 const scrollBehavior=()=>matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth';
-function scrollToEl(box,el){const br=box.getBoundingClientRect(),er=el.getBoundingClientRect(),bh=scrollBehavior(),head=box.querySelector('thead')?.getBoundingClientRect().height||0,opt={top:Math.max(0,box.scrollTop+(er.top-br.top)-head-Math.max(0,(box.clientHeight-head-er.height)/2)),behavior:bh};if(el.classList?.contains('split')&&box.scrollWidth>box.clientWidth){const del=el.querySelector('td.code.del'),ins=el.querySelector('td.code.ins'),side=!del?ins:!ins?del:null;if(side){const sr=side.getBoundingClientRect();if(sr.left<br.left||sr.right>br.right)opt.left=Math.max(0,box.scrollLeft+(sr.left-br.left)-44)}}box.scrollTo(opt);if(Math.min(br.bottom,window.innerHeight)-Math.max(br.top,0)<Math.min(br.bottom-br.top,140))box.scrollIntoView({behavior:bh,block:'nearest'})}
+// 先预测容器滚动（包括触及底部后的钳位）后目标所在的位置，再只补足外层页面的滚动量。
+function revealChange(box,rect,opt){
+  const next=opt.top==null?box.scrollTop:Math.min(opt.top,Math.max(0,box.scrollHeight-box.clientHeight));
+  const targetTop=rect.top+box.scrollTop-next,targetBottom=targetTop+Math.min(rect.height,24);
+  const vv=window.visualViewport,viewTop=vv?.offsetTop??0,viewBottom=viewTop+(vv?.height||window.innerHeight);
+  const toolbar=box.closest('#result')?.querySelector('.toolbar'),style=toolbar&&getComputedStyle(toolbar);
+  const sticky=style?.position==='sticky'?toolbar.offsetHeight+(parseFloat(style.top)||0):0;
+  const top=viewTop+sticky+8,bottom=viewBottom-8;
+  const dy=targetTop<top?targetTop-top:targetBottom>bottom?targetBottom-bottom:0;
+  box.scrollTo(opt);
+  if(dy)window.scrollBy({top:dy,behavior:opt.behavior});
+}
+function scrollToEl(box,el){
+  const br=box.getBoundingClientRect(),er=el.getBoundingClientRect(),head=box.querySelector('thead')?.getBoundingClientRect().height||0;
+  const opt={top:Math.max(0,box.scrollTop+er.top-br.top-head-Math.max(0,(box.clientHeight-head-er.height)/2)),behavior:scrollBehavior()};
+  if(el.classList.contains('split')&&box.scrollWidth>box.clientWidth){
+    const del=el.querySelector('td.code.del'),ins=el.querySelector('td.code.ins'),side=!del?ins:!ins?del:null;
+    if(side){const sr=side.getBoundingClientRect();if(sr.left<br.left||sr.right>br.right)opt.left=Math.max(0,box.scrollLeft+sr.left-br.left-44)}
+  }
+  revealChange(box,er,opt);
+}
 function goChange(dir){const box=$('diffScroll'),n=+box.dataset.changes||0;if(!n)return;focusIdx=focusIdx<0&&dir<0?n-1:((focusIdx+dir)%n+n)%n;document.querySelectorAll('tr.focus').forEach(e=>e.classList.remove('focus'));const el=$('focus-'+focusIdx);if(el){el.classList.add('focus');scrollToEl(box,el)}}
 $('prevBtn').onclick=()=>goChange(-1);$('nextBtn').onclick=()=>goChange(1);
 $('findBtn').onclick=()=>run();
@@ -537,8 +561,17 @@ let rt=0;const mt={A:0,B:0},loadVersion={A:0,B:0};/* 统计改为停顿 150ms �
 function clearResult(){clearPrintResult();clearTimeout(rt);rt=0;lastDiff=null;focusIdx=-1;expanded.clear();$('result').classList.add('hidden');$('exportModal').close();$('diffScroll').replaceChildren()}
 const cancelLoads=()=>{loadVersion.A++;loadVersion.B++};
 const realtimeRun=side=>{loadVersion[side]++;clearTimeout(mt[side]);mt[side]=setTimeout(()=>updateMeta(side),150);if(opts.realtime){clearTimeout(rt);rt=setTimeout(()=>run(true),250)}else clearResult()};
-txtA.addEventListener('input',()=>realtimeRun('A'));txtB.addEventListener('input',()=>realtimeRun('B'));
-document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){e.preventDefault();run()}});
+// 组词中的文本尚未提交，不重算，也不允许异步文件载入覆盖它。
+const composing=new Set();
+const pauseEditing=side=>{loadVersion[side]++;clearTimeout(mt[side]);clearTimeout(rt);rt=0};
+for(const [side,editor] of [['A',txtA],['B',txtB]]){
+  editor.addEventListener('compositionstart',()=>{composing.add(side);pauseEditing(side)});
+  editor.addEventListener('input',e=>{if(e.isComposing||composing.has(side))pauseEditing(side);else realtimeRun(side)});
+  editor.addEventListener('compositionend',()=>{composing.delete(side);realtimeRun(side)});
+}
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&!e.defaultPrevented&&!e.isComposing&&e.keyCode!==229&&!composing.size&&!document.querySelector('dialog[open]')){e.preventDefault();run()}
+});
 $('swapBtn').onclick=()=>{cancelLoads();const v=txtA.value;txtA.value=txtB.value;txtB.value=v;fileNames={A:fileNames.B,B:fileNames.A};updateMeta();if(lastDiff||opts.realtime)run(true)};
 $('clearAllBtn').onclick=()=>{cancelLoads();txtA.value='';txtB.value='';fileNames={A:'',B:''};updateMeta();clearResult()};
 document.querySelectorAll('[data-clear]').forEach(b=>b.onclick=()=>{const s=b.dataset.clear;loadVersion[s]++;(s==='A'?txtA:txtB).value='';fileNames[s]='';updateMeta(s);if(lastDiff||opts.realtime)run(true)});
@@ -562,8 +595,28 @@ for(const [card,side] of [[$('cardA'),'A'],[$('cardB'),'B']]){card.addEventListe
 $('typeSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.type=b.dataset.type;saveOpts();syncUI();render()};
 $('levelSeg').onclick=e=>{const b=e.target.closest('button');if(!b)return;opts.level=b.dataset.level;saveOpts();syncUI();render()};
 /* tools panel */
-function setPanel(open){const panel=$('panel'),bg=$('panelBg'),el=$(open?'panelClose':'toolsBtn');panel.inert=!open;panel.classList.toggle('open',open);if(bg)bg.classList.toggle('open',open);$('toolsBtn').setAttribute('aria-expanded',String(open));try{el.focus({preventScroll:true})}catch(e){el.focus()}}
-$('toolsBtn').onclick=()=>setPanel(!$('panel').classList.contains('open'));$('panelClose').onclick=()=>setPanel(false);
+// 软键盘可缩小可视视口而不改变布局视口；页面捏合缩放不按键盘处理。
+function keyboardViewport(){
+  const v=window.visualViewport;
+  return v&&Math.abs((v.scale??1)-1)<.01&&v.height>0&&window.innerHeight-v.height>80?v:null;
+}
+function syncKeyboardViewport(dialog){
+  const v=keyboardViewport();
+  if(v){dialog.style.setProperty('--dialog-top',Math.max(0,v.offsetTop||0)+'px');dialog.style.setProperty('--dialog-height',v.height+'px')}
+  else{dialog.style.removeProperty('--dialog-top');dialog.style.removeProperty('--dialog-height')}
+  return v;
+}
+function syncPanelViewport(){
+  const panel=$('panel');if(!panel.open)return;
+  const keyboard=syncKeyboardViewport(panel),field=document.activeElement;
+  if(keyboard&&$('rules').contains(field))field.scrollIntoView({block:'nearest'});
+}
+function setPanel(open){const panel=$('panel'),button=$('toolsBtn');
+  if(open===panel.open)return;
+  if(open){button.focus({preventScroll:true});panel.showModal();syncPanelViewport()}else panel.close();
+  button.setAttribute('aria-expanded',String(open));
+}
+$('toolsBtn').onclick=()=>setPanel(true);$('panelClose').onclick=()=>setPanel(false);
 document.querySelectorAll('.switch[data-opt]').forEach(sw=>sw.onclick=()=>{opts[sw.dataset.opt]=!opts[sw.dataset.opt];saveOpts();syncUI();const k=sw.dataset.opt;if(k==='hideUnchanged'){expanded=new Set();if(lastDiff)render()}else if(k==='noWrap'){if(lastDiff)render()}else if(k==='realtime'){if(opts.realtime||rt)run(true)}else if(lastDiff||opts.realtime)run(true)});
 document.querySelectorAll('select[data-sel]').forEach(s=>s.onchange=()=>{opts[s.dataset.sel]=s.value;saveOpts();if(lastDiff)render()});
 function ruleRow(v){const div=document.createElement('div');div.className='rule';div.innerHTML=`<input type="text" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" value="${esc(v||'')}" placeholder="${esc(t('rulePh'))}" aria-label="${esc(t('rulePh'))}"><button class="btn sm ghost" title="${esc(t('remove'))}" aria-label="${esc(t('remove'))}">✕</button>`;div.querySelector('button').onclick=()=>{div.remove()};return div}
@@ -731,13 +784,15 @@ $('exampleBtn').onclick=()=>{cancelLoads();txtA.value=EX_A;txtB.value=EX_B;fileN
 
 /* init */
 ['dragover','drop'].forEach(n=>window.addEventListener(n,e=>{if(hasFiles(e))e.preventDefault()}));// 拖入文件时不让浏览器直接打开它而丢掉当前内容
-/* Esc 关闭侧栏与弹窗 */
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('exportModal').open&&$('panel').classList.contains('open')){e.preventDefault();setPanel(false)}});
+window.addEventListener('resize',syncPanelViewport);
+window.visualViewport?.addEventListener('resize',syncPanelViewport);
+window.visualViewport?.addEventListener('scroll',syncPanelViewport);
+$('panel').addEventListener('cancel',e=>{e.preventDefault();setPanel(false)});
 /* 点击导出弹窗的遮罩（而不是弹窗本身）即可关闭，与 Esc 一致 */
 /* 按下时就关闭会让触屏随后合成的 click 落到遮罩下面的页面上：按下与点击都落在遮罩上才关闭；在遮罩上拖动也不去滚动背后的页面 */
 function closeOnBackdrop(dlg,close){let down=false;dlg.addEventListener('pointerdown',e=>{down=e.target===dlg});dlg.addEventListener('pointercancel',()=>{down=false});dlg.addEventListener('click',e=>{const hit=down&&e.target===dlg;down=false;if(hit)close()});dlg.addEventListener('touchmove',e=>{if(e.target===dlg){e.preventDefault();return}const el=e.target?.nodeType===3?e.target.parentElement:e.target,box=el?.closest?.('.modal');if(box&&box.scrollHeight<=box.clientHeight&&!el.closest('input,textarea,select'))e.preventDefault()},{passive:false})}
 closeOnBackdrop($('exportModal'),()=>$('exportModal').close());
-closeOnBackdrop($('panelBg'),()=>setPanel(false));
+closeOnBackdrop($('panel'),()=>setPanel(false));
 $('panel').addEventListener('touchmove',e=>{const el=e.target?.nodeType===3?e.target.parentElement:e.target,b=el?.closest?.('.panel-body');if(!b||(b.scrollHeight<=b.clientHeight&&!el?.closest?.('input,textarea,select')))e.preventDefault()},{passive:false});
 applyTheme();syncUI(true);applyLang();updateMeta();
 </script>
