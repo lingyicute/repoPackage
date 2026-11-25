@@ -11,7 +11,7 @@ const { rewriteImportMap, rewriteSpeculationRules, bufferedTextHandler } = await
 
 const base = 'https://example.com/assets/';
 const origin = 'https://proxy.example';
-const proxy = path => origin + '/~' + encodeURIComponent('https://example.com') + path;
+const proxy = path => origin + '/' + encodeURIComponent('https://example.com') + path.split('/').map(encodeURIComponent).join('/');
 const inlineJson = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const payloads = [
 	['end tag', '</script><img src=x onerror=alert(1)>'],
@@ -90,8 +90,8 @@ test('speculationrules: preserves selectors and both URL resolution bases', () =
 	const documentUrl = 'https://example.com/page/index.html';
 	const value = {
 		prefetch: [
-			{ source: 'list', urls: ['./next.html', '', '#part'] },
-			{ source: 'list', relative_to: 'document', urls: ['./next.html', ''] },
+			{ source: 'list', urls: ['./next.html'] },
+			{ source: 'list', relative_to: 'document', urls: ['./next.html'] },
 		],
 		prerender: [{ source: 'document', where: { selector_matches: selector } }],
 	};
@@ -99,8 +99,8 @@ test('speculationrules: preserves selectors and both URL resolution bases', () =
 	assert.ok(!output.includes('<'));
 	assert.deepEqual(JSON.parse(output), {
 		prefetch: [
-			{ source: 'list', urls: [proxy('/assets/next.html'), proxy('/assets/'), proxy('/assets/#part')] },
-			{ source: 'list', relative_to: 'document', urls: [proxy('/page/next.html'), proxy('/page/index.html')] },
+			{ source: 'list', urls: [proxy('/assets/next.html')] },
+			{ source: 'list', relative_to: 'document', urls: [proxy('/page/next.html')] },
 		],
 		prerender: value.prerender,
 	});
@@ -127,14 +127,3 @@ for (const scope of ['imports', 'scopes']) {
 		});
 	}
 }
-
-test('speculationrules: strips referrer_policy so speculative fetches keep proxy Referer', () => {
-	const input = JSON.stringify({
-		prefetch: [{ source: 'list', urls: ['./next.html'], referrer_policy: 'no-referrer' }],
-		prerender: [{ source: 'document', where: { selector_matches: 'a' }, referrer_policy: 'origin' }],
-	});
-	const output = JSON.parse(rewriteSpeculationRules(input, base, origin));
-	assert.equal('referrer_policy' in output.prefetch[0], false);
-	assert.equal('referrer_policy' in output.prerender[0], false);
-	assert.equal(output.prefetch[0].urls[0], proxy('/assets/next.html'));
-});

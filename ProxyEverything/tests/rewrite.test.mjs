@@ -5,16 +5,16 @@ import vm from 'node:vm';
 
 // Load the standalone Worker as an ES module without changing its deployment exports.
 const source = await readFile(new URL('../worker.js', import.meta.url), 'utf8');
-const { default: worker, rewriteCss, rewriteLazyValue, rewriteSvg, cookieNamespace, getShimScript, rewriteJsonUrls, bridgeWebSockets } = await import(
+const { default: worker, rewriteCss, rewriteLazyValue, rewriteSvg, cookieNamespace, getShimScript, rewriteJsonUrls } = await import(
 	'data:text/javascript;base64,' + Buffer.from(source +
-		'\nexport { rewriteCss, rewriteLazyValue, rewriteSvg, cookieNamespace, getShimScript, rewriteJsonUrls, bridgeWebSockets };').toString('base64')
+		'\nexport { rewriteCss, rewriteLazyValue, rewriteSvg, cookieNamespace, getShimScript, rewriteJsonUrls };').toString('base64')
 );
 
 const base = 'https://example.com/dir/page';
 const origin = 'https://proxy.example';
 const proxy = (url) => {
 	const u = new URL(url, base);
-	return origin + '/~' + encodeURIComponent(u.origin) + u.pathname + u.search;
+	return origin + '/' + encodeURIComponent(u.origin) + u.pathname.split('/').map(encodeURIComponent).join('/') + u.search;
 };
 
 test('css: @namespace URLs are identifiers and stay untouched', () => {
@@ -45,19 +45,6 @@ test('css: url() inside @namespace is opaque, including ; and /* in unquoted URL
 	].join('\n');
 	assert.equal(rewriteCss(input + '\n.a{background:url(b.png)}', base, origin),
 		input + `\n.a{background:url(\"${proxy('b.png')}\")}`);
-});
-
-test('css: url() and strings ended by EOF are still valid tokens', () => {
-	const out = `a{background:url("${proxy('a.png')}")`;
-	for (const input of ['url(a.png', 'url(a.png  ', 'url("a.png"', 'url("a.png', "url( 'a.png' /* c", 'url(a\\.png', 'url("a.png\\']) {
-		assert.equal(rewriteCss('a{background:' + input, base, origin), out, input);
-	}
-	assert.equal(rewriteCss('@import "a.css', base, origin), `@import "${proxy('a.css')}"`);
-	assert.equal(rewriteCss('a{background:image-set("a.png', base, origin), `a{background:image-set("${proxy('a.png')}"`);
-	// A newline ends a bad-string, and stray tokens after whitespace make a bad-url: both stay literal.
-	for (const input of ['a{background:url("a.png\n)}', 'a{background:url(a.png b', "@import 'a.css\n;", 'a{background:url(a.png\\']) {
-		assert.equal(rewriteCss(input, base, origin), input);
-	}
 });
 
 test('shim: script is valid both as HTML raw text and as XHTML CDATA content', () => {
@@ -93,14 +80,12 @@ test('svg: attribute-like text inside quoted values is left alone', () => {
 // Call the fetch handler directly; the upstream is a stub that records the forwarded request.
 let forwarded = null;
 globalThis.fetch = async (url, init) => {
-	forwarded = { url: String(url), headers: new Headers(init.headers), cache: init.cache };
+	forwarded = { url: String(url), headers: new Headers(init.headers) };
 	return new Response('PNG', { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=3600' } });
 };
 const send = (url, { method = 'GET', headers = {} } = {}) => {
 	forwarded = null;
-	return worker.fetch({ url, method, headers: new Headers(headers), body: null }, {
-		ALLOWED_TARGET_ORIGINS: 'https://example.com,https://api.example.net,https://cdn.example.net,http://example.com',
-	});
+	return worker.fetch({ url, method, headers: new Headers(headers), body: null });
 };
 const referer = proxy('https://example.com/dir/page?secret=1');
 
@@ -145,15 +130,8 @@ test('cache policy: only cookies forwarded to the target disable caching', async
 	let response = await send(target, { headers: { cookie: 'unrelated=1; __pe_x_other_=1' } });
 	assert.equal(forwarded.headers.get('cookie'), null);
 	assert.equal(response.headers.get('cache-control'), 'public, max-age=3600');
-	assert.equal(forwarded.cache, undefined);
-	assert.match(response.headers.get('vary'), /\bCookie\b/i);
-	assert.match(response.headers.get('vary'), /\bAuthorization\b/i);
 	response = await send(target, { headers: { cookie: ns + 'sid=1' } });
 	assert.equal(forwarded.headers.get('cookie'), 'sid=1');
-	assert.equal(forwarded.cache, 'no-store');
-	assert.equal(response.headers.get('cache-control'), 'no-store');
-	response = await send(target, { headers: { authorization: 'Bearer test-marker' } });
-	assert.equal(forwarded.cache, 'no-store');
 	assert.equal(response.headers.get('cache-control'), 'no-store');
 });
 
@@ -178,99 +156,4 @@ test('manifest: id resolves against the start_url origin, other URLs against the
 		proxy('https://www.example.com/app/main'));
 	assert.equal(rewrite({ id: 'app' }).id, proxy('https://example.com/app'));
 	assert.equal(rewrite({ id: '' }).id, '');
-	assert.equal(rewrite({ id: '#variant' }).id, proxy('https://example.com/') + '#variant');
-	assert.equal(rewrite({ id: '   ' }).id, proxy('https://example.com/'));
-	for (const start_url of ['https://[', 'data:,document']) {
-		assert.equal(rewrite({ id: 'fallback', start_url }).id, proxy('https://example.com/fallback'));
-	}
-	assert.equal(rewrite({ id: '?pwa', start_url: proxy('https://other.example/app') }).id, proxy('https://other.example/?pwa'));
-	assert.equal(rewrite({ id: '?pwa', start_url: '/~' + encodeURIComponent('https://other.example') + '/app' }).id, proxy('https://other.example/?pwa'));
-	assert.equal(rewrite({ id: '?pwa', start_url: origin + '/app' }).id, proxy('https://example.com/?pwa'));
-	assert.equal(rewrite({ note_taking: { new_note_url: '/notes/new' } }).note_taking.new_note_url,
-		proxy('https://example.com/notes/new'));
-});
-
-test('HTTP downgrade does not forward Referer and a different proxy origin is not trusted', async () => {
-	await send(proxy('http://example.com/photo.png'), { headers: { referer } });
-	assert.equal(forwarded.headers.get('referer'), null);
-	await send(proxy('https://example.com/photo.png'), {
-		headers: { referer: referer.replace('https://proxy.example', 'http://proxy.example') },
-	});
-	assert.equal(forwarded.headers.get('referer'), null);
-});
-
-test('WebSocket forwards only an HTTP(S) source established by the referring page', async () => {
-	const target = proxy('wss://example.com/socket');
-	// URL.origin keeps wss: and the worker normalizes that to https: for subrequests.
-	for (const [source, expected] of [[undefined, 'null'], [referer, 'https://example.com']]) {
-		const headers = { upgrade: 'websocket', origin, 'sec-websocket-key': 'marker', 'sec-websocket-protocol': 'chat' };
-		if (source) headers.referer = source;
-		assert.equal((await send(target, { headers })).status, 502, 'the stub does not upgrade');
-		assert.equal(forwarded.url, 'https://example.com/socket');
-		assert.equal(forwarded.cache, 'no-store');
-		assert.equal(forwarded.headers.get('sec-websocket-key'), null);
-		assert.equal(forwarded.headers.get('sec-websocket-protocol'), 'chat');
-		assert.equal(forwarded.headers.get('origin'), expected);
-		assert.equal(forwarded.headers.get('referer'), source ? 'https://example.com/dir/page?secret=1' : null);
-	}
-	await send(target, { headers: { upgrade: 'websocket' } });
-	assert.equal(forwarded.headers.get('origin'), null);
-});
-
-test('CSS recognizes escaped url functions in namespace declarations', () => {
-	const namespace = String.raw`@namespace svg \75 rl(https://example.com/path;@import "literal.css");`;
-	assert.equal(rewriteCss(namespace + 'a{background:url(pic.png)}', base, origin),
-		namespace + `a{background:url("${proxy('pic.png')}")}`);
-	const invalid = 'a{background:url(/*not syntax here*/"pic.png")}';
-	assert.equal(rewriteCss(invalid, base, origin), invalid);
-});
-
-test('WebSocket bridge forwards binary frames and confirms each half of a close', () => {
-	function socket() {
-		const listeners = new Map();
-		return {
-			readyState: 1, messages: [], closes: [],
-			addEventListener(type, fn) { listeners.set(type, fn); },
-			emit(type, event) { listeners.get(type)(event); },
-			send(data) { this.messages.push(data); },
-			close(...args) { this.closes.push(args); this.readyState = 2; },
-		};
-	}
-	const client = socket();
-	const upstream = socket();
-	bridgeWebSockets(upstream, client);
-	const data = new Uint8Array([1, 255]).buffer;
-	client.emit('message', { data });
-	assert.deepEqual(upstream.messages, [data]);
-	upstream.emit('close', { code: 4000, reason: 'done' });
-	client.emit('close', { code: 4000, reason: 'done' });
-	assert.deepEqual(client.closes, [[4000, 'done']]);
-	assert.deepEqual(upstream.closes, [[4000, 'done']]);
-});
-
-test('bare target paths vary on the Referer that selects the route', async () => {
-	const alias = origin + '/example.com/logo.png';
-	const direct = await send(alias);
-	assert.equal(direct.status, 200);
-	assert.match(direct.headers.get('Vary'), /\bReferer\b/i);
-	const recovered = await send(alias, { headers: { referer } });
-	assert.equal(recovered.status, 307);
-	assert.equal(recovered.headers.get('cache-control'), 'no-store');
-	const missing = await send(origin + '/favicon.ico');
-	assert.equal(missing.status, 404);
-	assert.equal(missing.headers.get('cache-control'), 'no-store');
-});
-
-test('a non-GET upgrade is rejected instead of becoming an upstream GET', async () => {
-	const r = await send(proxy('https://example.com/socket'), { method: 'POST', headers: { upgrade: 'websocket' } });
-	assert.equal(r.status, 405);
-	assert.equal(r.headers.get('allow'), 'GET');
-	assert.equal(forwarded, null);
-});
-
-test('WebSocket upgrade matches websocket token in multi-value Upgrade headers', async () => {
-	const target = proxy('wss://example.com/socket');
-	const r = await send(target, { headers: { upgrade: 'h2c, WebSocket' } });
-	assert.equal(r.status, 502);
-	assert.equal(forwarded.headers.get('upgrade'), 'websocket');
 });

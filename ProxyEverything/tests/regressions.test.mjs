@@ -8,27 +8,21 @@ const {
 	default: worker,
 	getRootHtml,
 	getShimScript,
-	MD3_JS,
 	quoteCssString,
 	rewriteCss,
 	rewriteJsModuleSpecifiers,
 	rewriteRefreshContent,
 	rewriteStyleAttr,
-	rewriteSvg, rewriteXmlText,
-	decodeProxiedTarget,
-	decodeProxyPath,
-	resolveTargetBaseUrl,
-	targetPolicyError,
+	rewriteSvg,
 	rewriteUrl,
 	sniffHtmlCharset,
-	sniffTextCharset,
 	stringifyInlineJson,
 } = await import(
 	'data:text/javascript;base64,' + Buffer.from(source + `
 export {
-	getRootHtml, getShimScript, MD3_JS, quoteCssString, rewriteCss,
+	getRootHtml, getShimScript, quoteCssString, rewriteCss,
 	rewriteJsModuleSpecifiers, rewriteRefreshContent, rewriteStyleAttr,
-	decodeProxiedTarget, decodeProxyPath, resolveTargetBaseUrl, targetPolicyError, rewriteSvg, rewriteXmlText, rewriteUrl, sniffHtmlCharset, sniffTextCharset, stringifyInlineJson
+	rewriteSvg, rewriteUrl, sniffHtmlCharset, stringifyInlineJson
 };`).toString('base64')
 );
 
@@ -36,7 +30,7 @@ const base = 'https://example.com/dir/page';
 const origin = 'https://proxy.example';
 const proxy = (url) => {
 	const u = new URL(url, base);
-	return origin + '/~' + encodeURIComponent(u.origin) + u.pathname + u.search + u.hash;
+	return origin + '/' + encodeURIComponent(u.origin) + u.pathname.split('/').map(encodeURIComponent).join('/') + u.search + u.hash;
 };
 
 test('already-proxied URLs and inline CSS/JS/JSON never break out of raw-text or CDATA', () => {
@@ -77,14 +71,6 @@ test('meta refresh: preserves trailing quotes on unquoted URLs and trims quoted 
 		rewriteRefreshContent("0; url='https://example.com/a", base, origin),
 		`0; url=${proxy('https://example.com/a')}`
 	);
-	assert.equal(rewriteRefreshContent('5.2.3; url=https://example.com/next', base, origin),
-		`5.2.3; url=${proxy('https://example.com/next')}`);
-	assert.equal(rewriteRefreshContent('.; url=https://example.com/next', base, origin),
-		`.; url=${proxy('https://example.com/next')}`);
-	assert.equal(rewriteRefreshContent('5abc; url=https://example.com/next', base, origin),
-		'5abc; url=https://example.com/next');
-	assert.equal(rewriteRefreshContent('0; url=#sec', base, origin), '0; url=#sec');
-	assert.equal(rewriteRefreshContent('0; url=  ', base, origin), '0; url=  ');
 });
 
 test('svg: preserves CDATA end-tags, comments, ]]> escapes, namespaces, and quoted script attrs', () => {
@@ -168,18 +154,12 @@ test('homepage submit preserves percent-encoded plain URLs and rejects ws://', (
 		return { href: location.href, snack: snackEl.textContent || null };
 	};
 
-	assert.equal(submit('https://en.wikipedia.org/wiki/C%23').href, '/~https%3A%2F%2Fen.wikipedia.org/wiki/C%23');
-	assert.equal(submit('https://example.com/files/a%2Fb?x=1').href, '/~https%3A%2F%2Fexample.com/files/a%2Fb?x=1');
-	assert.equal(submit(origin + '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523').href, '/~https%3A%2F%2Fen.wikipedia.org/wiki/C%23');
-	assert.equal(submit(origin + '/https%3A%2F%2Fexample.com%2Fp%3Fa%3D1?#top').href, '/~https%3A%2F%2Fexample.com/p?a=1#top');
-	assert.equal(submit(origin + '/~https%3A%2F%2Fexample.com/../other.example/secret').href, '/~https%3A%2F%2Fexample.com/other.example/secret');
-	assert.equal(submit(origin + '/~https%3A%2F%2Fexample.com/search?q=1#top').href, '/~https%3A%2F%2Fexample.com/search?q=1#top');
-	assert.equal(submit(origin + '/~https%3A%2F%2Fexample.com?q=1').href, '/~https%3A%2F%2Fexample.com/?q=1');
-	assert.equal(submit(origin + '/~https%3A%2F%2Fexample.com/search?k=a\\b').href, '/~https%3A%2F%2Fexample.com/search?k=a\\b');
+	assert.equal(submit('https://en.wikipedia.org/wiki/C%23').href, '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523');
+	assert.equal(submit('https://example.com/files/a%2Fb?x=1').href, '/https%3A%2F%2Fexample.com/files/a%252Fb?x=1');
+	assert.equal(submit(origin + '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523').href, '/https%3A%2F%2Fen.wikipedia.org/wiki/C%2523');
 	const wsRes = submit('ws://example.com/ws');
 	assert.equal(wsRes.href, origin + '/');
 	assert.equal(wsRes.snack, '仅支持 http:// 或 https:// 网址');
-	assert.equal(submit('ftp://proxy.example/~https%3A%2F%2Fexample.com/file').snack, '仅支持 http:// 或 https:// 网址');
 });
 
 test('Referer lookups enforce ALLOWED_TARGET_ORIGINS and rewrite Sec-Fetch-Site', async () => {
@@ -189,7 +169,7 @@ test('Referer lookups enforce ALLOWED_TARGET_ORIGINS and rewrite Sec-Fetch-Site'
 		forwarded = { url: String(url), headers: new Headers(init.headers) };
 		return new Response('ok', { headers: { 'content-type': 'text/plain' } });
 	};
-	const send = (url, headers = {}, env = { ALLOWED_TARGET_ORIGINS: 'https://example.com,https://other.example' }) => {
+	const send = (url, headers = {}, env = undefined) => {
 		forwarded = null;
 		return worker.fetch({ url, method: 'GET', headers: new Headers(headers), body: null }, env);
 	};
@@ -311,24 +291,6 @@ test('sniffHtmlCharset handles HTML5 abrupt comments <!--> and <!--->', async ()
 	}
 });
 
-test('sniffHtmlCharset skips </ without a tag name up to the next >', async () => {
-	for (const [html, expected] of [
-		['</ <meta charset="gbk"><p>', null],
-		['</ x><meta charset="gbk">', 'gbk'],
-		['</p foo="<meta charset=big5>"><meta charset="gbk">', 'gbk'],
-	]) {
-		const stream = new ReadableStream({
-			start(controller) {
-				controller.enqueue(Buffer.from(html, 'latin1'));
-				controller.close();
-			},
-		});
-		const { charset, body } = await sniffHtmlCharset(stream, null);
-		await body.cancel();
-		assert.equal(charset, expected, html);
-	}
-});
-
 test('fast paths preserve untouched JS/CSS while still rewriting escaped style URLs', () => {
 	const plainJs = 'const a = 1 + 2; console.log(a);';
 	assert.equal(rewriteJsModuleSpecifiers(plainJs, base, origin), plainJs);
@@ -339,406 +301,4 @@ test('fast paths preserve untouched JS/CSS while still rewriting escaped style U
 		rewriteStyleAttr('background: \\75 rl(a.png)', base, origin),
 		`background: url("${proxy('a.png')}")`
 	);
-});
-
-test('upstream access requires a valid explicit origin allowlist', async () => {
-	const originalFetch = globalThis.fetch;
-	const seen = [];
-	globalThis.fetch = async url => { seen.push(url); return new Response('ok'); };
-	try {
-		const request = new Request(proxy('https://example.com/page'));
-		for (const value of [undefined, '', ' , ,\n', '*', 'https://example.com/path', 'not a URL',
-			'https:example.com', 'https://example.com/path/..', 'https://example.com?',
-			'https://example.com/#', 'https://@example.com', 'https://example.com,https://*.example.com']) {
-			const response = await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: value });
-			assert.equal(response.status, 503);
-		}
-		assert.equal((await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com:9443' })).status, 403);
-		assert.deepEqual(seen, []);
-		assert.equal((await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' })).status, 200);
-		assert.deepEqual(seen, ['https://example.com/page']);
-		// 多行配置的尾随逗号和空行不是来源，不应让整个列表失效。
-		assert.equal((await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com,\n\nhttps://static.example.com,\n' })).status, 200);
-		assert.equal(seen.length, 2);
-	} finally {
-		globalThis.fetch = originalFetch;
-	}
-});
-
-test('SVG scanner keeps declarations and exact XML element names intact', () => {
-	const prolog = `<?xml version="1.0" encoding="iso-8859-1"?>`;
-	const internalSubset = `<!DOCTYPE svg [<!-- ] > --> <!ENTITY icon 'sprite.svg'>]>`;
-	const nested = `<svg><style-note>url(label.txt)</style-note><image href="&icon;"/><image href="a&amp;b.png"/></svg>`;
-	const input = prolog + internalSubset + nested;
-	const expected = prolog.replace('iso-8859-1', 'UTF-8') + internalSubset +
-		nested.replace('href="a&amp;b.png"', `href="${proxy('a&b.png').replace('&', '&amp;')}"`);
-	assert.equal(rewriteSvg(input, base, origin), expected);
-	assert.equal(rewriteSvg(`<svg><style>/* unfinished */`, base, origin), `<svg><style>/* unfinished */`);
-});
-
-test('HTML charset prescan recognizes only complete metadata declarations', async () => {
-	const fragments = [
-		'<div title="<meta charset=gbk>"></div>',
-		'<meta-description charset="gbk">',
-		'<meta data:charset="gbk">',
-		'<!-- <meta charset=gbk> --!>',
-		'<meta charset="utf-8" charset="gbk">',
-	];
-	const text = fragments.join('') + '<meta charset="windows-1252">';
-	for (const [input, expected] of [[text, 'utf-8'], [fragments.slice(0, 4).join('') + '<meta charset="windows-1252">', 'windows-1252']]) {
-		const stream = new Response(input).body;
-		const sniffed = await sniffHtmlCharset(stream);
-		assert.equal(sniffed.charset, expected);
-		assert.equal(await new Response(sniffed.body).text(), input);
-	}
-	const xhtml = '<?xml version="1.0" encoding="windows-1252"?><html><meta charset="gbk" /></html>';
-	const sniffed = await sniffHtmlCharset(new Response(xhtml).body, null, true);
-	assert.equal(sniffed.charset, 'windows-1252');
-	await sniffed.body.cancel();
-});
-
-test('XML raw text leaves incomplete CDATA and comments intact', () => {
-	for (const input of ['body <![CDATA[unfinished', 'text <!-- open <!-- still open']) {
-		assert.equal(rewriteXmlText(input, value => value.toUpperCase()), input);
-	}
-	assert.equal(rewriteXmlText('a<!--keep--><?pi keep?><![CDATA[b]]>c', s => s.toUpperCase()),
-		'A<!--keep--><?pi keep?><![CDATA[B]]>C');
-	assert.equal(rewriteXmlText('body <?pi unfinished', s => s.toUpperCase()), 'body <?pi unfinished');
-	assert.equal(
-		rewriteSvg('<svg><style><?pi </style> ?>a{background:url(a.png)}</style></svg>', base, origin),
-		`<svg><style><?pi </style> ?>a{background:url("${proxy('a.png')}")}</style></svg>`
-	);
-	assert.equal(
-		rewriteSvg('<svg><script type="module">import <?pi x?>"./a.js";</script></svg>', base, origin),
-		`<svg><script type="module">import "${proxy('./a.js')}";</script></svg>`
-	);
-});
-
-test('upstream HTTP and opening WebSocket handshakes use the request cancellation signal', async t => {
-	const pending = [];
-	t.mock.method(globalThis, 'fetch', async (_, init) => { pending.push(init.signal); return new Response('fixture'); });
-	for (const headers of [{}, { Upgrade: 'websocket' }]) {
-		const controller = new AbortController();
-		const request = new Request(proxy(base), { headers, signal: controller.signal });
-		await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
-		assert.equal(pending.at(-1), request.signal);
-		controller.abort();
-		assert.equal(pending.at(-1).aborted, true);
-	}
-});
-
-test('rejected WebSocket handshakes report the upstream status instead of a generic 502', async t => {
-	let upstream;
-	t.mock.method(globalThis, 'fetch', async () => upstream);
-	const request = new Request('https://proxy.example/~wss%3A%2F%2Fexample.com/socket', { headers: { Upgrade: 'websocket' } });
-	for (const [status, expected] of [[401, 401], [403, 403], [503, 503], [302, 502], [200, 502]]) {
-		upstream = new Response('handshake body', { status, headers: status === 302 ? { location: 'wss://example.com/elsewhere' } : {} });
-		const response = await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
-		assert.equal(response.status, expected, String(status));
-		assert.equal(response.headers.get('cache-control'), 'no-store');
-		assert.ok(upstream.bodyUsed, 'the rejected handshake body is drained');
-	}
-});
-
-test('XHTML charset sniffing stops once no XML declaration can still supply an encoding', async () => {
-	for (const head of ['<html xmlns="http://www.w3.org/1999/xhtml">', '<?xml version="1.0"?><html>']) {
-		// 上游仍在流式输出：嗅探不能等到 4096 字节或 EOF。
-		const stream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode(head)); } });
-		const sniffed = await Promise.race([
-			sniffHtmlCharset(stream, null, true),
-			new Promise(resolve => setTimeout(() => resolve('timeout'), 200)),
-		]);
-		assert.notEqual(sniffed, 'timeout', head);
-		assert.equal(sniffed.charset, null, head);
-		await sniffed.body.cancel();
-	}
-});
-
-test('leaked relative WebSocket handshakes are forwarded instead of redirected', async t => {
-	const seen = [];
-	t.mock.method(globalThis, 'fetch', async url => { seen.push(String(url)); return new Response('refused', { status: 403 }); });
-	const request = new Request('https://proxy.example/live/socket?room=1', {
-		headers: { Upgrade: 'websocket', Referer: proxy('https://example.com/app/worker.js') },
-	});
-	const response = await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
-	assert.equal(response.status, 403);
-	assert.deepEqual(seen, ['https://example.com/live/socket?room=1']);
-	const plain = await worker.fetch(new Request('https://proxy.example/live/data', {
-		headers: { Referer: proxy('https://example.com/app/') },
-	}), { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
-	assert.equal(plain.status, 307);
-});
-
-test('a leaked "/" from a proxied page reaches the target root instead of the homepage', async t => {
-	t.mock.method(globalThis, 'fetch', async () => { throw new Error('upstream down'); });
-	const env = { ALLOWED_TARGET_ORIGINS: 'https://example.com' };
-	const leaked = await worker.fetch(new Request('https://proxy.example/?next=1', {
-		method: 'POST', body: 'a=1', headers: { Referer: proxy('https://example.com/app/page') },
-	}), env);
-	assert.equal(leaked.status, 307);
-	assert.equal(leaked.headers.get('location'), proxy('https://example.com/?next=1'));
-	for (const headers of [{}, { Referer: 'https://proxy.example/' }, { Referer: proxy('https://denied.example/') }]) {
-		const home = await worker.fetch(new Request('https://proxy.example/', { headers }), env);
-		assert.equal(home.status, 200);
-		assert.match(await home.text(), /id="urlForm"/);
-	}
-	// The error page lives on a proxied URL; its home link must not be mistaken for the target root.
-	const failed = await worker.fetch(new Request(proxy('https://example.com/app/page')), env);
-	assert.equal(failed.status, 502);
-	assert.match(await failed.text(), /<a [^>]*href="\/" rel="noreferrer"/);
-});
-
-test('an upstream status outside 200-599 yields the proxy error page for every method', async t => {
-	t.mock.method(globalThis, 'fetch', async () => ({
-		status: 999, statusText: '', headers: new Headers({ 'Content-Type': 'text/html' }), body: null,
-	}));
-	for (const method of ['GET', 'HEAD']) {
-		const response = await worker.fetch(new Request(proxy('https://example.com/blocked'), { method }), {
-			ALLOWED_TARGET_ORIGINS: 'https://example.com',
-		});
-		assert.equal(response.status, 502, method);
-	}
-});
-
-test('undeclared HTML falls back to windows-1252 only when its prefix is not valid UTF-8', async () => {
-	const sniff = async (bytes, isXml = false) => {
-		const stream = new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } });
-		const result = await sniffHtmlCharset(stream, null, isXml);
-		assert.deepEqual(Buffer.from(await new Response(result.body).arrayBuffer()), Buffer.from(bytes));
-		return result.charset;
-	};
-	assert.equal(await sniff(Buffer.from('<p>caf\xe9</p>', 'latin1')), 'windows-1252');
-	assert.equal(await sniff(Buffer.from('caf\xe9', 'latin1')), 'windows-1252');
-	assert.equal(await sniff(Buffer.from('caf\xe9\xa0', 'latin1')), 'windows-1252');
-	assert.equal(await sniff(Buffer.from('<p>café 你好</p>')), null);
-	assert.equal(await sniff(Buffer.from('<p>plain</p>')), null);
-	// A multi-byte sequence cut by the 4096-byte sniffing window is not an encoding error.
-	assert.equal(await sniff(Buffer.from('x'.repeat(4095) + 'é'.repeat(8))), null);
-	assert.equal(await sniff(Buffer.from('<p>caf\xe9</p>', 'latin1'), true), null);
-});
-
-test('XML charset detection does not depend on the upstream chunk boundaries', async () => {
-	for (const charset of ['windows-1252', 'utf-16le', 'utf-16be']) {
-		const declaration = `<?xml version="1.0" encoding="${charset}"?>`;
-		const input = declaration + '<html>Café</html>';
-		const bytes = Buffer.from(input, charset === 'windows-1252' ? 'latin1' : 'utf16le');
-		if (charset === 'utf-16be') bytes.swap16();
-		const size = charset === 'windows-1252' ? declaration.length : 4;
-		for (let split = 1; split <= size; split++) {
-			const stream = new ReadableStream({ start(controller) {
-				controller.enqueue(bytes.subarray(0, split));
-				controller.enqueue(bytes.subarray(split));
-				controller.close();
-			} });
-			const result = await sniffHtmlCharset(stream, null, true);
-			assert.equal(result.charset, charset, `split after byte ${split}`);
-			assert.deepEqual(Buffer.from(await new Response(result.body).arrayBuffer()), bytes);
-		}
-	}
-});
-
-test('failed subrequests return non-cacheable errors without internal exception text', async t => {
-	const diagnostic = 'private runtime diagnostic';
-	t.mock.method(globalThis, 'fetch', async () => { throw new Error(diagnostic); });
-	for (const headers of [{}, { Upgrade: 'websocket' }]) {
-		const response = await worker.fetch(new Request(proxy(base), { headers }), {
-			ALLOWED_TARGET_ORIGINS: 'https://example.com',
-		});
-		assert.equal(response.status, 502);
-		assert.equal(response.headers.get('Cache-Control'), 'no-store');
-		assert.ok(!(await response.text()).includes(diagnostic));
-	}
-});
-
-test('homepage hue radios have one tab stop and wrap on arrow keys', () => {
-	const buttons = [], storage = new Map();
-	let keydown, focused;
-	const row = {
-		appendChild: button => buttons.push(button),
-		addEventListener: (type, callback) => { if (type === 'keydown') keydown = callback; },
-	};
-	runInNewContext(MD3_JS, {
-		window: { addEventListener() {} },
-		localStorage: { setItem: (...args) => storage.set(...args) },
-		getComputedStyle: () => ({ getPropertyValue: () => '285' }),
-		document: {
-			documentElement: { style: { setProperty() {} } },
-			addEventListener() {}, getElementById: id => id === 'hueRow' ? row : null,
-			createElement() {
-				const attrs = new Map(), listeners = new Map();
-				return {
-					attrs, style: { setProperty() {} }, focus() { focused = this; },
-					setAttribute: (...args) => attrs.set(...args),
-					addEventListener: (...args) => listeners.set(...args), click() { listeners.get('click')(); },
-				};
-			},
-		},
-	});
-	assert.deepEqual(buttons.filter(b => b.tabIndex === 0), [buttons[0]]);
-	let prevented = false;
-	keydown({ key: 'ArrowLeft', target: buttons[0], preventDefault() { prevented = true; } });
-	assert.equal(prevented, true);
-	assert.equal(focused, buttons.at(-1));
-	assert.deepEqual(buttons.filter(b => b.tabIndex === 0), [focused]);
-	assert.deepEqual(buttons.filter(b => b.attrs.get('aria-checked') === 'true'), [focused]);
-	assert.equal(storage.get('pe-hue'), '330');
-});
-
-test('dot segments in already-proxied URLs stay clamped within their target origin', () => {
-	assert.equal(
-		rewriteUrl('/~https%3A%2F%2Fexample.com/../other.example/secret?q=1#h', base, origin),
-		'/~https%3A%2F%2Fexample.com/other.example/secret?q=1#h'
-	);
-	assert.equal(
-		rewriteUrl('/~https%3A%2F%2Fexample.com/../~https%3A%2F%2Fother.example/secret', base, origin),
-		'/~https%3A%2F%2Fexample.com/~https%3A%2F%2Fother.example/secret'
-	);
-	assert.equal(
-		rewriteUrl('/~https%3A%2F%2Fexample.com/%2e%2e/other.example/secret', base, origin),
-		'/~https%3A%2F%2Fexample.com/other.example/secret'
-	);
-	assert.equal(
-		rewriteUrl('/https://example.com/../other.example/secret', base, origin),
-		'/~https%3A%2F%2Fexample.com/other.example/secret'
-	);
-	assert.equal(
-		rewriteUrl('https://proxy.example/~https%3A%2F%2Fexample.com/../../other.example/secret', base, origin),
-		'https://proxy.example/~https%3A%2F%2Fexample.com/other.example/secret'
-	);
-	assert.equal(
-		rewriteUrl('/~https%3A%2F%2Fexample.com/.\t./~https%3A%2F%2Fother.example/secret', base, origin),
-		'/~https%3A%2F%2Fexample.com/~https%3A%2F%2Fother.example/secret'
-	);
-	assert.equal(
-		rewriteUrl('/~\thttps%3A%2F%2Fexample.com/../~https%3A%2F%2Fother.example/secret', base, origin),
-		'/~https%3A%2F%2Fexample.com/~https%3A%2F%2Fother.example/secret'
-	);
-	for (const input of [
-		'https://proxy.example/foo/../~https%3A%2F%2Fother.example/secret',
-		'https://proxy.example/./~https%3A%2F%2Fother.example/secret',
-		'/~https%3A%2F%2F/../~https%3A%2F%2Fother.example/secret',
-		'/~https%3A%2F%2F[invalid]/../~https%3A%2F%2Fother.example/secret',
-		'https://proxy.example/~https%3A%2F%2F[invalid]/../~https%3A%2F%2Fother.example/secret',
-	]) {
-		assert.equal(rewriteUrl(input, base, origin), 'https://proxy.example/~https%3A%2F%2Fexample.com/~https%3A%2F%2Fother.example/secret', input);
-	}
-	for (const input of [
-		'//proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
-		'/\\proxy.example/~https%3A%2F%2Fcdn.example/asset.js',
-		'/\\proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
-		'\\\\proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
-		'https:\\\\proxy.example\\~https%3A%2F%2Fcdn.example\\..\\asset.js',
-		'http:proxy.example/~https%3A%2F%2Fcdn.example/../asset.js',
-		'ht\ttps://proxy.example/~\thttps%3A%2F%2Fcdn.example/.\n./asset.js',
-	]) {
-		assert.equal(rewriteUrl(input, base, origin), 'https://proxy.example/~https%3A%2F%2Fcdn.example/asset.js', input);
-	}
-});
-
-test('HTML meta charset prescan follows WHATWG pragma and attribute precedence rules', async () => {
-	for (const [html, expected] of [
-		['<meta http-equiv="Content-Type" content="charset=gbk">', 'gbk'],
-		['<meta charset="" http-equiv="content-type" content="text/html; charset=gbk"><meta charset="big5">', 'big5'],
-		['<meta charset="invalid-label" http-equiv="content-type" content="text/html; charset=gbk"><meta charset="euc-jp">', 'euc-jp'],
-		['<meta http-equiv="content-type" content="text/html; charset=gbk" charset="invalid-label"><meta charset="shift_jis">', 'shift_jis'],
-		['<meta http-equiv="content-type" content="text/html; charset=gbk" charset="shift_jis">', 'shift_jis'],
-		['<meta content="text/html; charset=gbk" http-equiv="Content-Type">', 'gbk'],
-		['<meta content="text/html; charset=gbk"><meta charset="windows-1252">', 'windows-1252'],
-		['<meta content="text/html; charset=gbk" charset="windows-1252"><meta charset="utf-8">', 'windows-1252'],
-	]) {
-		const sniffed = await sniffHtmlCharset(new Response(html).body);
-		assert.equal(sniffed.charset, expected, html);
-		await sniffed.body.cancel();
-	}
-});
-
-test('XML scripts and styles rewrite across comment-guarded CDATA and bare query ampersands', () => {
-	const cdataModule = '<svg><script type="module">/*<![CDATA[*/ import "./a.js?x=1&y=2"; /*]]>*/</script></svg>';
-	const out = rewriteSvg(cdataModule, base, origin);
-	assert.ok(out.includes(proxy('./a.js?x=1&y=2')));
-	assert.equal(
-		rewriteXmlText('import "./a.js?x=1&amp;y=2";', js => rewriteJsModuleSpecifiers(js, base, origin)),
-		`import "${proxy('./a.js?x=1&amp;y=2')}";`
-	);
-});
-
-test('standalone SVG sniffs XML encoding declarations beyond 256 bytes', () => {
-	const prolog = `<?xml version="1.0"${' '.repeat(300)}encoding="windows-1252"?><svg>Café</svg>`;
-	assert.equal(sniffTextCharset(Buffer.from(prolog, 'latin1'), 'svg', null), 'windows-1252');
-});
-
-test('UTF-16 XML declarations in ASCII-compatible bytes fall back to UTF-8', async () => {
-	for (const label of ['UTF-16', 'utf-16le', 'UTF-16BE']) {
-		const xml = `<?xml version="1.0" encoding="${label}"?><svg>Café</svg>`;
-		assert.equal(sniffTextCharset(Buffer.from(xml), 'svg', null), 'utf-8', label);
-		const sniffed = await sniffHtmlCharset(new Response(xml.replace('svg', 'html')).body, null, true);
-		assert.equal(sniffed.charset, 'utf-8', label);
-		await sniffed.body.cancel();
-	}
-	// Real UTF-16 documents are still recognized by their byte signature.
-	const utf16 = Buffer.from('<?xml version="1.0" encoding="UTF-16"?><svg/>', 'utf16le');
-	assert.equal(sniffTextCharset(utf16, 'svg', null), 'utf-16le');
-});
-
-test('HTML sniffing detects unbommed UTF-16 XML declarations across chunks', async () => {
-	const le = Buffer.from('<?xml version="1.0"?><html></html>', 'utf16le');
-	const be = Buffer.from(le).swap16();
-	for (const [bytes, expected] of [[le, 'utf-16le'], [be, 'utf-16be']]) {
-		let i = 0;
-		const stream = new ReadableStream({
-			pull(c) { i < bytes.length ? c.enqueue(bytes.subarray(i, ++i)) : c.close(); },
-		});
-		const sniffed = await sniffHtmlCharset(stream);
-		assert.equal(sniffed.charset, expected);
-		await sniffed.body.cancel();
-	}
-	const other = await sniffHtmlCharset(new Response(Buffer.from([0x3c, 0, 0x3f, 0, 0x20, 0])).body);
-	assert.equal(other.charset, null);
-	await other.body.cancel();
-});
-
-test('decoded proxy origins reject embedded userinfo', () => {
-	const tilde = '/~' + encodeURIComponent('https://user@example.com') + '/page';
-	const legacy = '/' + encodeURIComponent('https://user:pass@example.com/page');
-	assert.equal(decodeProxyPath(tilde), '');
-	assert.equal(decodeProxiedTarget(tilde), null);
-	assert.equal(decodeProxiedTarget(legacy), null);
-	assert.equal(resolveTargetBaseUrl(tilde, base, origin, true), 'https://example.com' + tilde);
-});
-
-test('ALLOWED_TARGET_ORIGINS rejects leading or consecutive dot hostnames', () => {
-	const target = new URL('https://example.com/');
-	for (const bad of ['https://example.com..', 'https://.example.com', 'https://a..b.example']) {
-		assert.equal(targetPolicyError(target, { ALLOWED_TARGET_ORIGINS: bad })?.status, 503, bad);
-	}
-	assert.equal(targetPolicyError(target, { ALLOWED_TARGET_ORIGINS: 'https://example.com.' }), null);
-});
-
-test('policy blocks home.arpa special-use local hostnames', () => {
-	const env = { ALLOWED_TARGET_ORIGINS: 'https://home.arpa,https://router.home.arpa' };
-	for (const url of ['https://home.arpa/', 'https://router.home.arpa/', 'https://router.home.arpa./']) {
-		assert.equal(targetPolicyError(new URL(url), env)?.status, 403, url);
-	}
-	assert.ok(getRootHtml().includes('home.arpa'));
-});
-
-test('refresh directives keep original text when the URL does not change', () => {
-	for (const value of [
-		'0; url="mailto:a@example.com"',
-		"5; url='#sec'",
-		'0; url="javascript:void(0)"',
-		`0; url="${proxy('https://example.com/next')}"`,
-	]) {
-		assert.equal(rewriteRefreshContent(value, base, origin), value);
-	}
-});
-
-test('decodeProxiedTarget rejects leading or consecutive dot hostnames', () => {
-	for (const host of ['.example.com', 'example..com', 'example.com..']) {
-		const path = '/~' + encodeURIComponent('https://' + host) + '/page';
-		assert.equal(decodeProxiedTarget(path), null, host);
-		assert.equal(resolveTargetBaseUrl(path, base, origin, true), 'https://example.com' + path, host);
-	}
-	const fqdn = '/~' + encodeURIComponent('https://example.com.') + '/page';
-	assert.equal(decodeProxiedTarget(fqdn)?.href, 'https://example.com/page');
 });

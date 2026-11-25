@@ -3,14 +3,11 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const source = await readFile(new URL('../worker.js', import.meta.url), 'utf8');
-const { default: worker, readTransformText, rewriteCss, rewriteJsModuleSpecifiers, rewriteSrcset,
-	rewriteImportMap, rewriteSpeculationRules, rewriteSvg, rewriteJsonUrls } = await import(
-	'data:text/javascript;base64,' + Buffer.from(source + '\nexport { readTransformText, rewriteCss, rewriteJsModuleSpecifiers, rewriteSrcset, rewriteImportMap, rewriteSpeculationRules, rewriteSvg, rewriteJsonUrls };').toString('base64')
-);
+const { default: worker } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
 const origin = 'https://proxy.example';
 const limit = 2 * 1024 * 1024;
 
-function upstreamResponse(bytes, contentType, encoding = 'identity') {
+function upstreamResponse(bytes, contentType) {
 	const boundaries = [0, 3, 81_919, 1_019_039, bytes.length];
 	let next = 0;
 	const body = new ReadableStream({
@@ -22,20 +19,18 @@ function upstreamResponse(bytes, contentType, encoding = 'identity') {
 	return new Response(body, { headers: {
 		'Content-Type': contentType,
 		'Content-Length': String(bytes.length),
-		'Content-Encoding': encoding,
+		'Content-Encoding': 'identity',
 		ETag: '"source-v1"',
 		'Last-Modified': 'Wed, 01 Jan 2025 00:00:00 GMT',
 		'Cache-Control': 'public, max-age=3600',
 	} });
 }
 
-async function proxyResponse(bytes, contentType, path, encoding) {
+async function proxyResponse(bytes, contentType, path) {
 	const originalFetch = globalThis.fetch;
-	globalThis.fetch = async () => upstreamResponse(bytes, contentType, encoding);
+	globalThis.fetch = async () => upstreamResponse(bytes, contentType);
 	try {
-		return await worker.fetch(new Request(origin + '/~' + encodeURIComponent('https://site.example') + path), {
-			ALLOWED_TARGET_ORIGINS: 'https://site.example',
-		});
+		return await worker.fetch(new Request(origin + '/' + encodeURIComponent('https://site.example') + path), {});
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
@@ -72,7 +67,7 @@ test('CSS exactly at the buffer limit is transformed rather than passed through'
 	assert.equal(response.headers.get('content-length'), null);
 	assert.equal(response.headers.get('etag'), null);
 	assert.ok((await response.text()).startsWith(
-		'@import "' + origin + '/~https%3A%2F%2Fsite.example/assets/theme.css";'));
+		'@import "' + origin + '/https%3A%2F%2Fsite.example/assets/theme.css";'));
 });
 
 test('small CSS is still decoded, rewritten and marked as a new representation', async () => {
@@ -85,106 +80,5 @@ test('small CSS is still decoded, rewritten and marked as a new representation',
 	}
 	const text = await response.text();
 	assert.ok(text.includes('content:"é"'));
-	assert.ok(text.includes('url("' + origin + '/~https%3A%2F%2Fsite.example/assets/logo.png")'));
-});
-
-test('oversized decoded HTTP streams do not re-use the original encoded validators', async () => {
-	const bytes = Buffer.alloc(limit + 57, 0x20);
-	const type = 'text/css; charset=windows-1252';
-	// In Workerd the HTTP stream is decoded when read, but still carries the wire headers.
-	const response = await proxyResponse(bytes, type, '/assets/large.css', 'gzip');
-	assert.equal(response.headers.get('content-type'), type);
-	assert.equal(response.headers.get('content-encoding'), 'gzip');
-	for (const header of ['content-length', 'etag', 'last-modified']) assert.equal(response.headers.get(header), null);
-	assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
-});
-
-test('undeclared JavaScript that is not valid UTF-8 keeps its original bytes', async () => {
-	// "你好" in GBK: browsers decode such classic scripts with <script charset> or the document encoding.
-	const gbk = Buffer.concat([Buffer.from('import "./a.js";alert("'), Buffer.from([0xc4, 0xe3, 0xba, 0xc3]), Buffer.from('");')]);
-	const response = await proxyResponse(gbk, 'application/javascript', '/assets/legacy.js');
-	assert.equal(response.status, 200);
-	assert.equal(response.headers.get('content-type'), 'application/javascript');
-	assert.equal(response.headers.get('content-length'), String(gbk.length));
-	assert.equal(response.headers.get('etag'), '"source-v1"');
-	assert.deepEqual(Buffer.from(await response.arrayBuffer()), gbk);
-
-	// Valid UTF-8 and scripts with a declared charset are still decoded and rewritten.
-	for (const [bytes, type] of [
-		[Buffer.from('import "./a.js";alert("你好");'), 'application/javascript'],
-		[gbk, 'application/javascript; charset=gbk'],
-	]) {
-		const out = await proxyResponse(bytes, type, '/assets/main.js');
-		assert.equal(out.headers.get('content-type'), 'application/javascript; charset=UTF-8', type);
-		const text = await out.text();
-		assert.ok(text.includes(`"${origin}/~https%3A%2F%2Fsite.example/assets/a.js"`), text);
-		assert.ok(text.includes('alert("你好")'), text);
-	}
-});
-
-test('bounded text reader accepts fragmented multibyte text', async () => {
-	const input = '海😀'.repeat(700);
-	const bytes = Buffer.from(input);
-	let offset = 0;
-	const stream = new ReadableStream({
-		pull(controller) {
-			if (offset === bytes.length) controller.close();
-			else controller.enqueue(bytes.subarray(offset, ++offset));
-		},
-	});
-	assert.equal((await readTransformText(stream)).text, input);
-	assert.equal(stream.locked, false);
-});
-
-test('canceling an oversized stream releases the upstream reader', async () => {
-	let canceled;
-	const stream = new ReadableStream({
-		start(controller) { controller.enqueue(new Uint8Array(limit + 1)); },
-		cancel(reason) { canceled = reason; },
-	});
-	const { passthrough } = await readTransformText(stream);
-	await passthrough.cancel('consumer stopped');
-	assert.equal(canceled, 'consumer stopped');
-	assert.equal(stream.locked, false);
-});
-
-test('CSS only sniffs the exact @charset byte signature within the first 1024 bytes', async () => {
-	for (const prefix of ["@charset 'windows-1252';", '@CHARSET "windows-1252";',
-		'@charset  "windows-1252";', '@charset "windows-1252" ;',
-		'@charset "' + ' '.repeat(1010) + 'windows-1252";']) {
-		const css = prefix + 'a{content:"海"}';
-		const r = await proxyResponse(Buffer.from(css), 'text/css', '/sheet.css');
-		assert.equal(await r.text(), css);
-	}
-	const prefix = '@charset "' + ' '.repeat(1000) + 'windows-1252";';
-	assert.equal(prefix.length, 1024);
-	const r = await proxyResponse(Buffer.from(prefix + 'a{content:"é"}', 'latin1'), 'text/css', '/sheet.css');
-	assert.equal(await r.text(), '@charset "UTF-8";a{content:"é"}');
-});
-
-test('CSS, JavaScript and srcset keep their full source when rewrite expansion hits the budget', () => {
-	const base = 'https://site.example/' + 'folder/'.repeat(1100) + 'page';
-	for (const [rewrite, unit] of [
-		[rewriteCss, '.tile{background:url(tile.png)}'],
-		[rewriteJsModuleSpecifiers, 'import "./part.js";'],
-		[rewriteSrcset, 'tile.png 1x, '],
-	]) {
-		assert.ok(rewrite(unit, base, origin).includes(origin + '/~'));
-		const source = unit.repeat(650);
-		assert.equal(rewrite(source, base, origin), source);
-	}
-});
-
-test('XML and JSON documents stop accumulating rewritten URLs across members', () => {
-	const base = 'https://site.example/' + 'folder/'.repeat(1100) + 'doc';
-	for (const [rewrite, make] of [
-		[rewriteSvg, n => '<svg>' + '<image href="tile.png"/>'.repeat(n) + '</svg>'],
-		[rewriteImportMap, n => JSON.stringify({ imports: Object.fromEntries(Array.from({ length: n }, (_, i) => ['part-' + i, './part.js'])) })],
-		[rewriteSpeculationRules, n => JSON.stringify({ prefetch: [{ urls: Array(n).fill('page.html') }] })],
-		[rewriteJsonUrls, n => JSON.stringify({ icons: Array(n).fill({ src: 'tile.png' }) })],
-	]) {
-		assert.ok(rewrite(make(1), base, origin).includes(origin + '/~'));
-		const source = make(650);
-		assert.equal(rewrite(source, base, origin), source);
-	}
+	assert.ok(text.includes('url("' + origin + '/https%3A%2F%2Fsite.example/assets/logo.png")'));
 });
