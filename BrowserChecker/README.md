@@ -1,8 +1,8 @@
 <br>
 <br>
 <br>
-<h1 align="center">Browser Checker</h1>
-<h3 align="center">你的浏览器，现在有几分？</h3>
+<h1 align="center">🌐 Browser Checker</h1>
+<h3 align="center">你的浏览器，现在有几分?</h3>
 
 <p align="center">一个轻量、无需构建的网页小工具：打开页面，它就会检查你的浏览器支持多少现代 Web 能力，并给出一个友好、直观的分数。</p>
 <p align="center">Made with ❤️ by <a href="https://github.com/lingyicute">lingyicute</a>.</p>
@@ -27,7 +27,7 @@
 
 点开页面，它就会：识别你的浏览器类型与内核版本，检查 105 项现代 Web 能力，分辨国产浏览器、套壳浏览器和应用内 WebView，并把结果整理成一个 0–100 的分数和几条可读的建议。
 
-这个项目仍然是一个**无需构建的静态网站**：`index.html`、`style.css`、`app.js`、`startup.js`、已生成的 `render.js` 和 `favicon.svg` 是运行时文件。没有后端、没有账号、没有追踪，部署到任意静态托管即可。你也可以直接打开 `index.html`，或访问官方站点 [test.92li.uk](https://test.92li.uk)。
+这个项目是一个**无需构建的静态网站**：`index.html`、`style.css`、`app.js`、`startup.js`、已生成的 `render.js` 和 `favicon.svg` 是运行时文件。没有后端、没有账号、没有追踪，部署到任意静态托管即可。你也可以直接打开 `index.html`，或访问官方站点 [test.92li.uk](https://test.92li.uk)。
 
 <br>
 
