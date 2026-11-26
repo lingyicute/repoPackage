@@ -328,11 +328,16 @@ function readCssString(css, start) {
 	let i = start + 1;
 	while (i < css.length) {
 		if (css[i] === quote) return { end: i + 1, value: decodeCssEscapes(css.slice(start + 1, i)) };
-		if (/[\n\r\f]/.test(css[i])) break; // bad-string-token
+		if (/[\n\r\f]/.test(css[i])) return { end: i, value: null }; // bad-string-token
 		if (css[i] === '\\') i = cssEscapeEnd(css, i);
 		else i++;
 	}
-	return { end: i, value: null };
+	// EOF 也结束字符串 token（CSS Syntax §4.3.5）；末尾落单的反斜杠不计入内容。
+	let end = css.length;
+	let slashes = 0;
+	while (end - slashes - 1 > start && css[end - slashes - 1] === '\\') slashes++;
+	if (slashes % 2) end--;
+	return { end: css.length, value: decodeCssEscapes(css.slice(start + 1, end)) };
 }
 
 function skipCssSpace(css, start, comments = false) {
@@ -355,7 +360,8 @@ function readCssUrl(css, start) {
 	if (css[i] === '"' || css[i] === "'") {
 		const str = readCssString(css, i);
 		i = skipCssSpace(css, str.end, true);
-		if (str.value !== null && css[i] === ')') return { end: i + 1, value: str.value };
+		// EOF 同样闭合函数块：浏览器照常加载 url("a.png 与 url("a.png" 中的地址。
+		if (str.value !== null && (i >= css.length || css[i] === ')')) return { end: Math.min(i + 1, css.length), value: str.value };
 		let depth = 1;
 		while (i < css.length && depth > 0) {
 			if (css[i] === '"' || css[i] === "'") { i = readCssString(css, i).end; continue; }
@@ -368,11 +374,12 @@ function readCssUrl(css, start) {
 	} else {
 		i = skipCssSpace(css, start);
 		const valueStart = i;
-		while (i < css.length) {
-			if (css[i] === ')') return { end: i + 1, value: decodeCssEscapes(css.slice(valueStart, i)) };
+		for (;;) {
+			// EOF 也结束 url token（CSS Syntax §4.3.6）。
+			if (i >= css.length || css[i] === ')') return { end: Math.min(i + 1, css.length), value: decodeCssEscapes(css.slice(valueStart, i)) };
 			if (isSrcsetSpace(css[i])) {
 				const end = skipCssSpace(css, i);
-				if (css[end] === ')') return { end: end + 1, value: decodeCssEscapes(css.slice(valueStart, i)) };
+				if (end >= css.length || css[end] === ')') return { end: Math.min(end + 1, css.length), value: decodeCssEscapes(css.slice(valueStart, i)) };
 				i = end;
 				break;
 			}
@@ -644,12 +651,11 @@ function scopeRequestCookie(header, ns) {
 
 /** 就地重写 Headers 上的全部 Set-Cookie */
 function rescopeSetCookies(headers, ns, workerIsHttps) {
-	// getSetCookie 才能拿到多条 Set-Cookie；退化成 get 时只会有一条
-	const list = headers.getSetCookie
-		? headers.getSetCookie()
-		: (headers.get('set-cookie') ? [headers.get('set-cookie')] : []);
-	if (!list.length) return;
-	headers.delete('set-cookie');
+	// Workers 的标准 API 可能尚不可用，但 getAll('Set-Cookie') 保留独立的字段。
+	// 不读合并后的 get()：Expires 自身含逗号，无法安全地靠分隔符还原。
+	const list = typeof headers.getSetCookie === 'function' ? headers.getSetCookie()
+		: typeof headers.getAll === 'function' ? headers.getAll('Set-Cookie') : [];
+	headers.delete('Set-Cookie');
 	for (const c of list) {
 		const scoped = scopeSetCookie(c, ns, workerIsHttps);
 		if (scoped) headers.append('Set-Cookie', scoped);
@@ -785,15 +791,7 @@ function applyCors(headers, request) {
 function buildResponse(upstream, request, ck, baseUrl) {
 	const resp = new Response(upstream.body, upstream);
 	stripResponseHeaders(resp.headers, request, baseUrl);
-	stripHopByHop(resp.headers);
-	if (ENABLE_PROXY_NOINDEX) {
-		resp.headers.set('X-Robots-Tag', 'noindex, nofollow');
-	}
-	applyCors(resp.headers, request);
-	// Set-Cookie 添加来源命名空间，避免回源时意外混用
-	if (ck) rescopeSetCookies(resp.headers, ck.ns, ck.isHttps);
-	applyCachePolicy(resp, request, ck);
-	return resp;
+	return applyCommon(resp, request, ck);
 }
 
 function isCacheableMethod(m) { return m === 'GET' || m === 'HEAD'; }
@@ -999,36 +997,44 @@ XMLHttpRequest.prototype.open=function(m,u){
   return oOpen.apply(this,arguments);
 };
 /* ---- EventSource / sendBeacon / Worker / Audio / WebSocket ---- */
-if(window.EventSource){var oES=window.EventSource;var ES=function(u,c){var nu=rpBase(u);return arguments.length>1?new oES(nu,c):new oES(nu);};ES.prototype=oES.prototype;try{Object.setPrototypeOf(ES,oES);}catch(e){}window.EventSource=ES;}
+/* 与 Request 一样经 Reflect.construct 转发 new.target：子类实例必须得到子类原型，不带 new 的调用照常报错。 */
+function wrapCtor(name,rewrite){
+  var O=window[name];
+  if(!O)return null;
+  var W=function(){
+    if(!new.target)throw new TypeError("Failed to construct '"+name+"': Please use the 'new' operator.");
+    var args=Array.prototype.slice.call(arguments);
+    if(args.length){try{args[0]=rewrite(args[0]);}catch(e){}}
+    return Reflect.construct(O,args,new.target);
+  };
+  W.prototype=O.prototype;
+  try{Object.setPrototypeOf(W,O);}catch(e){}
+  window[name]=W;
+  return W;
+}
+wrapCtor('EventSource',rpBase);
 if(navigator.sendBeacon){var oSB=navigator.sendBeacon.bind(navigator);navigator.sendBeacon=function(u,d){try{u=typeof u==='string'&&!u.trim()?rp(base()):rp(u);}catch(e){}return arguments.length>1?oSB(u,d):oSB(u);};}
-if(window.Worker){var oWk=window.Worker;var Wk=function(u,o){var nu=rpBase(u);return arguments.length>1?new oWk(nu,o):new oWk(nu);};Wk.prototype=oWk.prototype;try{Object.setPrototypeOf(Wk,oWk);}catch(e){}window.Worker=Wk;}
-try{if(window.SharedWorker){var oSW=window.SharedWorker;var SW=function(u,o){var nu=rpBase(u);return arguments.length>1?new oSW(nu,o):new oSW(nu);};SW.prototype=oSW.prototype;try{Object.setPrototypeOf(SW,oSW);}catch(e){}window.SharedWorker=SW;}}catch(e){}
-try{if(window.Audio){var oAu=window.Audio;var Au=function(u){return u!==undefined?new oAu(rp(u)):new oAu();};Au.prototype=oAu.prototype;try{Object.setPrototypeOf(Au,oAu);}catch(e){}window.Audio=Au;}}catch(e){}
+wrapCtor('Worker',rpBase);
+try{wrapCtor('SharedWorker',rpBase);}catch(e){}
+try{wrapCtor('Audio',rp);}catch(e){}
 /* Service Worker 无法在代理路径下正确工作，直接禁用注册以免站点异常 */
 try{if(navigator.serviceWorker)navigator.serviceWorker.register=function(){return Promise.reject(new Error('[ProxyEverything] service worker disabled'));};}catch(e){}
 /* ---- WebSocket：目标地址已在路径内，无需污染目标查询串 ---- */
-if(window.WebSocket){
-  var oWS=window.WebSocket;
-  var WS=function(u,protos){
-    var nu=u;
-    try{
-      if(typeof u==='string')nu=rp(u);
-      else if(u instanceof URL)nu=rp(u.href);
-      if(typeof nu==='string'){
-        var au=new URL(nu,location.href||WO);
-        if(au.origin===WO||au.origin===location.origin||isSelfHost(au)){
-          au.protocol=(location.protocol||au.protocol)==='https:'?'wss:':'ws:';
-          nu=au.href;
-        }
-      }
-    }catch(e){}
-    return protos===undefined?new oWS(nu):new oWS(nu,protos);
-  };
-  WS.prototype=oWS.prototype;
-  try{Object.setPrototypeOf(WS,oWS);}catch(e){}
-  ['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k,i){try{WS[k]=i;}catch(e){}});
-  window.WebSocket=WS;
+function rwWsUrl(u){
+  var nu=u;
+  if(typeof u==='string')nu=rp(u);
+  else if(u instanceof URL)nu=rp(u.href);
+  if(typeof nu==='string'){
+    var au=new URL(nu,location.href||WO);
+    if(au.origin===WO||au.origin===location.origin||isSelfHost(au)){
+      au.protocol=(location.protocol||au.protocol)==='https:'?'wss:':'ws:';
+      nu=au.href;
+    }
+  }
+  return nu;
 }
+var WS=wrapCtor('WebSocket',rwWsUrl);
+if(WS)['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(k,i){try{WS[k]=i;}catch(e){}});
 /* ---- history / window.open / location.assign ---- */
 function wrapHistory(fn){return function(st,t,u){try{if(u!=null)arguments[2]=rp(u);}catch(e){}return fn.apply(this,arguments);};}
 if(history.pushState)history.pushState=wrapHistory(history.pushState);
@@ -1146,16 +1152,20 @@ function normTag(el){
   var idx=raw.indexOf(':');
   return idx>=0?raw.slice(idx+1):raw;
 }
+function rwNavigation(sv,emptyUsesBase){
+  var trimmed=sv.trim();
+  if(!trimmed)return emptyUsesBase?rp(base()):sv;
+  if(trimmed.charAt(0)==='#'){
+    var b=base();
+    if(b!==currentTarget())return rp(new URL(trimmed,b).href);
+  }
+  return rp(sv);
+}
 function rwAttrVal(el,tag,attr,kind,sv){
   if(kind===1)return rwSrcset(sv);
   if(kind===2)return rwPing(sv);
-  if(!sv.trim()){
-    var fm=(el&&el.getAttribute&&(el.getAttribute(attr==='formaction'?'formmethod':'method')||'')||'').trim().toLowerCase();
-    var hasBase=Boolean(document.querySelector&&document.querySelector('base[data-pe-base],base[href]'));
-    if((tag==='FORM'&&attr==='action'&&fm!=='dialog')||(attr==='formaction'&&fm!=='dialog')||(hasBase&&(attr==='href'||attr==='xlink:href'))){
-      return rp(base());
-    }
-  }
+  if(attr==='action'||attr==='formaction')return rwNavigation(sv,false);
+  if((tag==='A'||tag==='AREA')&&(attr==='href'||attr==='xlink:href'))return rwNavigation(sv,true);
   return rp(sv);
 }
 if(window.Element){
@@ -1286,14 +1296,14 @@ function rwLinkEv(ev){
     var el=t&&t.closest?t.closest('a,area'):null;
     if(!el)return;
     var h=el.getAttribute('href');
-    if(h!==null){var p=rp(h.trim()||base());if(p&&p!==h)el.setAttribute('href',p);}
+    if(h!==null){var p=rwNavigation(h,true);if(p&&p!==h)el.setAttribute('href',p);}
     if(el.hasAttributeNS&&el.hasAttributeNS(XLINK_NS,'href')){
       var xhNs=el.getAttributeNS(XLINK_NS,'href');
-      var pxNs=rp(xhNs.trim()||base());
+      var pxNs=rwNavigation(xhNs,true);
       if(pxNs&&pxNs!==xhNs)el.setAttributeNS(XLINK_NS,'xlink:href',pxNs);
     }else{
       var xh=el.getAttribute('xlink:href');
-      if(xh!==null){var px=rp(xh.trim()||base());if(px&&px!==xh)el.setAttribute('xlink:href',px);}
+      if(xh!==null){var px=rwNavigation(xh,true);if(px&&px!==xh)el.setAttribute('xlink:href',px);}
     }
     var pg=el.getAttribute('ping');
     if(pg){var ppg=rwPing(pg);if(ppg&&ppg!==pg)el.setAttribute('ping',ppg);}
@@ -1305,19 +1315,13 @@ document.addEventListener('contextmenu',rwLinkEv,true);
 function rwForm(f,sub){
   try{
     if(!f||normTag(f)!=='FORM')return;
-    var m=(f.getAttribute('method')||'').trim().toLowerCase();
     var a=f.getAttribute('action');
-    var at=a!==null?a.trim():null;
-    if(at){var p=rp(at);if(p&&p!==a)f.setAttribute('action',p);}
-    else if(m!=='dialog'&&(at===''||document.querySelector('base[data-pe-base],base[href]'))){
-      f.setAttribute('action',rp(base()));
-    }
+    if(a&&a.trim()){var p=rwNavigation(a,false);if(p!==a)f.setAttribute('action',p);}
     if(sub&&sub.getAttribute){
-      var sfm=(sub.getAttribute('formmethod')||'').trim().toLowerCase();
       var fa=sub.getAttribute('formaction');
-      if(fa!==null&&(fa.trim()||sfm!=='dialog')){
-        var pfa=rp(fa.trim()||base());
-        if(pfa&&pfa!==fa)sub.setAttribute('formaction',pfa);
+      if(fa&&fa.trim()){
+        var pfa=rwNavigation(fa,false);
+        if(pfa!==fa)sub.setAttribute('formaction',pfa);
       }
     }
   }catch(e){}
@@ -1403,10 +1407,15 @@ function bufferedTextHandler(rewrite, matches = () => true) {
 	};
 }
 
-function transformHtml(response, baseUrl, workerOrigin, ck) {
+function transformHtml(response, baseUrl, workerOrigin, ck, sourceCharset = null) {
 	const rewriter = new HTMLRewriter();
+	// 输出统一为 UTF-8。未声明编码的外部经典脚本原本按文档编码解码，透传时需要显式保留原编码。
+	const scriptCharset = sourceCharset && !isUtf8Charset(sourceCharset) ? sourceCharset : null;
 	let baseHref = baseUrl;
+	let sawBaseHref = false;
 	let hasBaseHref = false;
+	let templateDepth = 0;
+	const htmlNamespace = 'http://www.w3.org/1999/xhtml';
 	let injected = false;
 	const shim = getShimScript(workerOrigin, ck ? ck.ns : '');
 	const rw = (v) => rewriteUrl(v, baseHref, workerOrigin);
@@ -1423,27 +1432,40 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 		},
 	});
 
-	// 只采纳第一个合法 HTTP(S) href；保留 target 与原始基地址供 shim 使用，移除原生 href。
+	// template 内容不是活动文档的一部分；嵌套模板也不能改变文档基地址。
+	rewriter.on('template', {
+		element(el) {
+			if (el.namespaceURI !== htmlNamespace) return;
+			templateDepth++;
+			el.onEndTag(() => { templateDepth--; });
+		},
+	});
+
+	// HTML 规范以活动文档内第一个带 href 的 base 冻结基地址；无效或非 HTTP(S) 回退文档原地址，不顺延后续 base。
 	rewriter.on('base', {
 		element(el) {
-			const h = el.getAttribute('href');
-			if (h != null && !hasBaseHref) {
-				try {
-					const u = new URL(h, baseUrl);
-					if (u.protocol === 'http:' || u.protocol === 'https:') {
-						hasBaseHref = true;
-						baseHref = u.href;
-						el.setAttribute('data-pe-base', baseHref);
-					} else {
-						el.removeAttribute('data-pe-base');
-					}
-				} catch {
-					el.removeAttribute('data-pe-base');
+			if (templateDepth || el.namespaceURI !== htmlNamespace) return;
+			if (el.hasAttribute('href')) {
+				const h = el.getAttribute('href');
+				let nextBase = '';
+				if (h != null) {
+					try {
+						const u = new URL(h, baseUrl);
+						if (u.protocol === 'http:' || u.protocol === 'https:') nextBase = u.href;
+					} catch {}
 				}
+				if (!sawBaseHref) {
+					sawBaseHref = true;
+					if (nextBase) {
+						hasBaseHref = true;
+						baseHref = nextBase;
+					}
+				}
+				el.setAttribute('data-pe-base', nextBase);
+				el.removeAttribute('href');
 			} else {
 				el.removeAttribute('data-pe-base');
 			}
-			el.removeAttribute('href');
 		},
 	});
 
@@ -1492,10 +1514,10 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 			element(el) {
 				// 内容被我们改写过的资源必须去掉 SRI，否则哈希校验失败被浏览器拦截
 				if (tag === 'script' || tag === 'link') el.removeAttribute('integrity');
-				const isDialogForm = tag === 'form' &&
-					(el.getAttribute('method') || '').trim().toLowerCase() === 'dialog';
-				if (tag === 'form' && !isDialogForm && hasBaseHref && !el.hasAttribute('action')) {
-					el.setAttribute('action', rw(baseHref));
+				// 改写后的脚本带 charset=UTF-8 响应头，优先于此属性；它只影响原样透传的脚本。
+				if (tag === 'script' && scriptCharset && el.namespaceURI === htmlNamespace &&
+					el.hasAttribute('src') && !el.hasAttribute('charset')) {
+					el.setAttribute('charset', scriptCharset);
 				}
 				for (const [attr, kind] of attrs) {
 					const v = el.getAttribute(attr);
@@ -1507,12 +1529,15 @@ function transformHtml(response, baseUrl, workerOrigin, ck) {
 						const trimmed = v.trim();
 						if (!trimmed) continue;
 						next = trimmed.split(/\s+/).map(rw).join(' ');
-					} else if (!v.trim() && ((tag === 'form' && !isDialogForm) ||
-						(attr === 'formaction' && (el.getAttribute('formmethod') || '').trim().toLowerCase() !== 'dialog') ||
-						(hasBaseHref && (attr === 'href' || attr === 'xlink:href' || attr === 'action')))) {
-						next = rw(baseHref);
 					} else {
-						next = rw(v);
+						const trimmed = v.trim();
+						const isFormAction = attr === 'action' || attr === 'formaction';
+						const isAnchor = (tag === 'a' || tag === 'area') && (attr === 'href' || attr === 'xlink:href');
+						// 缺省或空的 form action 始终使用文档地址，不使用 <base>。
+						if (!trimmed && isFormAction) continue;
+						if (hasBaseHref && (isAnchor || isFormAction) && (trimmed === '' || trimmed.startsWith('#'))) {
+							next = rw(new URL(trimmed, baseHref).href);
+						} else next = rw(v);
 					}
 					// 页内锚点、javascript:/mailto:/data: 等不变的值无需跨运行时回写（与通配处理器一致）。
 					if (next !== v) el.setAttribute(attr, next);
@@ -1607,7 +1632,7 @@ function sniffTextChunkCharset(chunks, kind, declaredCharset = null) {
 		const m = /^\s*<\?xml\b[^>]{0,200}?\bencoding\s*=\s*(["'])\s*([^"'\s]{1,64})\s*\1[^>]*\?>/i.exec(ascii);
 		if (m) return normalizeCharsetLabel(m[2], false) || 'utf-8';
 	}
-	return 'utf-8';
+	return kind === 'js' ? null : 'utf-8';
 }
 
 async function readTransformText(body, kind = '', declaredCharset = null) {
@@ -1649,11 +1674,30 @@ async function readTransformText(body, kind = '', declaredCharset = null) {
 			chunks.push(value);
 		}
 		const effectiveCharset = sniffTextChunkCharset(chunks, kind, declaredCharset);
-		const decoder = new TextDecoder(effectiveCharset);
-		const parts = [];
-		for (const c of chunks) parts.push(decoder.decode(c, { stream: true }));
-		parts.push(decoder.decode());
-		return { text: parts.join(''), passthrough: null, charset: effectiveCharset };
+		if (effectiveCharset) {
+			const decoder = new TextDecoder(effectiveCharset);
+			const parts = [];
+			for (const c of chunks) parts.push(decoder.decode(c, { stream: true }));
+			parts.push(decoder.decode());
+			return { text: parts.join(''), passthrough: null, charset: effectiveCharset };
+		}
+		// 未声明编码的经典脚本由浏览器按 <script charset> 或文档编码解码，代理无从得知。
+		// 不是合法 UTF-8 时保留原始字节，不能把 GBK 等旧编码的文本替换成 U+FFFD 后再标成 UTF-8。
+		try {
+			const decoder = new TextDecoder('utf-8', { fatal: true });
+			const parts = [];
+			for (const c of chunks) parts.push(decoder.decode(c, { stream: true }));
+			parts.push(decoder.decode());
+			return { text: parts.join(''), passthrough: null, charset: 'utf-8' };
+		} catch {
+			const passthrough = new Uint8Array(bytes);
+			let offset = 0;
+			for (const c of chunks) {
+				passthrough.set(c, offset);
+				offset += c.byteLength;
+			}
+			return { text: null, passthrough, charset: null };
+		}
 	} catch (error) {
 		reader.cancel(error).catch(() => {});
 		throw error;
@@ -1691,10 +1735,6 @@ async function transformText(response, baseUrl, workerOrigin, kind, request, dec
 		const ct = (response.headers.get('content-type') || '').split(';')[0].trim();
 		resp.headers.set('content-type', (ct || 'text/plain') + '; charset=UTF-8');
 	}
-	if (ENABLE_PROXY_NOINDEX) {
-		resp.headers.set('X-Robots-Tag', 'noindex, nofollow');
-	}
-	applyCors(resp.headers, request);
 	return resp;
 }
 
@@ -2129,7 +2169,7 @@ async function handleWebSocket(request, targetUrl, ck, workerOrigin, env) {
 	headers.set('Upgrade', 'websocket');
 
 	// 自动跟随重定向可能把手工转发的 Cookie 带到另一个站点。
-	const resp = await fetch(upstreamUrl.href, { headers, redirect: 'manual' });
+	const resp = await fetch(upstreamUrl.href, { headers, redirect: 'manual', signal: request.signal });
 	const upstream = resp.webSocket;
 	if (!upstream) {
 		if (resp.body) resp.body.cancel().catch(() => {});
@@ -2207,15 +2247,10 @@ export default {
 			return new Response(null, { status: 204, headers });
 		}
 
-		// ---- 首页 ----
-		if (url.pathname === '/' || url.pathname === '') {
-			return new Response(request.method === 'HEAD' ? null : getRootHtml(), {
-				headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
-			});
-		}
+		const isWebSocket = (request.headers.get('Upgrade') || '').toLowerCase() === 'websocket';
 
 		// ---- robots.txt：允许收录首页，禁止抓取代理目标路径以防耗尽 Worker 配额 ----
-		if (url.pathname === '/robots.txt') {
+		if (!isWebSocket && url.pathname === '/robots.txt') {
 			return new Response(request.method === 'HEAD' ? null :
 `User-agent: *
 Allow: /
@@ -2234,24 +2269,34 @@ Disallow: /wss%3A
 
 		// ---- 漏网的站内相对请求：innerHTML、location.href = '/x'、Worker 内请求、默认 /favicon.ico 等未经改写的地址
 		//      会直接落到代理域。路径不带协议而 Referer 是代理页面时，按来源页的目标站点还原并重定向 ----
+		let refererRouted = null;
 		if (!/^(?:https?|wss?):\/\//i.test(safeDecode(url.pathname.substring(1)).trim().replace(/^\/+/, ''))) {
 			const refTarget = refererTarget(request, workerOrigin, env);
 			if (refTarget) {
 				const leaked = new URL(url.pathname.replace(/^\/+/, '/') + url.search, refTarget);
-				return new Response(null, {
+				// 浏览器不跟随 WebSocket 握手的重定向（如无 shim 的 Worker 内相对地址），直接按来源页目标转发。
+				if (isWebSocket) refererRouted = leaked;
+				else return new Response(null, {
 					status: 307,
 					headers: { 'Location': toProxyUrl(leaked.href, workerOrigin), 'Cache-Control': 'no-store' },
 				});
 			}
 		}
 
+		// ---- 首页：代理页面发出的 "/"（location.href = '/'、fetch('/') 等）已在上面还原为目标站根路径 ----
+		if (!isWebSocket && (url.pathname === '/' || url.pathname === '')) {
+			return new Response(request.method === 'HEAD' ? null : getRootHtml(), {
+				headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+			});
+		}
+
 		// ---- favicon 等杂项，避免被当成目标域名 ----
-		if (/^\/(favicon\.ico|sitemap\.xml|apple-touch-icon.*\.png|\.well-known\/.*)$/i.test(url.pathname)) {
+		if (!refererRouted && (url.pathname === '/robots.txt' || /^\/(favicon\.ico|sitemap\.xml|apple-touch-icon.*\.png|\.well-known\/.*)$/i.test(url.pathname))) {
 			return new Response(null, { status: 404 });
 		}
 
 		// ---- 解析目标 URL ----
-		const targetUrl = parseTarget(url);
+		const targetUrl = refererRouted || parseTarget(url);
 		if (!targetUrl) {
 			return invalidTargetPage(url);
 		}
@@ -2269,7 +2314,7 @@ Disallow: /wss%3A
 		const ck = { ns: cookieNamespace(targetUrl), isHttps: url.protocol === 'https:' };
 
 		// WebSocket 请求走独立通道
-		if ((request.headers.get('Upgrade') || '').toLowerCase() === 'websocket') {
+		if (isWebSocket) {
 			try {
 				return await handleWebSocket(request, targetUrl, ck, workerOrigin, env);
 			} catch (e) {
@@ -2309,12 +2354,20 @@ Disallow: /wss%3A
 		try {
 			upstream = await fetch(fetchUrl, {
 				method: request.method,
+				signal: request.signal,
 				headers: fwdHeaders,
 				body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
 				redirect: 'manual',
 			});
 		} catch (e) {
 			return errorPage(targetUrl.href, e);
+		}
+
+		// Response 构造器只接受 200–599。LinkedIn 的 999 这类状态无法转发，统一按上游失败处理，
+		// 否则 try 之外的 HEAD/重定向分支会抛出未捕获的 RangeError。
+		if (upstream.status < 200 || upstream.status > 599) {
+			if (upstream.body) upstream.body.cancel().catch(() => {});
+			return errorPage(targetUrl.href, new Error(`HTTP ${upstream.status}`));
 		}
 
 		// ---- 重定向 ----
@@ -2409,37 +2462,29 @@ Disallow: /wss%3A
 		// 避免 HTMLRewriter 按 meta 里的旧 charset 重新编码输出）
 		if (isHtml) {
 			const interim = makeInterim((mime || 'text/html') + '; charset=UTF-8');
-			const result = transformHtml(interim, baseUrl, workerOrigin, ck);
-			// 补一遍统一头处理
-			if (ENABLE_PROXY_NOINDEX) {
-				result.headers.set('X-Robots-Tag', 'noindex, nofollow');
-			}
-			applyCors(result.headers, request);
-			rescopeSetCookies(result.headers, ck.ns, ck.isHttps);
-			applyCachePolicy(result, request, ck);
-			return result;
+			return applyCommon(transformHtml(interim, baseUrl, workerOrigin, ck, charset), request, ck);
 		}
 
 		// 整体缓冲的资源可能超限并转为字节透传；先保留原始表示元数据，
 		// 只有确定重写了正文时 transformText 才删除验证器并声明 UTF-8。
 		// CSS
 		if (mime.includes('text/css')) {
-			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, 'css', request, charset), upstream, request, ck);
+			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, 'css', request, charset), request, ck);
 		}
 
 		// JS：基于模块 lexer 的 URL 说明符重写
 		if (mime.includes('javascript') || mime.includes('ecmascript')) {
-			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, 'js', request, charset), upstream, request, ck);
+			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, 'js', request, charset), request, ck);
 		}
 
 		// SVG
 		if (mime.includes('image/svg+xml')) {
-			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, 'svg', request, charset), upstream, request, ck);
+			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, 'svg', request, charset), request, ck);
 		}
 
 		// Web App Manifest（图标、start_url 等）
 		if (isManifest) {
-			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, 'json', request, charset), upstream, request, ck);
+			return applyCommon(await transformText(upstream, baseUrl, workerOrigin, 'json', request, charset), request, ck);
 		}
 
 		// 其它（JSON API/图片/字体/媒体/下载等）：流式透传
@@ -2452,13 +2497,14 @@ Disallow: /wss%3A
 	},
 };
 
-/** transformText 的产物再补一遍统一头处理 */
-function applyCommon(resp, upstream, request, ck) {
+/** 所有回源 HTTP 响应（含流式 HTML）共用相同的下游策略。 */
+function applyCommon(resp, request, ck) {
 	stripHopByHop(resp.headers);
-	if (ck) rescopeSetCookies(resp.headers, ck.ns, ck.isHttps);
 	if (ENABLE_PROXY_NOINDEX) {
 		resp.headers.set('X-Robots-Tag', 'noindex, nofollow');
 	}
+	applyCors(resp.headers, request);
+	if (ck) rescopeSetCookies(resp.headers, ck.ns, ck.isHttps);
 	applyCachePolicy(resp, request, ck);
 	return resp;
 }
@@ -2987,6 +3033,7 @@ ${md3Overlays()}
 }
 
 // ---- 错误页 ----
+// “返回首页”不带 Referer：来自代理页面的 "/" 会被还原为目标站根路径。
 function renderErrorPage(title, message) {
 	return md3Head(title + ' · ProxyEverything', 'ProxyEverything 错误提示', 'noindex, nofollow') + `
 <body>
@@ -2997,7 +3044,7 @@ function renderErrorPage(title, message) {
     <p class="t-body-md muted">${message}</p>
     <div class="actions">
       <button class="text-btn md-ripple" type="button" onclick="location.reload()"><span class="t-label-lg">重试</span></button>
-      <a class="tonal-btn md-ripple" href="/"><span class="t-label-lg">返回首页</span></a>
+      <a class="tonal-btn md-ripple" href="/" rel="noreferrer"><span class="t-label-lg">返回首页</span></a>
     </div>
   </section>
 </div>

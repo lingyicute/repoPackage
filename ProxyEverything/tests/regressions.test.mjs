@@ -302,3 +302,62 @@ test('fast paths preserve untouched JS/CSS while still rewriting escaped style U
 		`background: url("${proxy('a.png')}")`
 	);
 });
+
+test('upstream HTTP and opening WebSocket handshakes use the request cancellation signal', async t => {
+	const pending = [];
+	t.mock.method(globalThis, 'fetch', async (_, init) => { pending.push(init.signal); return new Response('fixture'); });
+	for (const headers of [{}, { Upgrade: 'websocket' }]) {
+		const controller = new AbortController();
+		const request = new Request(proxy(base), { headers, signal: controller.signal });
+		await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+		assert.equal(pending.at(-1), request.signal);
+		controller.abort();
+		assert.equal(pending.at(-1).aborted, true);
+	}
+});
+
+test('leaked relative WebSocket handshakes are forwarded instead of redirected', async t => {
+	const seen = [];
+	t.mock.method(globalThis, 'fetch', async url => { seen.push(String(url)); return new Response('refused', { status: 403 }); });
+	const request = new Request('https://proxy.example/live/socket?room=1', {
+		headers: { Upgrade: 'websocket', Referer: proxy('https://example.com/app/worker.js') },
+	});
+	const response = await worker.fetch(request, { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+	assert.equal(response.status, 502);
+	assert.deepEqual(seen, ['https://example.com/live/socket?room=1']);
+	const plain = await worker.fetch(new Request('https://proxy.example/live/data', {
+		headers: { Referer: proxy('https://example.com/app/') },
+	}), { ALLOWED_TARGET_ORIGINS: 'https://example.com' });
+	assert.equal(plain.status, 307);
+});
+
+test('a leaked "/" from a proxied page reaches the target root instead of the homepage', async t => {
+	t.mock.method(globalThis, 'fetch', async () => { throw new Error('upstream down'); });
+	const env = { ALLOWED_TARGET_ORIGINS: 'https://example.com' };
+	const leaked = await worker.fetch(new Request('https://proxy.example/?next=1', {
+		method: 'POST', body: 'a=1', headers: { Referer: proxy('https://example.com/app/page') },
+	}), env);
+	assert.equal(leaked.status, 307);
+	assert.equal(leaked.headers.get('location'), proxy('https://example.com/?next=1'));
+	for (const headers of [{}, { Referer: 'https://proxy.example/' }, { Referer: proxy('https://denied.example/') }]) {
+		const home = await worker.fetch(new Request('https://proxy.example/', { headers }), env);
+		assert.equal(home.status, 200);
+		assert.match(await home.text(), /id="urlForm"/);
+	}
+	// The error page lives on a proxied URL; its home link must not be mistaken for the target root.
+	const failed = await worker.fetch(new Request(proxy('https://example.com/app/page')), env);
+	assert.equal(failed.status, 502);
+	assert.match(await failed.text(), /<a [^>]*href="\/" rel="noreferrer"/);
+});
+
+test('an upstream status outside 200-599 yields the proxy error page for every method', async t => {
+	t.mock.method(globalThis, 'fetch', async () => ({
+		status: 999, statusText: '', headers: new Headers({ 'Content-Type': 'text/html' }), body: null,
+	}));
+	for (const method of ['GET', 'HEAD']) {
+		const response = await worker.fetch(new Request(proxy('https://example.com/blocked'), { method }), {
+			ALLOWED_TARGET_ORIGINS: 'https://example.com',
+		});
+		assert.equal(response.status, 502, method);
+	}
+});
