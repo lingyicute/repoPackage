@@ -1,4 +1,4 @@
-name: Sync default branches to mirrors (Codeberg / GitLab / Gitea / Framagit / GitGud / Bitbucket / Tangled / Gitoro / SourceForge)
+name: Sync default branches to mirrors (Codeberg / GitLab / Gitea / Framagit / GitGud / Bitbucket / Tangled / Gitoro / SourceForge / Launchpad)
 
 on:
   workflow_dispatch:
@@ -150,6 +150,12 @@ jobs:
             owner: lingyicute
             git_user: lingyicute
             token_secret: TANGLED_SSH_KEY
+          - name: Launchpad
+            kind: launchpad
+            host: git.launchpad.net
+            owner: 92lyi
+            git_user: 92lyi
+            token_secret: LAUNCHPAD_SSH
 
     steps:
       - name: Sync
@@ -207,8 +213,8 @@ jobs:
             done
           }
 
-          # Tangled / SourceForge：准备 SSH 私钥
-          if [ "$TARGET_KIND" = tangled ] || [ "$TARGET_KIND" = sourceforge ]; then
+          # Tangled / SourceForge / Launchpad：准备 SSH 私钥
+          if [ "$TARGET_KIND" = tangled ] || [ "$TARGET_KIND" = sourceforge ] || [ "$TARGET_KIND" = launchpad ]; then
             if ! command -v ssh >/dev/null 2>&1 || ! command -v ssh-keygen >/dev/null 2>&1; then
               SUDO=""; command -v sudo >/dev/null 2>&1 && SUDO=sudo
               $SUDO apt-get update -qq && $SUDO apt-get install -y -qq openssh-client
@@ -229,8 +235,8 @@ jobs:
           # 带 429/5xx 处理的 API GET：成功时把响应体输出到 stdout
           if [ "$TARGET_KIND" = gitlab ]; then
             auth_header="PRIVATE-TOKEN: $TARGET_TOKEN"
-          elif [ "$TARGET_KIND" = tangled ] || [ "$TARGET_KIND" = sourceforge ]; then
-            auth_header=""   # Tangled / SourceForge 用 SSH 私钥，不走 HTTP token
+          elif [ "$TARGET_KIND" = tangled ] || [ "$TARGET_KIND" = sourceforge ] || [ "$TARGET_KIND" = launchpad ]; then
+            auth_header=""   # Tangled / SourceForge / Launchpad 用 SSH 私钥，不走 HTTP token
           elif [ "$TARGET_KIND" = gitoro ]; then
             auth_header="Authorization: Bearer $TARGET_TOKEN"
           else
@@ -362,6 +368,15 @@ jobs:
             elif [ "$TARGET_KIND" = sourceforge ]; then
               url="https://sourceforge.net/rest/u/$TARGET_OWNER/profile/"
               filter='.projects[] | "\(.name | gsub("\\s"; "_") | ascii_downcase) "'
+            elif [ "$TARGET_KIND" = launchpad ]; then
+              # Launchpad 公开 API（无需认证）：GET /devel/+git?ws.op=getRepositories&target=/~<owner>
+              # 注意必须用 target= 按所有者过滤；user= 只是「以谁的可见性查询」，不会过滤，
+              # 会返回全站仓库。仓库名区分大小写（~92lyi/+git/win95 与 Win95 是不同仓库），保持原样；
+              # 只取个人命名空间（~owner/+git/<name>，target == owner）的仓库。
+              # 分页靠响应里的 next_collection_link；默认分支这里不可靠（空仓库/分支不存在时仍是 master），
+              # 留空，稍后用 git ls-remote --symref 获取
+              url="${next_url:-https://api.launchpad.net/devel/+git?ws.op=getRepositories&target=/~$TARGET_OWNER}"
+              filter='.entries[] | select(.target_link == .owner_link) | "\(.name) "'
             elif [ "$TARGET_KIND" = tangled ]; then
               # 每个仓库对应用户 PDS 里一条 org.tangled.repo.declaration，rkey 即（小写的）仓库名；
               # 默认分支这里拿不到，留空，稍后用 git ls-remote --symref 获取
@@ -394,6 +409,10 @@ jobs:
             fi
             if [ "$TARGET_KIND" = bitbucket ]; then
               next_url=$(jq -r '.next // empty' <<< "$resp")
+              [ -z "$next_url" ] && break
+            fi
+            if [ "$TARGET_KIND" = launchpad ]; then
+              next_url=$(jq -r '.next_collection_link // empty' <<< "$resp")
               [ -z "$next_url" ] && break
             fi
             if [ "$TARGET_KIND" = tangled ]; then
@@ -470,6 +489,9 @@ jobs:
             if [ "$TARGET_KIND" = tangled ]; then
               # SSH 认证（见上面的 GIT_SSH_COMMAND），URL 中不含任何凭据
               target_url="$TARGET_GIT_USER@$TARGET_HOST:$TARGET_OWNER/$tname"
+            elif [ "$TARGET_KIND" = launchpad ]; then
+              # SSH 认证；Launchpad 个人仓库路径：~<owner>/+git/<repo>
+              target_url="git+ssh://$TARGET_GIT_USER@$TARGET_HOST/~$TARGET_OWNER/+git/$tname"
             elif [ "$TARGET_KIND" = sourceforge ]; then
               # SSH 认证；git 工具的挂载点（mount point）是 "code"（GitHub 导入器创建的项目均如此）
               target_url="ssh://$TARGET_GIT_USER@$TARGET_HOST/p/$sf_project/code"
@@ -478,7 +500,7 @@ jobs:
             fi
 
             # ---- 3. 只问目标站这一个分支的 sha（git ls-remote） ----
-            if [ "$TARGET_KIND" = tangled ] || [ "$TARGET_KIND" = sourceforge ]; then
+            if [ "$TARGET_KIND" = tangled ] || [ "$TARGET_KIND" = sourceforge ] || [ "$TARGET_KIND" = launchpad ]; then
               # 同一次 ls-remote 里顺带取 HEAD 的 symref（= 目标站上的默认分支）
               if ! ls=$(retry git ls-remote --symref "$target_url" HEAD "refs/heads/$gh_branch" 2>"$RUNNER_TEMP/lsremote.err"); then
                 echo "::error::$name: git ls-remote on $TARGET_NAME failed: $(head -c 300 "$RUNNER_TEMP/lsremote.err")"
